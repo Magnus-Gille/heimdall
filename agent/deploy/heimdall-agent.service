@@ -1,0 +1,24 @@
+# USER service — install with `systemctl --user enable --now heimdall-agent`.
+# %h resolves to the invoking user's home, and the agent needs no root.
+# Run `sudo loginctl enable-linger $USER` so it starts at boot without a login.
+[Unit]
+Description=Heimdall Fleet Push Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust path to match actual install location
+WorkingDirectory=%h/repos/heimdall/agent
+ExecStart=/usr/bin/python3 %h/repos/heimdall/agent/core.py
+EnvironmentFile=%h/repos/heimdall/agent/config.env
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/repos/heimdall/agent %h/.local/state/heimdall-agent
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Heimdall local service health check timer
+
+[Timer]
+# Start after boot has settled, then keep reconciling the alert lifecycle so a
+# recovery clears the dashboard without waiting for another reboot.
+OnBootSec=90
+OnUnitInactiveSec=5m
+AccuracySec=30s
+Unit=heimdall-boot-check.service
+
+[Install]
+WantedBy=timers.target

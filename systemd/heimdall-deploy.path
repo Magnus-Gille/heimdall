@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch Heimdall repo for new commits
+
+[Path]
+PathModified=/home/heimdall/repos/heimdall/.git/refs/heads/main
+
+[Install]
+WantedBy=multi-user.target

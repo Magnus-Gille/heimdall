@@ -1,0 +1,30 @@
+[Unit]
+Description=Heimdall daily maintenance (aggregation + cleanup)
+
+[Service]
+Type=oneshot
+User=heimdall
+WorkingDirectory=/home/heimdall/repos/heimdall
+ExecStart=/usr/bin/node src/maintain.js
+Environment=NODE_ENV=production
+Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
+
+# Sandboxing — maintenance only needs DB write access
+ProtectSystem=strict
+ReadWritePaths=/home/heimdall/.heimdall
+ReadOnlyPaths=/home/heimdall/repos/heimdall
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+PrivateDevices=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+SystemCallArchitectures=native

@@ -1,0 +1,128 @@
+/* ============================================================================
+   consolidation.css — styles for the /consolidation dashboard page.
+   Uses v2 semantic tokens from tokens.css. The .consolidation-page wrapper
+   provides scope for page-specific rules.
+   ============================================================================ */
+
+/* Re-declare status dot colors (defined in inference.css for that page;
+   declared here so the consolidation page is self-contained). */
+.consolidation-page .status-dot.online  { color: var(--status-ok); }
+.consolidation-page .status-dot.offline { color: var(--status-crit); }
+
+/* ---- Page header (reuses .proj-page-header pattern from projects.css) ----- */
+
+.consolidation-page .proj-page-header h1 {
+  color: var(--text-bright);
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.consolidation-page .proj-page-sub {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* ---- Activity chart wrapper ----------------------------------------------- */
+
+.consol-chart-wrap {
+  position: relative;
+  height: 300px;
+}
+
+/* ---- Coverage table ------------------------------------------------------- */
+
+.consol-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+.consol-summary > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border-radius: var(--radius, 6px);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.consol-summary strong {
+  color: currentColor;
+  font-size: var(--text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.consol-attention { margin-top: var(--space-3); }
+.consol-attention h4 { margin: 0 0 var(--space-2); color: var(--text-bright); font-size: var(--text-sm); }
+.consol-clear { margin: var(--space-3) 0; font-size: var(--text-sm); }
+.consol-all { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.consol-all summary { color: var(--text-muted); cursor: pointer; font-size: var(--text-sm); font-weight: 600; }
+.consol-all[open] summary { margin-bottom: var(--space-2); }
+.consol-table-note { margin: var(--space-2) 0 0; color: var(--text-muted); font-size: var(--text-xs); }
+
+.consol-coverage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.consol-coverage-table th {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.consol-coverage-table td {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  color: var(--text);
+}
+
+.consol-coverage-table tr:last-child td {
+  border-bottom: none;
+}
+
+.consol-backlog-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.consol-state {
+  display: inline-flex;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+/* ---- Backlog warning note ------------------------------------------------- */
+
+.consol-backlog-note {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin: 0 0 0.75rem;
+}
+
+/* ---- Error line in status card ------------------------------------------- */
+
+.consol-error {
+  color: var(--status-crit) !important;
+}
+
+@media (max-width: 700px) {
+  .consol-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .consol-coverage-table { display: block; overflow-x: auto; }
+}

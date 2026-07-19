@@ -1,0 +1,94 @@
+{
+  "ok": true,
+  "action": "health",
+  "partial": false,
+  "schema_version": 2,
+  "generated_at": "2026-06-29T00:00:00.000Z",
+  "sections": {
+    "embedding": {
+      "ok": true,
+      "model": "Xenova/bge-small-en-v1.5",
+      "dtype": null,
+      "counts": {
+        "pending": 8,
+        "processing": 0,
+        "generated": 0,
+        "failed": 0,
+        "total": 8
+      },
+      "coverage_pct": 0,
+      "reembed_in_progress": true,
+      "stuck": 0,
+      "stuck_note": "Stuck entries are defined as model-identity-based (generated_stale + generated_null); no embedding_claimed_at column exists for time-based detection.",
+      "circuit_breaker": "healthy",
+      "embedding_available": false,
+      "status_reason": "Embedding model failed to load"
+    },
+    "size": {
+      "ok": true,
+      "entries_total": 8,
+      "entries_state": 3,
+      "entries_log": 5,
+      "namespace_count": 3
+    },
+    "retrieval": {
+      "ok": true,
+      "query_volume_7d": 0,
+      "query_volume_30d": 0,
+      "mode_mix": {
+        "lexical": 0,
+        "semantic": 0,
+        "hybrid": 0
+      },
+      "latency_p50_ms": null,
+      "latency_p95_ms": null,
+      "unused_surface_count": 0
+    },
+    "classification": {
+      "ok": true,
+      "by_level": {
+        "public": 0,
+        "internal": 8,
+        "client-confidential": 0,
+        "client-restricted": 0
+      },
+      "access_denied_7d": 0
+    },
+    "maintenance": {
+      "ok": true,
+      "active_but_stale": 0,
+      "missing_status": 0,
+      "temporal_stale": 0,
+      "consolidation_backlog": 0,
+      "retrieved_unused": 0
+    },
+    "consolidation": {
+      "ok": true,
+      "worker": "disabled",
+      "circuit_breaker": "healthy",
+      "failures": 0,
+      "max_failures": 3,
+      "min_logs": 3,
+      "last_synthesis_at": "2026-06-28T12:00:00.000Z",
+      "avg_latency_ms": 1843,
+      "backlog_complete": true,
+      "backlog_namespace_count": 1,
+      "api_key_present": false,
+      "last_error": null,
+      "last_error_at": null,
+      "backlog": [
+        {
+          "namespace": "projects/demo",
+          "unincorporated": 5
+        }
+      ]
+    },
+    "security_events": {
+      "ok": true,
+      "redaction_events_7d": 0,
+      "redaction_events_30d": 0,
+      "cross_zone_blocks_7d": 0,
+      "cross_zone_blocks_30d": 0
+    }
+  }
+}

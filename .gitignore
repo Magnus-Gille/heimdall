@@ -1,0 +1,11 @@
+node_modules/
+*.db
+*.db-wal
+*.db-shm
+.env
+debate/
+tasks/
+.playwright-mcp/
+__pycache__/
+*.pyc
+STATUS.md

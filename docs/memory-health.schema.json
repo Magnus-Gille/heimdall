@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Magnus-Gille/munin-memory/blob/main/docs/memory-health.schema.json",
+  "title": "memory_health response (schema_version 2)",
+  "description": "Canonical contract for the owner-only memory_health MCP tool. munin-memory is the source of truth for this schema; downstream operator dashboards (e.g. Heimdall) conform to it. Each section degrades independently: on a sub-query failure a section collapses to { ok: false, error: \"section_unavailable\" } and the top-level partial becomes true. additionalProperties is true throughout so additive fields are non-breaking.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["ok", "action", "partial", "schema_version", "generated_at", "sections"],
+  "properties": {
+    "ok": { "const": true },
+    "action": { "const": "health" },
+    "partial": {
+      "type": "boolean",
+      "description": "true when any section failed (ok: false)."
+    },
+    "schema_version": { "const": 2 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "sections": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "embedding",
+        "size",
+        "retrieval",
+        "classification",
+        "maintenance",
+        "consolidation",
+        "security_events"
+      ],
+      "properties": {
+        "embedding": { "$ref": "#/$defs/embedding" },
+        "size": { "$ref": "#/$defs/size" },
+        "retrieval": { "$ref": "#/$defs/retrieval" },
+        "classification": { "$ref": "#/$defs/classification" },
+        "maintenance": { "$ref": "#/$defs/maintenance" },
+        "consolidation": { "$ref": "#/$defs/consolidation" },
+        "security_events": { "$ref": "#/$defs/security_events" }
+      }
+    }
+  },
+  "$defs": {
+    "degradedSection": {
+      "type": "object",
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": { "const": false },
+        "error": { "const": "section_unavailable" }
+      }
+    },
+    "embedding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "model": { "type": ["string", "null"] },
+        "dtype": { "type": ["string", "null"] },
+        "counts": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["pending", "processing", "generated", "failed", "total"],
+          "properties": {
+            "pending": { "type": "integer" },
+            "processing": { "type": "integer" },
+            "generated": { "type": "integer" },
+            "failed": { "type": "integer" },
+            "total": { "type": "integer" }
+          }
+        },
+        "coverage_pct": {
+          "type": ["number", "null"],
+          "description": "Percent of entries with a generated embedding (0-100); null when total == 0."
+        },
+        "reembed_in_progress": { "type": "boolean" },
+        "stuck": {
+          "type": "integer",
+          "description": "generated_stale + generated_null: entries marked generated but not against the active model identity."
+        },
+        "stuck_note": { "type": "string" },
+        "circuit_breaker": { "enum": ["healthy", "tripped"] },
+        "embedding_available": { "type": "boolean" },
+        "status_reason": { "type": "string" }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": {
+        "required": [
+          "model",
+          "dtype",
+          "counts",
+          "coverage_pct",
+          "reembed_in_progress",
+          "stuck",
+          "circuit_breaker",
+          "embedding_available",
+          "status_reason"
+        ]
+      },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    },
+    "size": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "entries_total": { "type": "integer" },
+        "entries_state": { "type": "integer" },
+        "entries_log": { "type": "integer" },
+        "namespace_count": { "type": "integer" }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": { "required": ["entries_total", "entries_state", "entries_log", "namespace_count"] },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "query_volume_7d": { "type": "integer" },
+        "query_volume_30d": { "type": "integer" },
+        "mode_mix": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Fractions of query_volume_7d by actual search mode; all 0 when there is no volume. Sums to ~1 (events with no recorded mode are excluded from the numerators).",
+          "required": ["lexical", "semantic", "hybrid"],
+          "properties": {
+            "lexical": { "type": "number", "minimum": 0, "maximum": 1 },
+            "semantic": { "type": "number", "minimum": 0, "maximum": 1 },
+            "hybrid": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "latency_p50_ms": {
+          "type": ["number", "null"],
+          "description": "Nearest-rank p50 of memory_query wall-clock latency (ms) over the last 7 days; null when there are no timed query events in the window."
+        },
+        "latency_p95_ms": {
+          "type": ["number", "null"],
+          "description": "Nearest-rank p95 of memory_query wall-clock latency (ms) over the last 7 days; null when there are no timed query events in the window."
+        },
+        "unused_surface_count": { "type": "integer" }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": {
+        "required": [
+          "query_volume_7d",
+          "query_volume_30d",
+          "mode_mix",
+          "latency_p50_ms",
+          "latency_p95_ms",
+          "unused_surface_count"
+        ]
+      },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "by_level": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["public", "internal", "client-confidential", "client-restricted"],
+          "properties": {
+            "public": { "type": "integer" },
+            "internal": { "type": "integer" },
+            "client-confidential": { "type": "integer" },
+            "client-restricted": { "type": "integer" }
+          }
+        },
+        "access_denied_7d": {
+          "type": "integer",
+          "description": "Count of access-denied security events (audit_log action = 'access_denied') over the last 7 days."
+        }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": { "required": ["by_level", "access_denied_7d"] },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "active_but_stale": { "type": "integer" },
+        "missing_status": { "type": "integer" },
+        "temporal_stale": { "type": "integer" },
+        "consolidation_backlog": { "type": "integer" },
+        "retrieved_unused": { "type": "integer" }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": {
+        "required": [
+          "active_but_stale",
+          "missing_status",
+          "temporal_stale",
+          "consolidation_backlog",
+          "retrieved_unused"
+        ]
+      },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    },
+    "consolidation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "worker": { "enum": ["available", "unavailable", "disabled"] },
+        "circuit_breaker": { "enum": ["healthy", "tripped"] },
+        "failures": { "type": "integer" },
+        "max_failures": { "type": "integer" },
+        "min_logs": { "type": "integer" },
+        "last_synthesis_at": { "type": ["string", "null"], "format": "date-time" },
+        "avg_latency_ms": { "type": ["number", "null"] },
+        "backlog_complete": { "type": "boolean" },
+        "backlog_namespace_count": { "type": "integer" },
+        "api_key_present": { "type": "boolean" },
+        "last_error": { "type": ["string", "null"] },
+        "last_error_at": { "type": ["string", "null"] },
+        "backlog": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["namespace", "unincorporated"],
+            "properties": {
+              "namespace": { "type": "string" },
+              "unincorporated": { "type": "integer" }
+            }
+          }
+        }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": {
+        "required": [
+          "worker",
+          "circuit_breaker",
+          "failures",
+          "max_failures",
+          "min_logs",
+          "last_synthesis_at",
+          "avg_latency_ms",
+          "backlog_complete",
+          "backlog_namespace_count",
+          "api_key_present",
+          "last_error",
+          "last_error_at",
+          "backlog"
+        ]
+      },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    },
+    "security_events": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "redaction_events_7d": { "type": "integer" },
+        "redaction_events_30d": { "type": "integer" },
+        "cross_zone_blocks_7d": { "type": "integer" },
+        "cross_zone_blocks_30d": { "type": "integer" }
+      },
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": {
+        "required": [
+          "redaction_events_7d",
+          "redaction_events_30d",
+          "cross_zone_blocks_7d",
+          "cross_zone_blocks_30d"
+        ]
+      },
+      "else": { "$ref": "#/$defs/degradedSection" }
+    }
+  }
+}

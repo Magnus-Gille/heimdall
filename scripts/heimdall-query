@@ -1,0 +1,200 @@
+#!/usr/bin/env node
+'use strict';
+
+// heimdall-query — CLI tool for forensic queries against Heimdall's SQLite DB
+// Usage:
+//   heimdall-query events [--category CAT] [--severity SEV] [--last PERIOD]
+//   heimdall-query metrics --host HOST --metric METRIC [--last PERIOD]
+//   heimdall-query alerts [--active]
+
+const Database = require('better-sqlite3');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+
+const DB_PATH = process.env.DB_PATH || path.join(os.homedir(), '.heimdall', 'heimdall.db');
+
+// --- Input validation ---
+
+const VALID_PERIOD_RE = /^(\d{1,4})[hd]$/;
+const VALID_NAME_RE = /^[a-zA-Z0-9_.\-]+$/;
+const VALID_LIMIT_RE = /^\d{1,5}$/;
+
+function validateName(value, label) {
+  if (value == null || !VALID_NAME_RE.test(value)) {
+    console.error(`Error: Invalid ${label}: ${value}`);
+    console.error(`  ${label} must match [a-zA-Z0-9_.\\-]+`);
+    process.exit(1);
+  }
+  return value;
+}
+
+function validateLimit(value) {
+  if (value == null || !VALID_LIMIT_RE.test(value)) {
+    console.error(`Error: Invalid --limit: ${value} (must be a positive integer)`);
+    process.exit(1);
+  }
+  const n = parseInt(value, 10);
+  if (n < 1 || n > 10000) {
+    console.error(`Error: --limit must be between 1 and 10000`);
+    process.exit(1);
+  }
+  return n;
+}
+
+function parsePeriod(period) {
+  if (period == null) {
+    console.error('Error: --last requires a value (e.g., 1h, 24h, 7d)');
+    process.exit(1);
+  }
+  const m = period.match(VALID_PERIOD_RE);
+  if (!m) {
+    console.error(`Error: Invalid --last period: ${period}`);
+    console.error('  Format: 1h, 24h, 7d, 30d');
+    process.exit(1);
+  }
+  const num = parseInt(m[1], 10);
+  const unit = period.slice(-1) === 'h' ? 'hours' : 'days';
+  return `-${num} ${unit}`;
+}
+
+// --- Usage ---
+
+function usage() {
+  console.log('Usage:');
+  console.log('  heimdall-query events [--category CAT] [--severity SEV] [--last PERIOD] [--limit N]');
+  console.log('  heimdall-query metrics --host HOST --metric METRIC [--last PERIOD]');
+  console.log('  heimdall-query alerts [--active]');
+  console.log('');
+  console.log('PERIOD format: 1h, 24h, 7d, 30d');
+  process.exit(1);
+}
+
+// --- Database ---
+
+function openDb(dbPath) {
+  if (!fs.existsSync(dbPath)) {
+    console.error(`Error: Database not found at ${dbPath}`);
+    process.exit(1);
+  }
+  return new Database(dbPath, { readonly: true });
+}
+
+// --- Format output ---
+
+function printTable(rows) {
+  if (!rows || rows.length === 0) {
+    console.log('(no results)');
+    return;
+  }
+  const cols = Object.keys(rows[0]);
+  const widths = cols.map(c => Math.max(c.length, ...rows.map(r => String(r[c] ?? '').length)));
+
+  console.log(cols.map((c, i) => c.padEnd(widths[i])).join('  '));
+  console.log(widths.map(w => '-'.repeat(w)).join('  '));
+  for (const row of rows) {
+    console.log(cols.map((c, i) => String(row[c] ?? '').padEnd(widths[i])).join('  '));
+  }
+}
+
+// --- Commands ---
+
+function queryEvents(db, args) {
+  const conditions = [];
+  const params = [];
+  let limit = 50;
+
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case '--category':
+        conditions.push('category = ?');
+        params.push(validateName(args[++i], 'category'));
+        break;
+      case '--severity':
+        conditions.push('severity = ?');
+        params.push(validateName(args[++i], 'severity'));
+        break;
+      case '--last': {
+        const since = parsePeriod(args[++i]);
+        conditions.push("timestamp > datetime('now', ?)");
+        params.push(since);
+        break;
+      }
+      case '--limit':
+        limit = validateLimit(args[++i]);
+        break;
+    }
+  }
+
+  const where = conditions.length ? conditions.join(' AND ') : '1=1';
+  const sql = `SELECT timestamp, host, category, severity, title FROM events WHERE ${where} ORDER BY timestamp DESC LIMIT ?`;
+  params.push(limit);
+
+  const rows = db.prepare(sql).all(...params);
+  printTable(rows);
+}
+
+function queryMetrics(db, args) {
+  let host = '';
+  let metric = '';
+  let since = '-24 hours';
+
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case '--host':
+        host = validateName(args[++i], 'host');
+        break;
+      case '--metric':
+        metric = validateName(args[++i], 'metric');
+        break;
+      case '--last':
+        since = parsePeriod(args[++i]);
+        break;
+    }
+  }
+
+  if (!host || !metric) {
+    console.error('Error: --host and --metric are required');
+    process.exit(1);
+  }
+
+  const sql = `SELECT timestamp, value, unit FROM metrics WHERE host = ? AND metric = ? AND timestamp > datetime('now', ?) ORDER BY timestamp DESC LIMIT 100`;
+  const rows = db.prepare(sql).all(host, metric, since);
+  printTable(rows);
+}
+
+function queryAlerts(db, args) {
+  const activeOnly = args.includes('--active');
+
+  const where = activeOnly ? 'resolved_at IS NULL' : '1=1';
+  const sql = `SELECT id, created_at, host, severity, title, CASE WHEN resolved_at IS NULL THEN 'ACTIVE' ELSE 'resolved' END as status FROM alerts WHERE ${where} ORDER BY created_at DESC LIMIT 50`;
+
+  const rows = db.prepare(sql).all();
+  printTable(rows);
+}
+
+// --- Main ---
+
+const args = process.argv.slice(2);
+const cmd = args[0];
+const cmdArgs = args.slice(1);
+
+if (!cmd) usage();
+
+const db = openDb(DB_PATH);
+
+switch (cmd) {
+  case 'events':
+    queryEvents(db, cmdArgs);
+    break;
+  case 'metrics':
+    queryMetrics(db, cmdArgs);
+    break;
+  case 'alerts':
+    queryAlerts(db, cmdArgs);
+    break;
+  default:
+    usage();
+}
+
+db.close();

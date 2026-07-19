@@ -1,0 +1,288 @@
+/* ============================================================================
+   reader.css — the /read article reader, ported to the v2 design system.
+   Copied verbatim from the v1 .reader-* block; only token names remapped
+   (--bg-hover→--surface-overlay, --card-bg→--surface-raised). Self-contained:
+   defines its own --reader-font size scale via the data-reader-size controls.
+   ========================================================================= */
+
+.reader-list {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+.reader-list-header {
+  margin-bottom: 20px;
+}
+.reader-list-header h2 {
+  margin: 0 0 4px;
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+.reader-list-sub {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.reader-card-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.reader-card {
+  display: block;
+  padding: 18px 20px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+  min-height: 44px;
+  transition: border-color 0.15s ease, transform 0.08s ease;
+}
+.reader-card:hover,
+.reader-card:focus-visible {
+  border-color: var(--accent, #6c9bff);
+  outline: none;
+}
+.reader-card:active { transform: scale(0.995); }
+.reader-card-title {
+  margin: 0 0 6px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-bright);
+}
+.reader-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.reader-card-dot { opacity: 0.5; }
+.reader-card-excerpt {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text);
+  opacity: 0.88;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.reader-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 32px 0;
+  text-align: center;
+}
+
+/* Reader — breadcrumb / toolbar */
+.reader-breadcrumb {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 12px 20px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.reader-back {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  padding: 8px 4px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.reader-back:hover { color: var(--text-bright); }
+.reader-tools {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.reader-font-controls {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-raised);
+}
+.reader-font-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  padding: 8px 12px;
+  min-width: 40px;
+  min-height: 40px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+.reader-font-btn:last-child { border-right: none; }
+.reader-font-btn:hover { background: var(--surface-overlay); color: var(--text); }
+.reader-font-btn.active {
+  background: var(--surface-overlay);
+  color: var(--text-bright);
+  font-weight: 600;
+}
+.reader-epub {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.reader-epub:hover {
+  border-color: var(--accent, #6c9bff);
+  color: var(--text-bright);
+}
+
+/* Reader — article view */
+.reader-article {
+  --reader-font: clamp(16px, 2.6vw, 19px);
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px 20px 64px;
+  font-family: Georgia, "Iowan Old Style", "Charter", "Source Serif Pro", Palatino, serif;
+  font-size: var(--reader-font);
+  line-height: 1.7;
+  color: var(--text);
+}
+.reader-article[data-reader-size="sm"] { --reader-font: clamp(14px, 2.4vw, 17px); }
+.reader-article[data-reader-size="md"] { --reader-font: clamp(16px, 2.6vw, 19px); }
+.reader-article[data-reader-size="lg"] { --reader-font: clamp(18px, 3vw, 22px); }
+.reader-article-header { margin-bottom: 28px; }
+.reader-article-header h1 {
+  margin: 0 0 8px;
+  font-size: 1.9em;
+  line-height: 1.2;
+  font-weight: 700;
+  color: var(--text-bright);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  letter-spacing: -0.01em;
+}
+.reader-article-meta {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.reader-prose h1,
+.reader-prose h2,
+.reader-prose h3,
+.reader-prose h4 {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-bright);
+  margin: 1.6em 0 0.4em;
+}
+.reader-prose h1 { font-size: 1.5em; }
+.reader-prose h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: 0.25em; }
+.reader-prose h3 { font-size: 1.08em; }
+.reader-prose h4 { font-size: 1em; color: var(--text-muted); }
+.reader-prose p { margin: 0.9em 0; }
+.reader-prose ul,
+.reader-prose ol { padding-left: 1.4em; margin: 0.8em 0; }
+.reader-prose li { margin: 0.35em 0; }
+.reader-prose blockquote {
+  border-left: 3px solid var(--accent, #6c9bff);
+  padding: 0.1em 0 0.1em 1em;
+  color: var(--text-muted);
+  margin: 1em 0;
+  font-style: italic;
+}
+.reader-prose code {
+  background: var(--surface-overlay);
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+.reader-prose pre {
+  background: var(--surface-overlay);
+  padding: 14px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1.2em 0;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.reader-prose pre code { background: none; padding: 0; }
+.reader-prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2.5em 0;
+}
+.reader-prose a {
+  color: var(--accent, #6c9bff);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.reader-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.2em 0;
+  font-size: 0.88em;
+  display: block;
+  overflow-x: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.reader-prose th,
+.reader-prose td {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.reader-prose th { background: var(--surface-overlay); color: var(--text-bright); font-weight: 600; }
+.reader-prose img { max-width: 100%; height: auto; }
+.reader-article-nav {
+  margin-top: 3em;
+  padding-top: 1.5em;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 0.9rem;
+}
+.reader-nav-prev,
+.reader-nav-next {
+  color: var(--text);
+  text-decoration: none;
+  padding: 8px 0;
+  max-width: 48%;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.reader-nav-next { text-align: right; }
+.reader-nav-prev:hover,
+.reader-nav-next:hover { color: var(--accent, #6c9bff); }
+
+@media (max-width: 640px) {
+  .reader-list { padding: 16px 12px 40px; }
+  .reader-card { padding: 16px; border-radius: 12px; }
+  .reader-card-title { font-size: 1.05rem; }
+  .reader-breadcrumb { padding: 10px 12px 0; }
+  .reader-article { padding: 20px 16px 48px; }
+  .reader-prose table { font-size: 0.82em; }
+  .reader-prose th,
+  .reader-prose td { white-space: normal; padding: 6px 8px; }
+}

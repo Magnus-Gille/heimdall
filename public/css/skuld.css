@@ -1,0 +1,104 @@
+/* ============================================================================
+   skuld.css — styles for the `skuld` panel plugin (daily briefing).
+   Loaded by the generic service page only when a descriptor declares a
+   `skuld` panel. Ported from v1 public/style.css .briefing-* blocks, with
+   v1 palette vars remapped onto the v2 semantic tokens (tokens.css):
+     --card-bg    → --surface-raised
+     --bg-hover   → --surface-overlay
+     --green      → --status-ok
+     --red        → --status-crit
+     --amber      → --status-warn
+     --muted      → --text-muted
+     (--text, --text-muted, --border, --accent are identical across v1 and v2)
+   (P4 folds the v1 `/briefing` page into the v2 Services drill-down.)
+   ============================================================================ */
+
+/* Compatibility aliases: the reused v1 renderer (briefingFullCard) emits
+   var(--card-bg) and var(--bg-hover) which the v2 token layer doesn't define.
+   Alias them to v2 semantic tokens, scoped to the plugin's own output so the
+   v1 /briefing page (own palette) is unaffected. */
+.skuld-panel {
+  --card-bg: var(--surface-raised);
+  --bg-hover: var(--surface-overlay);
+  --green: var(--status-ok);
+  --amber: var(--status-warn);
+  --red: var(--status-crit);
+  --muted: var(--text-muted);
+}
+
+/* ---- Skuld plugin generic note ----------------------------------------- */
+.skuld-note { color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; padding: 0.4rem 0; }
+
+/* ---- Briefing container ------------------------------------------------- */
+.briefing-container {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 28px 32px;
+}
+
+/* ---- Briefing header ---------------------------------------------------- */
+.briefing-header h2 {
+  margin: 0 0 12px;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+/* ---- Briefing meta row -------------------------------------------------- */
+.briefing-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.briefing-meta-key {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.briefing-meta-val {
+  color: var(--text);
+}
+
+/* ---- Briefing narrative body -------------------------------------------- */
+.briefing-narrative {
+  line-height: 1.7;
+  font-size: 0.95rem;
+}
+
+.briefing-narrative h1,
+.briefing-narrative h2,
+.briefing-narrative h3 {
+  margin: 1.5em 0 0.5em;
+  font-weight: 600;
+}
+
+.briefing-narrative h2 { font-size: 1.1rem; }
+.briefing-narrative h3 { font-size: 1rem; color: var(--text-muted); }
+.briefing-narrative p { margin: 0.75em 0; }
+.briefing-narrative ul { padding-left: 1.4em; margin: 0.5em 0; }
+.briefing-narrative li { margin: 0.25em 0; }
+.briefing-narrative table { width: 100%; border-collapse: collapse; margin: 1em 0; font-size: 0.85rem; overflow-x: auto; display: block; }
+.briefing-narrative th,
+.briefing-narrative td { padding: 6px 12px; border: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.briefing-narrative th { background: var(--surface-overlay); color: var(--text-bright); font-weight: 600; }
+.briefing-narrative tr:nth-child(even) td { background: var(--surface-overlay); }
+.briefing-narrative code { background: var(--surface-overlay); padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+.briefing-narrative pre { background: var(--surface-overlay); padding: 12px 16px; border-radius: 4px; overflow-x: auto; margin: 1em 0; }
+.briefing-narrative pre code { background: none; padding: 0; }
+.briefing-narrative blockquote { border-left: 3px solid var(--border); padding-left: 1em; color: var(--text-muted); margin: 0.75em 0; }
+
+/* ---- Empty state -------------------------------------------------------- */
+.briefing-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  padding: 40px 0;
+  text-align: center;
+}

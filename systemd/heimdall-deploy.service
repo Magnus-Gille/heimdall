@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart Heimdall services after new commit
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart heimdall.service
+ExecStart=/usr/bin/systemctl start heimdall-collect.service

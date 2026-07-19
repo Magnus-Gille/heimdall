@@ -1,0 +1,114 @@
+{
+  "services": [
+    {
+      "name": "munin-memory",
+      "host": "control-node",
+      "health_url": "http://localhost:3030/health",
+      "repo": "Magnus-Gille/munin-memory",
+      "deploy_path": "/home/heimdall/munin-memory"
+    },
+    {
+      "name": "mimir",
+      "host": "nas",
+      "health_url": "http://192.0.2.20:3031/health",
+      "ssh_host": "192.0.2.20",
+      "repo": "Magnus-Gille/mimir",
+      "deploy_path": "/home/heimdall/repos/mimir"
+    },
+    {
+      "name": "hugin",
+      "host": "control-node",
+      "health_url": "http://localhost:3032/health",
+      "repo": "Magnus-Gille/hugin",
+      "deploy_path": "/home/heimdall/repos/hugin"
+    },
+    {
+      "name": "heimdall",
+      "host": "control-node",
+      "health_url": "http://192.0.2.10:3033/api/health",
+      "repo": "Magnus-Gille/heimdall",
+      "deploy_path": "/home/heimdall/repos/heimdall"
+    },
+    {
+      "name": "skuld",
+      "host": "control-node",
+      "type": "timer",
+      "repo": "Magnus-Gille/skuld",
+      "systemd_unit": "skuld",
+      "deploy_path": "/home/heimdall/repos/skuld"
+    },
+    {
+      "name": "ratatoskr",
+      "host": "control-node",
+      "health_url": "http://192.0.2.10:3034/health",
+      "repo": "Magnus-Gille/ratatoskr",
+      "systemd_unit": "ratatoskr",
+      "deploy_path": "/home/heimdall/repos/ratatoskr"
+    },
+    {
+      "name": "verdandi",
+      "monitor": false
+    },
+    {
+      "name": "grimnir-security-scan",
+      "host": "control-node",
+      "type": "timer",
+      "repo": "Magnus-Gille/grimnir",
+      "systemd_unit": "grimnir-security-scan",
+      "deploy_path": "/home/heimdall/repos/grimnir"
+    },
+    {
+      "name": "grimnir-validate",
+      "host": "control-node",
+      "type": "timer",
+      "repo": "Magnus-Gille/grimnir",
+      "systemd_unit": "grimnir-validate",
+      "deploy_path": "/home/heimdall/repos/grimnir"
+    },
+    {
+      "name": "brokkr-maintenance-os",
+      "host": "control-node",
+      "type": "timer",
+      "repo": "Magnus-Gille/brokkr",
+      "systemd_unit": "brokkr-maintenance-os",
+      "deploy_path": "/home/heimdall/repos/brokkr"
+    },
+    {
+      "name": "brokkr-maintenance-deps",
+      "host": "control-node",
+      "type": "timer",
+      "repo": "Magnus-Gille/brokkr",
+      "systemd_unit": "brokkr-maintenance-deps",
+      "deploy_path": "/home/heimdall/repos/brokkr"
+    },
+    {
+      "name": "hugin-daily-analysis",
+      "host": "control-node",
+      "type": "timer",
+      "repo": "Magnus-Gille/hugin",
+      "systemd_unit": "hugin-daily-analysis",
+      "deploy_path": "/home/heimdall/repos/hugin",
+      "additive": true
+    },
+    {
+      "name": "tallriksvis",
+      "host": "control-node",
+      "type": "static",
+      "health_url": "http://localhost/",
+      "additive": true
+    }
+  ],
+  "fleet": {
+    "stale_after_s": 90,
+    "offline_after_s": 600,
+    "sleep_after_s": 1800,
+    "hosts": [
+      { "hostname": "control-node", "label": "control-node", "role": "AI infra (Pi 5)", "always_on": true },
+      { "hostname": "nas", "label": "nas", "role": "Storage (Pi 5)", "always_on": true },
+      { "hostname": "m5", "label": "M5 inference", "role": "Inference box", "always_on": true },
+      { "hostname": "edge-node", "label": "Orin Nano", "role": "Edge GPU (Jetson Orin)", "always_on": true },
+      { "hostname": "workstation", "label": "Laptop", "role": "Intermittent workstation", "always_on": false },
+      { "hostname": "munin-zero", "label": "munin-zero", "role": "Pi Zero", "always_on": true }
+    ]
+  }
+}

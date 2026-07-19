@@ -1,0 +1,149 @@
+/* ============================================================================
+   hugin.css — styles for the `hugin` panel plugin (task dispatcher).
+   Loaded by the generic service page only when a descriptor declares a
+   `hugin` panel. Ported from v1 public/style.css task-* and heartbeat-*
+   blocks, with the v1 palette vars remapped onto the v2 semantic tokens
+   (tokens.css):
+     --green  → --status-ok
+     --red    → --status-crit
+     --amber  → --status-warn
+     (--text, --text-muted, --border are identical across v1 and v2)
+   (P4 will fold these into the shared component layer and drop the v1 `/tasks` page.)
+   ============================================================================ */
+
+/* Compatibility aliases: the reused v1 renderers (huginTasksCard/taskHistoryCard)
+   still emit inline var(--green|--amber|--red|--muted) for status cues, names the
+   v2 token layer doesn't define. Alias them to v2 semantic tokens, scoped to the
+   plugin's own output so the v1 /tasks page (own palette) is unaffected. */
+.hugin-panel {
+  --green: var(--status-ok);
+  --amber: var(--status-warn);
+  --red: var(--status-crit);
+  --muted: var(--text-muted);
+}
+
+/* ---- Hugin plugin generic note ----------------------------------------- */
+.hugin-note { color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; padding: 0.4rem 0; }
+
+/* ---- Task running / idle ------------------------------------------------ */
+.task-running {
+  color: var(--status-ok);
+  font-size: 0.9rem;
+  padding: 0.25rem 0;
+}
+
+.task-idle {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ---- Task summary / recent completed ------------------------------------ */
+.task-summary {
+  font-size: 0.85rem;
+  color: var(--text);
+  margin-top: 0.5rem;
+}
+
+.task-recent {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+/* ---- Queue / failed section headers ------------------------------------- */
+.task-queue-header, .task-failed-header {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+  margin-bottom: 0.15rem;
+}
+
+.task-failed-header {
+  color: var(--status-crit);
+}
+
+/* ---- Queued task rows --------------------------------------------------- */
+.task-queued {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 0.1rem 0 0.1rem 0.75rem;
+}
+
+/* ---- Failed task rows --------------------------------------------------- */
+.task-failed {
+  font-size: 0.8rem;
+  color: var(--status-crit);
+  padding: 0.1rem 0 0.1rem 0.75rem;
+}
+
+.task-failed-icon {
+  font-weight: 600;
+}
+
+.task-failure-reason {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* ---- Success rate badge ------------------------------------------------- */
+.success-badge {
+  font-size: 0.7rem;
+  font-weight: 400;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+/* v1 used hardcoded rgba; remapped to status token tints */
+.badge-green { background: var(--status-ok-bg); color: var(--status-ok); }
+.badge-amber { background: var(--status-warn-bg); color: var(--status-warn); }
+.badge-red { background: var(--status-crit-bg); color: var(--status-crit); }
+
+/* ---- Heartbeat row ------------------------------------------------------ */
+.heartbeat-row {
+  font-size: 0.85rem;
+  padding: 0.3rem 0 0.4rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.4rem;
+}
+.heartbeat-status { font-weight: 600; }
+.heartbeat-detail { color: var(--text-muted); font-size: 0.8rem; }
+
+/* ---- Queue metrics row -------------------------------------------------- */
+.task-queue-metrics {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 0.25rem 0 0.5rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.5rem;
+}
+
+/* ---- Task history table ------------------------------------------------- */
+.task-hist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.task-hist-table thead th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.task-hist-row td {
+  padding: 0.3rem 0.5rem;
+  /* v1 used --border-subtle (not in v2 tokens); use a semi-transparent fallback */
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+.task-hist-row-fail td {
+  color: var(--status-crit);
+}
+.task-hist-icon { width: 1.5rem; text-align: center; }
+.task-hist-ok { color: var(--status-ok); }
+.task-hist-fail { color: var(--status-crit); font-weight: 600; }
+.task-hist-name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-hist-date { white-space: nowrap; color: var(--text-muted); font-size: 0.8rem; }
+.task-hist-runtime { white-space: nowrap; color: var(--text-muted); font-size: 0.8rem; text-align: right; }
+.task-hist-count { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; }

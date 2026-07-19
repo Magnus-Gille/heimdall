@@ -1,0 +1,98 @@
+/* ============================================================================
+   inference.css — styles for the `inference` panel plugin (M5 box).
+   Loaded by the generic service page only when a descriptor declares an
+   `inference` panel. Ported from v1 public/style.css `.m5-*` block, with the v1
+   palette vars remapped onto the v2 semantic tokens (tokens.css):
+     --bg-hover→--surface-overlay  --bg-card→--surface-raised
+     --green→--status-ok  --amber→--status-warn  --red→--status-crit  --blue→--accent
+   Plus three generic classes the reused m5-status card needs that components.css
+   does not define (.metric-value, .proc-empty, .status-dot.online/.offline).
+   (P4 will fold these into the shared component layer and drop the .m5- namespace.)
+   ========================================================================= */
+
+/* ---- generic deps for the reused m5-status fragment --------------------- */
+.status-dot.online { color: var(--status-ok); }
+.status-dot.offline { color: var(--status-crit); }
+.metric-value { color: var(--text-bright); font-variant-numeric: tabular-nums; }
+.metric-note { color: var(--text-muted); font-size: 0.8em; font-weight: 400; }
+.proc-empty { font-size: var(--text-sm); color: var(--text-muted); }
+
+/* ---- M5 page chrome ---------------------------------------------------- */
+.m5-page-title { margin: 0 0 0.25rem; font-size: 1.4rem; color: var(--text-bright); }
+.m5-page-sub { margin: 0; color: var(--text-muted); font-size: 0.9rem; line-height: 1.45; }
+.m5-page-sub code, .m5-note code { background: var(--surface-overlay); padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.85em; }
+.m5-subtitle { font-weight: 400; font-size: 0.78rem; color: var(--text-muted); margin-left: 0.4rem; }
+.m5-note { color: var(--text-muted); font-size: 0.85rem; line-height: 1.5; padding: 0.4rem 0; }
+
+/* ---- Capability map matrix --------------------------------------------- */
+.m5-matrix-wrap { overflow-x: auto; margin-top: 0.5rem; }
+.m5-matrix { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.m5-matrix th, .m5-matrix td { padding: 0.4rem 0.5rem; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.m5-matrix th { color: var(--text-muted); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.m5-col-task, .m5-row-task { position: sticky; left: 0; background: var(--surface-raised); font-weight: 600; color: var(--text-bright); }
+.m5-col-model { text-align: center; }
+.m5-cell { text-align: center; }
+
+.m5-badge { display: inline-block; padding: 0.12rem 0.45rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; line-height: 1.4; }
+.m5-badge-viable { background: var(--status-ok); color: var(--on-accent); }
+.m5-badge-marginal { background: var(--status-warn); color: var(--on-accent); }
+.m5-badge-notviable { background: var(--status-crit); color: var(--on-accent); }
+.m5-badge-unknown { background: var(--border); color: var(--text-muted); }
+
+.m5-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0.4rem 0 0.2rem; }
+.m5-legend-note { color: var(--text-muted); font-size: 0.75rem; }
+
+/* ---- Findings ---------------------------------------------------------- */
+.m5-findings { margin: 0.5rem 0; padding-left: 1.1rem; line-height: 1.5; font-size: 0.88rem; }
+.m5-findings li { margin-bottom: 0.45rem; }
+.m5-findings strong { color: var(--text-bright); }
+.m5-generated { margin-top: 0.75rem; padding: 0.6rem 0.75rem; background: var(--surface-overlay); border-left: 3px solid var(--accent); border-radius: 4px; }
+.m5-generated-head { font-weight: 600; font-size: 0.8rem; color: var(--text-bright); margin-bottom: 0.3rem; }
+.m5-generated-list { margin: 0; padding-left: 1.1rem; font-size: 0.85rem; line-height: 1.5; }
+.m5-generated-list li { margin-bottom: 0.25rem; }
+.m5-generated-foot { margin-top: 0.4rem; font-size: 0.74rem; color: var(--text-muted); }
+.m5-generated-empty { border-left-color: var(--border); }
+
+/* ---- Routing ----------------------------------------------------------- */
+.m5-global-rule, .m5-rule-line { font-size: 0.84rem; line-height: 1.5; margin-bottom: 0.4rem; color: var(--text); }
+.m5-global-rule strong, .m5-rule-line strong { color: var(--text-bright); }
+.m5-profiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem; margin: 0.6rem 0; }
+.m5-profile { background: var(--surface-overlay); border-radius: 5px; padding: 0.5rem 0.6rem; }
+.m5-profile-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
+.m5-profile-name { font-weight: 600; color: var(--text-bright); font-size: 0.85rem; }
+.m5-profile-meta { font-size: 0.72rem; color: var(--text-muted); }
+.m5-profile-role { font-size: 0.78rem; color: var(--text); margin-top: 0.2rem; line-height: 1.4; }
+.m5-route-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
+.m5-route-local { background: var(--status-ok); color: var(--on-accent); }
+.m5-route-escalate { background: var(--status-crit); color: var(--on-accent); }
+.m5-route-explore { background: var(--status-warn); color: var(--on-accent); }
+
+/* ---- Models card (downloaded vs loaded) -------------------------------- */
+.m5-model-counts { font-size: 0.82rem; color: var(--text-muted); margin: 0.25rem 0 0.5rem; }
+.m5-model-list { display: flex; flex-direction: column; gap: 0.3rem; }
+.m5-model-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; font-size: 0.84rem; padding: 0.25rem 0; border-bottom: 1px solid var(--border); }
+.m5-model-row:last-child { border-bottom: none; }
+.m5-model-name { font-weight: 500; color: var(--text-bright); display: flex; align-items: baseline; gap: 0.35rem; }
+.m5-model-dot { font-size: 0.9em; }
+.m5-model-dot-loaded { color: var(--status-ok); }
+.m5-model-dot-disk { color: var(--text-muted); }
+.m5-model-details { display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; color: var(--text-muted); font-size: 0.78rem; }
+.m5-model-meta { color: var(--text-muted); }
+.m5-model-badge { font-size: 0.68rem; padding: 0.08rem 0.35rem; }
+
+/* ---- Usage metrics card (aggregate + per-model) ------------------------ */
+.m5-usage-totals { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 0.4rem 0 0.75rem; }
+.m5-usage-stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.m5-usage-num { font-size: 1.4rem; font-weight: 700; color: var(--text-bright); line-height: 1.1; font-variant-numeric: tabular-nums; }
+.m5-usage-lbl { font-size: 0.7rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+.m5-usage-table-wrap { overflow-x: auto; margin: 0.25rem 0 0.5rem; }
+.m5-usage-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.m5-usage-table th { text-align: right; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); }
+.m5-usage-table th:first-child { text-align: left; }
+.m5-usage-table td { padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border); text-align: right; font-variant-numeric: tabular-nums; }
+.m5-usage-table tr:last-child td { border-bottom: none; }
+.m5-usage-model { text-align: left !important; font-weight: 500; color: var(--text-bright); font-family: var(--font-mono); font-size: 0.78rem; }
+.m5-usage-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.m5-usage-chip { display: inline-block; font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 4px; background: var(--surface-overlay); border: 1px solid var(--border); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.m5-usage-chip-warn { border-color: var(--status-warn); color: var(--status-warn); }
+.m5-usage-foot { margin-top: 0.5rem; font-size: 0.72rem; color: var(--text-muted); }

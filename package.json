@@ -1,0 +1,40 @@
+{
+  "name": "heimdall",
+  "version": "1.0.0",
+  "description": "Self-hosted observability and operator dashboard for the Grimnir personal-AI ecosystem.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "collect": "node src/collector.js",
+    "boot-check": "node src/boot-check.js",
+    "maintain": "node src/maintain.js",
+    "test": "node --test test/*.test.js && npm run test:agent",
+    "test:agent": "cd agent && python3 -m pytest -q",
+    "lint": "eslint ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Magnus-Gille/heimdall.git"
+  },
+  "keywords": ["monitoring", "observability", "self-hosted", "fastify", "htmx"],
+  "author": "Magnus Gille",
+  "license": "MIT",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Magnus-Gille/heimdall/issues"
+  },
+  "homepage": "https://github.com/Magnus-Gille/heimdall#readme",
+  "dependencies": {
+    "@fastify/rate-limit": "^10.3.0",
+    "ajv": "^8.20.0",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^12.8.0",
+    "fastify": "^5.8.2",
+    "marked": "^17.0.6",
+    "sanitize-html": "^2.17.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0"
+  }
+}

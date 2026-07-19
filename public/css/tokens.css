@@ -1,0 +1,165 @@
+/* ============================================================================
+   tokens.css — Heimdall v2 design tokens
+   Three layers: primitives → semantic → (components consume semantic only).
+   Themes swap the SEMANTIC layer; primitives are the raw palette.
+   Status color is ONE axis and is ALWAYS paired with shape + text in markup
+   (WCAG 1.4.1 — never color alone). See components.css .status-dot/.status-badge.
+   ========================================================================= */
+
+:root {
+  /* ---------- PRIMITIVES: Tokyo Night (the v1 dark palette, preserved) ---- */
+  --tn-bg:         #1a1b26;
+  --tn-bg-card:    #24283b;
+  --tn-bg-raised:  #2f3350;
+  --tn-text:       #c0caf5;
+  --tn-text-muted: #7e87b3; /* nudged brighter than v1 #565f89 for AA contrast */
+  --tn-text-bright:#e0e6ff;
+  --tn-border:     #3b4261;
+  --tn-border-2:   #4a5178;
+  --tn-green:      #9ece6a;
+  --tn-amber:      #e0af68;
+  --tn-red:        #f7768e;
+  --tn-blue:       #7aa2f7;
+  --tn-purple:     #bb9af7;
+  --tn-cyan:       #7dcfff;
+  --tn-grey:       #6b7394;
+
+  /* ---------- SEMANTIC (dark = default) ---------------------------------- */
+  --surface-base:    var(--tn-bg);
+  --surface-raised:  var(--tn-bg-card);
+  --surface-overlay: var(--tn-bg-raised);
+  --border:          var(--tn-border);
+  --border-strong:   var(--tn-border-2);
+
+  --text:        var(--tn-text);
+  --text-muted:  var(--tn-text-muted);
+  --text-bright: var(--tn-text-bright);
+  --on-accent:   #14151f;
+
+  --accent:      var(--tn-blue);
+  --accent-2:    var(--tn-purple);
+  --link:        var(--tn-blue);
+
+  /* status palette (semantic) */
+  --status-ok:    var(--tn-green);
+  --status-warn:  var(--tn-amber);
+  --status-crit:  var(--tn-red);
+  --status-info:  var(--tn-blue);
+  --status-stale: var(--tn-grey);
+
+  /* status tints for badge/row backgrounds */
+  --status-ok-bg:    color-mix(in srgb, var(--status-ok) 16%, transparent);
+  --status-warn-bg:  color-mix(in srgb, var(--status-warn) 18%, transparent);
+  --status-crit-bg:  color-mix(in srgb, var(--status-crit) 18%, transparent);
+  --status-info-bg:  color-mix(in srgb, var(--status-info) 16%, transparent);
+  --status-stale-bg: color-mix(in srgb, var(--status-stale) 16%, transparent);
+
+  --track:       color-mix(in srgb, var(--text-muted) 28%, transparent);
+
+  /* ---------- SPACING (4px base) ---------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  /* ---------- TYPE ------------------------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+  --text-xs:   0.75rem;
+  --text-sm:   0.8125rem;
+  --text-base: 0.9375rem;  /* 15px — dense but readable */
+  --text-lg:   1.125rem;
+  --text-xl:   1.375rem;
+  --text-2xl:  1.75rem;
+  --text-kpi:  2rem;        /* big numerals — overview glanceability */
+  --leading:   1.5;
+  --weight-med: 550;
+  --weight-bold: 700;
+
+  /* ---------- RADII / ELEVATION ----------------------------------------- */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   14px;
+  --radius-pill: 999px;
+  --shadow-card: 0 1px 3px rgb(0 0 0 / 0.25), 0 1px 2px rgb(0 0 0 / 0.18);
+  --shadow-pop:  0 6px 20px rgb(0 0 0 / 0.35);
+
+  /* ---------- LAYOUT DIMENSIONS ----------------------------------------- */
+  /* --header-height: approximate height of .app-header (sticky, top:0).
+     Derived: ~40px content row + 0.75rem padding-bottom + 0.5rem buffer ≈ 3rem.
+     Kept for any element needing to offset below the sticky header. */
+  --header-height: 3rem;
+
+  /* ---------- MOTION ----------------------------------------------------- */
+  --t-fast: 120ms ease;
+  --t-med:  220ms ease;
+}
+
+/* ---------- LIGHT THEME (explicit toggle) -------------------------------- */
+[data-theme="light"] {
+  --surface-base:    #eef0f6;
+  --surface-raised:  #ffffff;
+  --surface-overlay: #f5f6fb;
+  --border:          #d3d7e3;
+  --border-strong:   #bcc2d4;
+
+  --text:        #1a1b26;
+  --text-muted:  #5b6280;
+  --text-bright: #0c0d16;
+  --on-accent:   #ffffff;
+
+  --accent:      #3b6fcf;
+  --accent-2:    #7c3aed;
+  --link:        #3b6fcf;
+
+  --status-ok:    #2f8f3e;
+  --status-warn:  #b8860b;
+  --status-crit:  #d32f2f;
+  --status-info:  #3b6fcf;
+  --status-stale: #8a90a8;
+
+  --shadow-card: 0 1px 3px rgb(20 30 60 / 0.10), 0 1px 2px rgb(20 30 60 / 0.06);
+  --shadow-pop:  0 8px 24px rgb(20 30 60 / 0.16);
+}
+
+/* ---------- LIGHT THEME (system pref, when no explicit dark) ------------- */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --surface-base:    #eef0f6;
+    --surface-raised:  #ffffff;
+    --surface-overlay: #f5f6fb;
+    --border:          #d3d7e3;
+    --border-strong:   #bcc2d4;
+    --text:        #1a1b26;
+    --text-muted:  #5b6280;
+    --text-bright: #0c0d16;
+    --on-accent:   #ffffff;
+    --accent:      #3b6fcf;
+    --accent-2:    #7c3aed;
+    --link:        #3b6fcf;
+    --status-ok:    #2f8f3e;
+    --status-warn:  #b8860b;
+    --status-crit:  #d32f2f;
+    --status-info:  #3b6fcf;
+    --status-stale: #8a90a8;
+    --shadow-card: 0 1px 3px rgb(20 30 60 / 0.10), 0 1px 2px rgb(20 30 60 / 0.06);
+    --shadow-pop:  0 8px 24px rgb(20 30 60 / 0.16);
+  }
+}
+
+/* ---------- OPT-IN colorblind-safe (Wong) status palette ----------------- */
+/* Apply with <html data-status="wong">. Shapes+labels still carry meaning. */
+[data-status="wong"] {
+  --status-ok:    #009E73; /* bluish green */
+  --status-warn:  #E69F00; /* orange */
+  --status-crit:  #D55E00; /* vermillion */
+  --status-info:  #0072B2; /* blue */
+  --status-stale: #999999; /* grey */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --t-fast: 0ms; --t-med: 0ms; }
+}

@@ -1,0 +1,677 @@
+/* ============================================================================
+   projects.css — styles for the /projects v2 page and its fragment cards.
+   Ported from v1 public/style.css (.proj-*, .consol*, .synth-*, .connections-*
+   blocks), with the v1 palette vars remapped onto the v2 semantic tokens
+   (tokens.css):
+     --green    → --status-ok
+     --red      → --status-crit
+     --amber    → --status-warn
+     --bg-hover → --surface-overlay
+     --bg-card  → --surface-raised
+     --blue     → --accent
+   (--text, --text-muted, --text-bright, --border are identical across v1 and v2.)
+
+   A scoped alias block on .projects-page bridges the v1 color var names still
+   emitted by projectsListCard/consolidationHealthCard (the fragment renderers
+   are unchanged). This mirrors the pattern hugin.css uses for .hugin-panel.
+   ============================================================================ */
+
+/* Compatibility aliases: the v1 renderers (projectsListCard, consolidationHealthCard)
+   still emit var(--green|--amber|--red|--blue|--bg-card|--bg-hover). Alias them to
+   v2 semantic tokens, scoped to the page wrapper so /style.css is unaffected. */
+.projects-page {
+  --green:   var(--status-ok);
+  --amber:   var(--status-warn);
+  --red:     var(--status-crit);
+  --blue:    var(--accent);
+  --bg-card: var(--surface-raised);
+  --bg-hover: var(--surface-overlay);
+}
+
+/* ---- Page header --------------------------------------------------------- */
+
+.proj-page-header {
+  margin-bottom: 1.5rem;
+}
+
+.proj-page-header h1 {
+  color: var(--text-bright);
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.proj-page-sub {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* ---- Disk-projection status colours (used by projectsListCard) ---------- */
+
+.proj-ok { color: var(--status-ok); }
+.proj-warn { color: var(--status-warn); }
+.proj-critical { color: var(--status-crit); font-weight: 600; }
+
+/* ---- Group stats --------------------------------------------------------- */
+
+.proj-stats {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.proj-stat {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.proj-stat--active { color: var(--status-ok); }
+.proj-stat--blocked { color: var(--status-warn); }
+.proj-stat--attention { color: var(--status-warn); }
+
+/* ---- Empty state --------------------------------------------------------- */
+
+.proj-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: 3rem 1rem;
+  background: var(--surface-raised);
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+}
+
+/* ---- Group sections ------------------------------------------------------ */
+
+.proj-group {
+  margin-bottom: 1.25rem;
+}
+
+.proj-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-bright);
+  font-size: 0.95rem;
+  list-style: none;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.75rem;
+}
+
+.proj-group-header::-webkit-details-marker { display: none; }
+
+.proj-group-header::before {
+  content: '▸';
+  font-size: 0.7rem;
+  transition: transform 0.2s ease;
+  color: var(--text-muted);
+  width: 0.8rem;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.proj-group[open] > .proj-group-header::before {
+  transform: rotate(90deg);
+}
+
+.proj-group-header:hover {
+  color: var(--accent);
+}
+
+.proj-group-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.75rem;
+}
+
+.proj-group-count {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--surface-overlay);
+  padding: 0.1rem 0.55rem;
+  border-radius: 10px;
+  min-width: 1.4rem;
+  text-align: center;
+}
+
+.proj-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0;
+}
+
+/* ---- Project cards ------------------------------------------------------- */
+
+.proj-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  border-left: 3px solid transparent;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.proj-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.proj-card--blocked {
+  border-left-color: var(--status-warn);
+}
+
+.proj-card--attention {
+  border-left-color: var(--status-warn);
+}
+
+/* Compact card: the whole card is a <details>. Summary holds header + tagline. */
+details.proj-card--compact {
+  padding: 0.7rem 1rem 0.7rem 1rem;
+}
+
+details.proj-card--compact > .proj-card-summary {
+  cursor: pointer;
+  list-style: none;
+  display: block;
+}
+
+details.proj-card--compact > .proj-card-summary::-webkit-details-marker {
+  display: none;
+}
+
+details.proj-card--compact[open] {
+  padding-bottom: 1rem;
+}
+
+details.proj-card--compact[open] > .proj-card-summary {
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+details.proj-card--compact > .proj-card-body {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+/* Leaf card (no expandable body) — same padding as compact */
+.proj-card.proj-card--compact:not(details) {
+  padding: 0.7rem 1rem 0.7rem 1rem;
+}
+
+.proj-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+/* Compact header density */
+.proj-card--compact .proj-card-header {
+  margin-bottom: 0;
+}
+
+.proj-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.proj-name {
+  font-weight: 700;
+  color: var(--text-bright);
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.proj-updated {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+/* Lifecycle status dot (compact cards) */
+.proj-lifecycle-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.proj-lifecycle-dot.proj-active { background: var(--status-ok); }
+.proj-lifecycle-dot.proj-maintenance { background: var(--accent); }
+.proj-lifecycle-dot.proj-stopped { background: var(--text-muted); }
+.proj-lifecycle-dot.proj-completed { background: color-mix(in srgb, var(--status-ok) 80%, transparent); }
+.proj-lifecycle-dot.proj-archived { background: color-mix(in srgb, var(--text-muted) 60%, transparent); }
+
+/* ---- Badges ------------------------------------------------------------- */
+
+.blocker-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--status-warn) 20%, transparent);
+  color: var(--status-warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lifecycle-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.proj-active { background: color-mix(in srgb, var(--status-ok) 18%, transparent); color: var(--status-ok); }
+.proj-maintenance { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.proj-stopped { background: color-mix(in srgb, var(--text-muted) 18%, transparent); color: var(--text-muted); }
+.proj-completed { background: color-mix(in srgb, var(--status-ok) 14%, transparent); color: var(--status-ok); }
+.proj-archived { background: color-mix(in srgb, var(--text-muted) 14%, transparent); color: var(--text-muted); font-style: italic; }
+
+.attention-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--status-warn) 22%, transparent);
+  color: var(--status-warn);
+}
+
+.stale-badge {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 0.15rem 0.55rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ---- Vision tagline ------------------------------------------------------ */
+
+.proj-vision {
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  margin-top: 0.25rem;
+}
+
+.proj-card--compact .proj-vision {
+  margin-top: 0.3rem;
+  margin-bottom: 0;
+}
+
+/* ---- Card body ----------------------------------------------------------- */
+
+.proj-card-body {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.proj-card-body p {
+  margin-bottom: 0.3rem;
+}
+
+.proj-card-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- Current work -------------------------------------------------------- */
+
+.proj-current-work {
+  margin-bottom: 0.75rem;
+}
+
+/* ---- Bullet lists in cards ----------------------------------------------- */
+
+.proj-list {
+  margin: 0.25rem 0 0.5rem 1.25rem;
+  padding: 0;
+}
+
+.proj-list li {
+  margin-bottom: 0.2rem;
+  color: var(--text);
+}
+
+/* ---- Blockers callout ---------------------------------------------------- */
+
+.proj-blockers {
+  background: color-mix(in srgb, var(--status-warn) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-warn) 25%, transparent);
+  border-radius: 6px;
+  padding: 0.65rem 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.proj-blockers-label {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--status-warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.3rem;
+}
+
+.proj-blockers p,
+.proj-blockers li {
+  color: var(--text);
+}
+
+/* ---- Collapsible sections (Next Steps, Roadmap) -------------------------- */
+
+.proj-collapsible {
+  margin-bottom: 0.4rem;
+}
+
+.proj-collapsible-toggle {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  list-style: none;
+  user-select: none;
+  padding: 0.3rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.proj-collapsible-toggle::-webkit-details-marker { display: none; }
+
+.proj-collapsible-toggle::before {
+  content: '▸';
+  font-size: 0.6rem;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.proj-collapsible[open] > .proj-collapsible-toggle::before {
+  transform: rotate(90deg);
+}
+
+.proj-collapsible-toggle:hover {
+  color: var(--accent);
+}
+
+.proj-collapsible-body {
+  padding: 0.25rem 0 0.25rem 1rem;
+  border-left: 2px solid var(--border);
+  margin-left: 0.25rem;
+  font-size: 0.83rem;
+  color: var(--text);
+}
+
+/* ---- Summary fallback ---------------------------------------------------- */
+
+.proj-summary {
+  color: var(--text);
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.proj-stable {
+  color: var(--status-ok);
+}
+
+/* ---- Archived compact rows ----------------------------------------------- */
+
+.proj-archived-list {
+  padding: 0;
+}
+
+.proj-archived-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+  border-radius: 4px;
+}
+
+.proj-archived-row:hover {
+  background: var(--surface-overlay);
+}
+
+.proj-archived-row:not(:last-child) {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.proj-name-sm {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.proj-updated-sm {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  margin-left: auto;
+}
+
+/* ---- Project tree / hierarchy -------------------------------------------- */
+
+.proj-tree,
+.proj-category {
+  margin-bottom: 0.25rem;
+}
+
+.proj-card--tree-root,
+.proj-card--category {
+  border-left-width: 3px;
+}
+
+.proj-card--tree-root {
+  border-left-color: var(--accent);
+}
+
+.proj-card--category {
+  border-left-color: color-mix(in srgb, var(--text-muted) 40%, transparent);
+}
+
+.proj-tree-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.proj-tree-count {
+  font-weight: 500;
+}
+
+.proj-tree-child-age {
+  font-style: italic;
+}
+
+.proj-subtree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid color-mix(in srgb, var(--border) 50%, transparent);
+  margin-left: 0.35rem;
+}
+
+.proj-category-icon {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.proj-empty-category {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 0.5rem 0;
+}
+
+/* ---- Roadmap button ------------------------------------------------------ */
+
+.proj-roadmap-btn {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.proj-roadmap-btn:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* ---- Milestone chip ------------------------------------------------------ */
+
+.proj-milestone-chip {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 0.1rem 0.5rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--status-ok) 14%, transparent);
+  color: var(--status-ok);
+  white-space: nowrap;
+}
+
+.proj-milestone-date {
+  color: var(--text-muted);
+  font-size: 0.8em;
+  margin-right: 0.3em;
+}
+
+/* ---- AI Synthesis section (project cards) -------------------------------- */
+
+.synth-section {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  margin-bottom: 0.4rem;
+}
+
+.synth-section > .proj-collapsible-toggle {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
+}
+
+.synth-section > .proj-collapsible-toggle:hover {
+  color: var(--accent);
+}
+
+.synth-age {
+  font-size: 0.75em;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 0.4em;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.synth-summary,
+.synth-decisions,
+.synth-current-work {
+  font-size: 0.85em;
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.synth-decisions {
+  margin-bottom: 0.4rem;
+}
+
+/* ---- Cross-reference connections bar ------------------------------------- */
+
+.proj-connections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em;
+  margin-top: 0.6rem;
+  align-items: center;
+}
+
+.connections-label {
+  font-size: 0.75em;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-right: 0.1em;
+}
+
+.connection-chip {
+  font-size: 0.78em;
+  padding: 0.15em 0.55em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: default;
+  transition: background 0.1s, color 0.1s;
+}
+
+.connection-chip:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+/* ---- Consolidation health card ------------------------------------------ */
+
+.consolidation-health {
+  margin-top: 0.25rem;
+}
+
+.consolidation-status {
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.consolidation-stat {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.4rem;
+}
+
+/* ---- Responsive adjustments ---------------------------------------------- */
+
+@media (max-width: 768px) {
+  .proj-card {
+    padding: 1rem 1rem;
+  }
+
+  details.proj-card--compact,
+  .proj-card.proj-card--compact:not(details) {
+    padding: 0.65rem 0.85rem;
+  }
+
+  .proj-name {
+    font-size: 0.95rem;
+  }
+
+  .proj-card-header {
+    flex-wrap: wrap;
+  }
+
+  .proj-updated {
+    font-size: 0.7rem;
+  }
+}

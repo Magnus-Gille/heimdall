@@ -1,0 +1,32 @@
+[Unit]
+Description=Heimdall metric collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=heimdall
+WorkingDirectory=/home/heimdall/repos/heimdall
+ExecStart=/usr/bin/node src/collector.js
+Environment=NODE_ENV=production
+Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
+EnvironmentFile=-/home/heimdall/.heimdall/env
+
+# Sandboxing — collector needs SSH access and read access to Munin DB
+ProtectSystem=strict
+ReadWritePaths=/home/heimdall/.heimdall
+ReadOnlyPaths=/home/heimdall/repos/heimdall /home/heimdall/.munin-memory /home/heimdall/.ssh/heimdall_ed25519
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+SystemCallArchitectures=native

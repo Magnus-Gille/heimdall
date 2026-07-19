@@ -1,0 +1,114 @@
+/* ============================================================================
+   insights.css — styles for the /insights dashboard page.
+   Uses v2 semantic tokens from tokens.css. The .insights-page wrapper
+   provides scope for page-specific rules.
+   ============================================================================ */
+
+/* ---- Page header (mirrors .proj-page-header pattern from projects.css) ---- */
+
+.insights-page .proj-page-header h1 {
+  color: var(--text-bright);
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.insights-page .proj-page-sub {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* ---- KPI row -------------------------------------------------------------- */
+
+.insights-page .kpi-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+}
+
+/* ---- Self-Improvement Score value / delta --------------------------------- */
+
+.insights-sis-value {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--text-bright);
+  line-height: 1;
+}
+
+.insights-sis-label {
+  font-size: 1rem;
+  color: var(--text-muted);
+  margin-left: var(--space-2);
+}
+
+.insights-delta {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-left: var(--space-1);
+}
+
+.insights-delta.is-ok   { color: var(--status-ok); }
+.insights-delta.is-crit { color: var(--status-crit); }
+
+/* ---- Objective card ------------------------------------------------------- */
+
+.insights-objective {
+  padding: var(--space-2) 0;
+}
+
+.insights-obj-score {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.insights-obj-directive {
+  background: var(--surface-overlay);
+  border-left: 3px solid var(--accent);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  border-radius: 0 4px 4px 0;
+}
+
+.insights-obj-directive p {
+  margin: var(--space-2) 0 0;
+  color: var(--text);
+}
+
+.insights-obj-endpoints {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.8;
+}
+
+.insights-obj-endpoints code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--surface-overlay);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--accent);
+}
+
+.insights-obj-note {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ---- Chart wrappers (mirrors .consol-chart-wrap) -------------------------- */
+
+.insights-chart-wrap {
+  position: relative;
+  height: 260px;
+  margin-bottom: var(--space-4);
+}
+
+.insights-chart-wrap:last-child {
+  margin-bottom: 0;
+}
