@@ -14,6 +14,11 @@ Heimdall is designed for one trusted operator and does not provide built-in user
 
 Bearer tokens are mandatory for fleet, alert, and panel ingestion in real deployments. Use independent random tokens, avoid query-string credentials, and rotate a token after suspected exposure. Development-only insecure-loopback flags must not be used behind a proxy.
 
+Do not inspect service credentials with broad environment dumps. The
+allowlist-only diagnostics, coordinated multi-consumer rotation, live
+replacement/previous-token checks, and rollback procedure for alert ingest are
+documented in [`docs/alert-token-operations.md`](docs/alert-token-operations.md).
+
 Local operator endpoints and alert dismissal validate the socket peer and reject forwarded identity headers. Consequently, these operations do not work through a reverse proxy by design.
 
 The remote collector invokes SSH with strict host-key checking. Use a dedicated unprivileged account, a dedicated key, a pinned known-hosts file, and forced commands where practical.
