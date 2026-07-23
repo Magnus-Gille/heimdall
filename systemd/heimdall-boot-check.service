@@ -13,7 +13,7 @@ Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
 EnvironmentFile=-/home/heimdall/.heimdall/env
 
 # Sandboxing — needs DB write access and read access to the repo + network (no SSH).
-# Note: no MemoryDenyWriteExecute (node's JIT needs W^X), mirroring heimdall-collect.service.
+# Node's JIT requires executable memory; do not set MemoryDenyWriteExecute=yes.
 ProtectSystem=strict
 ReadWritePaths=/home/heimdall/.heimdall
 ReadOnlyPaths=/home/heimdall/repos/heimdall
