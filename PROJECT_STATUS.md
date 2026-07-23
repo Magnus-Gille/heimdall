@@ -2,6 +2,11 @@
 
 Heimdall is functional and actively used. The dashboard, collectors, fleet agent, descriptor contract, alert engine, and primary ecosystem integrations have automated coverage.
 
+Newly fired critical alerts use a persistent Ratatoskr delivery outbox. Active repeats are
+deduplicated, failures retain only a safe error class and retry time, and a resolved condition can
+notify again when it recurs. Delivery is opt-in through `HEIMDALL_NOTIFY_CHAT_ID` and at least once;
+the exact crash window is documented in `docs/architecture-v2.md`.
+
 For a new installation, the remaining work is deployment configuration rather than unfinished core functionality:
 
 - provide a service and fleet inventory;

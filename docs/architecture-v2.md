@@ -358,10 +358,19 @@ Ratatoskr renders `text` from the envelope when `text` is absent, dedups on `ded
 
 ### 6.2 Two alert sources, one table
 
-1. **Heimdall-derived (threshold):** the alert engine evaluates `descriptor.alerts.rules` and `metrics[].warn/crit` against `metrics`/`fleet_metrics` on each collector cycle. This *replaces* the copy-pasted "2-failure streak" logic with one generic evaluator reading declared `{ metric, op, value, streak, severity, title }`. On fire/clear it writes the `alerts` table and POSTs the envelope to Ratatoskr.
+1. **Heimdall-derived (threshold):** the alert engine evaluates `descriptor.alerts.rules` and `metrics[].warn/crit` against `metrics`/`fleet_metrics` on each collector cycle. This *replaces* the copy-pasted "2-failure streak" logic with one generic evaluator reading declared `{ metric, op, value, streak, severity, title }`. Fire/clear transitions are persisted in `alerts`. A newly fired **critical** row is a durable delivery outbox entry: the collector sends it once through Ratatoskr, stores success, and retries classified transport failures with bounded exponential backoff. Repeated observations reuse the active row and remain quiet; resolution plus recurrence creates a fresh row that can notify again. The migration marks pre-existing critical rows `backfilled` so rollout does not replay old incidents.
 2. **Service-pushed:** a service (or fleet agent) POSTs the envelope to **`POST /api/alerts`** directly; Heimdall persists it to the same `alerts` table keyed by `dedup_key`.
 
-Both land in one `alerts` table → one alert surface. This is purely additive to the current notify path: persist-then-forward.
+Both land in one `alerts` table → one alert surface. The operator path is
+persist-then-forward: dashboard state remains authoritative even while delivery is unavailable.
+Only safe failure classes and retry timestamps are stored; tokens, destinations, and raw
+transport errors are not persisted.
+
+Delivery is **at least once**, not exactly once: if Ratatoskr accepts a message and the collector
+exits before `notification_sent_at` commits, the next cycle can resend that one alert. Ratatoskr's
+current `/api/send` contract has no idempotency key, so Heimdall chooses the small bounded duplicate
+window over silently losing a critical notification. Steady-state repeats remain suppressed by the
+active alert row.
 
 Producers clear a service-pushed condition through the same authenticated endpoint with `{ "state": "resolved", "dedup_key": "..." }`. Resolution is idempotent and requires the stable key; a title is required only for `firing` envelopes.
 

@@ -175,6 +175,24 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_panels_service ON panels(service);
     `,
   },
+  {
+    // Critical-alert delivery outbox (#2). Delivery state lives on the alert row:
+    // active-row dedup therefore suppresses repeats, while resolve + recurrence
+    // creates a fresh pending row. Existing critical rows are marked backfilled
+    // so enabling the feature cannot replay every already-active incident.
+    version: 7,
+    sql: `
+      ALTER TABLE alerts ADD COLUMN notification_sent_at TEXT;
+      ALTER TABLE alerts ADD COLUMN notification_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE alerts ADD COLUMN notification_last_error TEXT;
+      ALTER TABLE alerts ADD COLUMN notification_next_attempt_at TEXT;
+      UPDATE alerts
+      SET notification_sent_at = 'backfilled'
+      WHERE severity = 'critical' AND resolved_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_alerts_notification_pending
+      ON alerts(severity, resolved_at, notification_sent_at, notification_next_attempt_at);
+    `,
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -334,10 +352,40 @@ function createAlert(db, host, category, severity, title, detail, opts = {}) {
     : db.prepare('SELECT id FROM alerts WHERE host = ? AND title = ? AND resolved_at IS NULL').get(host, title);
   if (existing) {
     // Refresh the active row so an escalation (e.g. warning→critical, or new
-    // detail) with the same identity is reflected — latest push wins.
-    db.prepare(
-      'UPDATE alerts SET host = ?, category = ?, severity = ?, title = ?, detail = ?, source = ? WHERE id = ?'
-    ).run(host, category, severity, title, detail || null, source, existing.id);
+    // detail) with the same identity is reflected — latest push wins. Crossing
+    // the critical boundary resets delivery state atomically in this same SQL
+    // statement; concurrent collector/ingest processes therefore cannot leave a
+    // warning marker attached to a newly critical row (or vice versa).
+    db.prepare(`
+      UPDATE alerts
+      SET host = @host,
+          category = @category,
+          severity = @severity,
+          title = @title,
+          detail = @detail,
+          source = @source,
+          notification_sent_at = CASE
+            WHEN severity <> @severity AND (severity = 'critical' OR @severity = 'critical')
+              THEN NULL ELSE notification_sent_at END,
+          notification_attempts = CASE
+            WHEN severity <> @severity AND (severity = 'critical' OR @severity = 'critical')
+              THEN 0 ELSE notification_attempts END,
+          notification_last_error = CASE
+            WHEN severity <> @severity AND (severity = 'critical' OR @severity = 'critical')
+              THEN NULL ELSE notification_last_error END,
+          notification_next_attempt_at = CASE
+            WHEN severity <> @severity AND (severity = 'critical' OR @severity = 'critical')
+              THEN NULL ELSE notification_next_attempt_at END
+      WHERE id = @id
+    `).run({
+      id: existing.id,
+      host,
+      category,
+      severity,
+      title,
+      detail: detail || null,
+      source,
+    });
     return existing.id;
   }
 
@@ -373,6 +421,41 @@ function resolveAlertById(db, id) {
     'UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL'
   ).run(new Date().toISOString(), id);
   return info.changes > 0;
+}
+
+/** Pending, retry-due critical alerts. Repeated active observations share one row. */
+function getPendingCriticalAlertNotifications(db, nowIso, limit = 3) {
+  return db.prepare(`
+    SELECT id, host, category, severity, title, detail, source,
+           notification_attempts
+    FROM alerts
+    WHERE resolved_at IS NULL
+      AND severity = 'critical'
+      AND notification_sent_at IS NULL
+      AND (notification_next_attempt_at IS NULL OR notification_next_attempt_at <= ?)
+    ORDER BY created_at ASC, id ASC
+    LIMIT ?
+  `).all(nowIso, limit);
+}
+
+function markCriticalAlertNotificationSent(db, id, sentAt) {
+  db.prepare(`
+    UPDATE alerts
+    SET notification_sent_at = ?,
+        notification_last_error = NULL,
+        notification_next_attempt_at = NULL
+    WHERE id = ?
+  `).run(sentAt, id);
+}
+
+function markCriticalAlertNotificationFailed(db, id, errorClass, nextAttemptAt) {
+  db.prepare(`
+    UPDATE alerts
+    SET notification_attempts = notification_attempts + 1,
+        notification_last_error = ?,
+        notification_next_attempt_at = ?
+    WHERE id = ?
+  `).run(errorClass, nextAttemptAt, id);
 }
 
 function insertServiceVersion(db, checkedAt, service, host, deployedCommit, latestCommit, commitsBehind) {
@@ -776,6 +859,9 @@ module.exports = {
   resolveAlertByDedupKey,
   acknowledgeAlert,
   resolveAlertById,
+  getPendingCriticalAlertNotifications,
+  markCriticalAlertNotificationSent,
+  markCriticalAlertNotificationFailed,
   insertServiceVersion,
   getLatestServiceVersions,
   getDriftHistory,

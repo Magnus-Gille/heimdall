@@ -1,37 +1,14 @@
 'use strict';
 
-function createAlert(db, host, category, severity, title, detail) {
-  const existing = db.prepare(
-    'SELECT id FROM alerts WHERE host = ? AND title = ? AND resolved_at IS NULL'
-  ).get(host, title);
-  if (existing) {
-    db.prepare('UPDATE alerts SET detail = ?, severity = ? WHERE id = ?')
-      .run(detail || null, severity, existing.id);
-    return existing.id;
-  }
-
-  const result = db.prepare(`
-    INSERT INTO alerts (created_at, host, category, severity, title, detail)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(new Date().toISOString(), host, category, severity, title, detail || null);
-  return result.lastInsertRowid;
-}
-
-function resolveAlert(db, host, title) {
-  db.prepare(
-    'UPDATE alerts SET resolved_at = ? WHERE host = ? AND title = ? AND resolved_at IS NULL'
-  ).run(new Date().toISOString(), host, title);
-}
-
-function acknowledgeAlert(db, alertId) {
-  db.prepare('UPDATE alerts SET acknowledged = 1 WHERE id = ?').run(alertId);
-}
-
-function getActiveAlerts(db) {
-  return db.prepare(
-    'SELECT * FROM alerts WHERE resolved_at IS NULL ORDER BY created_at DESC'
-  ).all();
-}
+// Keep legacy callers on one authoritative alert transition implementation.
+// This matters for notification state: every warning↔critical transition must
+// update the same durable outbox fields regardless of which collector raised it.
+const {
+  createAlert,
+  resolveAlert,
+  acknowledgeAlert,
+  getActiveAlerts,
+} = require('./db');
 
 const backupInfo = {
   'TM Backup': { desc: 'macOS Time Machine → NAS USB drive', schedule: 'automatic (macOS)', warnHours: 2, critHours: 6 },

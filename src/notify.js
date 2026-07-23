@@ -20,6 +20,9 @@ const { extractResultOutput } = require('./task-utils');
 const RATATOSKR_DEFAULT = 'http://127.0.0.1:3034/api/send';
 const MAX_PER_CYCLE = 3;
 const FETCH_TIMEOUT_MS = 8000;
+const ALERT_TEXT_MAX = 800;
+const ALERT_RETRY_BASE_MS = 60_000;
+const ALERT_RETRY_MAX_MS = 60 * 60_000;
 
 // --- DB helpers (ported from email.js) ---------------------------------------
 
@@ -87,10 +90,136 @@ async function sendTelegram(chatId, text) {
       body: JSON.stringify({ chat_id: chatId, text }),
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error(`ratatoskr ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(`ratatoskr ${res.status}`);
+      err.code = 'RATATOSKR_HTTP';
+      err.status = res.status;
+      throw err;
+    }
   } finally {
     clearTimeout(timer);
   }
+}
+
+// --- Critical infrastructure alerts -----------------------------------------
+
+function oneLine(value, max) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * Build bounded plain text for the private operator channel. Alert fields can
+ * originate in authenticated pushed envelopes, so collapse newlines before
+ * composing the message and keep the transport payload small.
+ */
+function buildCriticalAlertText(alert) {
+  const title = oneLine(alert && alert.title, 200) || 'Unknown alert';
+  const host = oneLine(alert && alert.host, 120) || 'unknown host';
+  const detail = oneLine(alert && alert.detail, 400);
+  let text = `[Grimnir alert] CRITICAL: ${title}\nHost: ${host}`;
+  if (detail) text += `\n${detail}`;
+  return text.slice(0, ALERT_TEXT_MAX);
+}
+
+function safeDeliveryError(err) {
+  if (err && err.code === 'RATATOSKR_HTTP' && Number.isInteger(err.status)) {
+    return `ratatoskr-http-${err.status}`;
+  }
+  if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) return 'timeout';
+  return 'transport-error';
+}
+
+function nextRetryAt(now, attemptsBeforeFailure) {
+  const exponent = Math.min(Math.max(attemptsBeforeFailure, 0), 6);
+  const delay = Math.min(ALERT_RETRY_BASE_MS * (2 ** exponent), ALERT_RETRY_MAX_MS);
+  return new Date(now.getTime() + delay).toISOString();
+}
+
+function parseChatId(supplied) {
+  if (supplied === null || supplied === undefined || supplied === '') return null;
+  if (typeof supplied === 'number') {
+    return Number.isSafeInteger(supplied) && supplied !== 0 ? supplied : null;
+  }
+  const raw = String(supplied).trim();
+  if (!/^-?\d+$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed !== 0 ? parsed : null;
+}
+
+function configuredChatId(deps) {
+  const supplied = Object.prototype.hasOwnProperty.call(deps, 'chatId')
+    ? deps.chatId
+    : process.env.HEIMDALL_NOTIFY_CHAT_ID;
+  return parseChatId(supplied);
+}
+
+/**
+ * Deliver retry-due active critical alerts through the existing Ratatoskr
+ * transport. The database row is the durable outbox:
+ *   - active-row dedup means repeated observations do not resend;
+ *   - failure leaves the row retryable with persistent exponential backoff;
+ *   - resolve + recurrence creates a fresh pending row.
+ *
+ * No destination, token, raw transport exception, or alert detail is logged.
+ */
+async function sendCriticalAlertNotifications(db, deps = {}) {
+  const {
+    getPendingCriticalAlertNotifications,
+    markCriticalAlertNotificationSent,
+    markCriticalAlertNotificationFailed,
+  } = require('./db');
+  const nowValue = typeof deps.now === 'function' ? deps.now() : new Date();
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  const nowIso = now.toISOString();
+  const limit = Number.isSafeInteger(deps.limit) && deps.limit > 0
+    ? Math.min(deps.limit, MAX_PER_CYCLE)
+    : MAX_PER_CYCLE;
+  const pending = getPendingCriticalAlertNotifications(db, nowIso, limit);
+  if (pending.length === 0) return { sent: 0, failed: 0, pending: 0 };
+
+  const chatId = configuredChatId(deps);
+  const send = typeof deps.sendTelegram === 'function' ? deps.sendTelegram : sendTelegram;
+  const onError = typeof deps.onError === 'function'
+    ? deps.onError
+    : (alertId, errorClass) =>
+      console.error(`  Critical alert notification failed for alert ${alertId}: ${errorClass}`);
+  let sent = 0;
+  let failed = 0;
+
+  for (const alert of pending) {
+    if (chatId === null) {
+      markCriticalAlertNotificationFailed(
+        db,
+        alert.id,
+        'not-configured',
+        nextRetryAt(now, alert.notification_attempts || 0),
+      );
+      failed += 1;
+      continue;
+    }
+    try {
+      await send(chatId, buildCriticalAlertText(alert));
+      markCriticalAlertNotificationSent(db, alert.id, nowIso);
+      sent += 1;
+    } catch (err) {
+      const errorClass = safeDeliveryError(err);
+      markCriticalAlertNotificationFailed(
+        db,
+        alert.id,
+        errorClass,
+        nextRetryAt(now, alert.notification_attempts || 0),
+      );
+      onError(alert.id, errorClass);
+      failed += 1;
+    }
+  }
+
+  return {
+    sent,
+    failed,
+    pending: pending.length,
+    ...(chatId === null ? { skipped: true } : {}),
+  };
 }
 
 // --- Main entry point --------------------------------------------------------
@@ -108,8 +237,8 @@ async function sendTaskNotifications(db) {
     console.log('  Notifications: HEIMDALL_NOTIFY_CHAT_ID not set — skipping');
     return { sent: 0, failed: 0, skipped: true };
   }
-  const chatId = parseInt(chatIdRaw, 10);
-  if (isNaN(chatId)) {
+  const chatId = parseChatId(chatIdRaw);
+  if (chatId === null) {
     console.error('  Notifications: HEIMDALL_NOTIFY_CHAT_ID is not a valid integer — skipping');
     return { sent: 0, failed: 0, skipped: true };
   }
@@ -161,4 +290,14 @@ async function sendTaskNotifications(db) {
 
 // sendTelegram is exported so infrastructure alerts (e.g. the boot health check) can
 // push ad-hoc Telegram messages via Ratatoskr without going through the Hugin-task path.
-module.exports = { sendTaskNotifications, buildNotifyText, markNotified, markNotifyFailed, sendTelegram };
+module.exports = {
+  sendTaskNotifications,
+  buildNotifyText,
+  markNotified,
+  markNotifyFailed,
+  sendTelegram,
+  buildCriticalAlertText,
+  sendCriticalAlertNotifications,
+  safeDeliveryError,
+  parseChatId,
+};

@@ -113,7 +113,12 @@ async function probeServiceWithRetry(svc, opts = {}) {
  * sent only when the condition first becomes active, not on every failed probe.
  */
 async function performBootCheck(db, timestamp, opts = {}) {
-  const { insertMetrics } = require('./db');
+  const {
+    insertMetrics,
+    markCriticalAlertNotificationSent,
+    markCriticalAlertNotificationFailed,
+  } = require('./db');
+  const { safeDeliveryError } = require('./notify');
   const { createAlert, resolveAlert } = require('./alerts');
   const {
     services = require('./drift').loadServiceRegistry(),
@@ -151,13 +156,21 @@ async function performBootCheck(db, timestamp, opts = {}) {
     const alreadyActive = !!db.prepare(
       'SELECT id FROM alerts WHERE host = ? AND title = ? AND resolved_at IS NULL'
     ).get(HOST, ALERT_TITLE);
-    createAlert(db, HOST, 'system', 'critical', ALERT_TITLE, message);
+    const alertId = createAlert(db, HOST, 'system', 'critical', ALERT_TITLE, message);
     if (notify && !alreadyActive) {
       try {
         await notify(message);
+        markCriticalAlertNotificationSent(db, alertId, new Date().toISOString());
         notified = true;
       } catch (err) {
-        console.error('  Boot check: Telegram alert failed:', (err && err.message) || err);
+        const errorClass = safeDeliveryError(err);
+        markCriticalAlertNotificationFailed(
+          db,
+          alertId,
+          errorClass,
+          new Date(Date.now() + 60_000).toISOString(),
+        );
+        console.error(`  Boot check: Telegram alert failed: ${errorClass}`);
       }
     }
   } else {
@@ -175,7 +188,7 @@ async function performBootCheck(db, timestamp, opts = {}) {
 
 async function run() {
   const { openDatabase } = require('./db');
-  const { sendTelegram } = require('./notify');
+  const { sendTelegram, parseChatId } = require('./notify');
   const db = openDatabase(); // DB_PATH comes from the systemd unit's Environment=
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Starting boot health check`);
@@ -184,8 +197,8 @@ async function run() {
     let notify = null;
     const chatIdRaw = process.env.HEIMDALL_NOTIFY_CHAT_ID;
     if (chatIdRaw) {
-      const chatId = parseInt(chatIdRaw, 10);
-      if (!Number.isNaN(chatId)) notify = (text) => sendTelegram(chatId, text);
+      const chatId = parseChatId(chatIdRaw);
+      if (chatId !== null) notify = (text) => sendTelegram(chatId, text);
       else console.error('  Boot check: HEIMDALL_NOTIFY_CHAT_ID is not a valid integer — Telegram disabled');
     } else {
       console.log('  Boot check: HEIMDALL_NOTIFY_CHAT_ID not set — Telegram disabled');

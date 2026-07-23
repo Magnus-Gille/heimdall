@@ -861,15 +861,18 @@ The bind address is configurable via environment variable:
 - `HEIMDALL_BIND=192.0.2.10` — Tailscale IP, accessible only from tailnet (default in systemd unit)
 - `HEIMDALL_BIND=127.0.0.1` — Localhost only, for development or if a reverse proxy is used
 
-#### Task notification environment variables (Telegram via ratatoskr)
+#### Operator notification environment variables (Telegram via ratatoskr)
 
 Email-based notifications were retired: `service-account@example.com` hit an AADSTS70000
 service-abuse block and `NOTIFY_ENABLED=false` was already set. Task-completion
-notifications now go through ratatoskr (`POST /api/send`, loopback, no auth required).
+notifications now go through ratatoskr (`POST /api/send`, loopback by default). The same
+private path delivers newly fired critical alerts. Critical delivery state is durable in
+SQLite: active-row dedup suppresses repeats, safe classified failures retry with backoff,
+and a resolved condition may notify again if it recurs.
 
 | Variable | Required | Description |
 |---|---|---|
-| `HEIMDALL_NOTIFY_CHAT_ID` | Yes (to enable) | Telegram chat_id (integer). Unset → notifications silently skipped (fail-safe). |
+| `HEIMDALL_NOTIFY_CHAT_ID` | Yes (to enable) | Telegram chat_id (integer) for task and critical-alert notifications. Missing/invalid configuration leaves critical delivery pending with an observable safe error class. |
 | `RATATOSKR_URL` | No | ratatoskr endpoint. Default: `http://127.0.0.1:3034/api/send`. |
 | `RATATOSKR_SEND_API_KEY` | No | Bearer token forwarded to ratatoskr (forward-compat with ratatoskr auth). |
 

@@ -27,7 +27,7 @@ Grimnir is the system-level architecture repository; Brokkr describes the hardwa
 - CPU, memory, disk, temperature, task, deployment-drift, backup, MCP, and inference views.
 - Declarative alert thresholds with streak-based fire and resolve behavior.
 - SQLite event history and a generic service detail renderer.
-- Optional Telegram notifications through Ratatoskr.
+- Optional task and newly-fired critical-alert notifications through Ratatoskr.
 - Optional Hugin recovery-task submission, disabled by default.
 
 ## Quick start
@@ -62,6 +62,9 @@ Important settings:
 - `GRIMNIR_SERVICES_JSON` selects the ecosystem registry source.
 - `HEIMDALL_FLEET_TOKEN` authenticates `/api/fleet/push`.
 - `HEIMDALL_ALERT_TOKEN` authenticates `/api/alerts` ingestion.
+- `HEIMDALL_NOTIFY_CHAT_ID` enables task and critical-alert delivery through Ratatoskr.
+- `RATATOSKR_URL` stays loopback by default; non-loopback deployments should set
+  `RATATOSKR_SEND_API_KEY`.
 - `HEIMDALL_STORAGE_SSH_HOST` and `HEIMDALL_STORAGE_SSH_USER` enable remote storage probes.
 - `HOMESERVER_GATEWAY_URL` and `HOMESERVER_GATEWAY_API_KEY` enable local-inference panels.
 - `HEIMDALL_SELF_HEAL_ENABLED=1` opts into recovery-task submission.

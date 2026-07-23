@@ -1,6 +1,7 @@
 'use strict';
 
 const { execSync } = require('child_process');
+const { createAlert, resolveAlert } = require('./db');
 
 function logEvent(db, host, category, severity, title, detail, source) {
   const timestamp = new Date().toISOString();
@@ -99,30 +100,28 @@ function checkThresholds(db, host, metrics) {
       logEvent(db, host, 'anomaly', 'critical',
         `${metric} critical: ${value}${thresholds.unit}`,
         `Value ${value} exceeds critical threshold ${thresholds.critical}`, 'collector');
-      // Create or keep alert
-      db.prepare(`
-        INSERT INTO alerts (created_at, host, category, severity, title, detail)
-        SELECT ?, ?, 'anomaly', 'critical', ?, ?
-        WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE host = ? AND title = ? AND resolved_at IS NULL)
-      `).run(new Date().toISOString(), host, alertTitle,
+      createAlert(
+        db,
+        host,
+        'anomaly',
+        'critical',
+        alertTitle,
         `${value}${thresholds.unit} >= ${thresholds.critical}${thresholds.unit}`,
-        host, alertTitle);
+      );
     } else if (value >= thresholds.warning) {
       logEvent(db, host, 'anomaly', 'warning',
         `${metric} warning: ${value}${thresholds.unit}`,
         `Value ${value} exceeds warning threshold ${thresholds.warning}`, 'collector');
-      db.prepare(`
-        INSERT INTO alerts (created_at, host, category, severity, title, detail)
-        SELECT ?, ?, 'anomaly', 'warning', ?, ?
-        WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE host = ? AND title = ? AND resolved_at IS NULL)
-      `).run(new Date().toISOString(), host, alertTitle,
+      createAlert(
+        db,
+        host,
+        'anomaly',
+        'warning',
+        alertTitle,
         `${value}${thresholds.unit} >= ${thresholds.warning}${thresholds.unit}`,
-        host, alertTitle);
+      );
     } else {
-      // Resolve if value back to normal
-      db.prepare(`
-        UPDATE alerts SET resolved_at = ? WHERE host = ? AND title = ? AND resolved_at IS NULL
-      `).run(new Date().toISOString(), host, alertTitle);
+      resolveAlert(db, host, alertTitle);
     }
   }
 }
