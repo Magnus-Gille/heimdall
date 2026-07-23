@@ -12,7 +12,8 @@ Environment=NODE_ENV=production
 Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
 EnvironmentFile=-/home/heimdall/.heimdall/env
 
-# Sandboxing — collector needs SSH access and read access to Munin DB
+# Sandboxing — collector needs SSH access and read access to Munin DB.
+# Node's JIT requires executable memory; do not set MemoryDenyWriteExecute=yes.
 ProtectSystem=strict
 ReadWritePaths=/home/heimdall/.heimdall
 ReadOnlyPaths=/home/heimdall/repos/heimdall /home/heimdall/.munin-memory /home/heimdall/.ssh/heimdall_ed25519
