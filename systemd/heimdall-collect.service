@@ -5,18 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=heimdall
-WorkingDirectory=/home/heimdall/repos/heimdall
+User=<user>
+WorkingDirectory=<deploy-path>
 ExecStart=/usr/bin/node src/collector.js
 Environment=NODE_ENV=production
-Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
-EnvironmentFile=-/home/heimdall/.heimdall/env
+Environment=DB_PATH=<home>/.heimdall/heimdall.db
+EnvironmentFile=<home>/.heimdall/env
 
 # Sandboxing — collector needs SSH access and read access to Munin DB.
 # Node's JIT requires executable memory; do not set MemoryDenyWriteExecute=yes.
 ProtectSystem=strict
-ReadWritePaths=/home/heimdall/.heimdall
-ReadOnlyPaths=/home/heimdall/repos/heimdall /home/heimdall/.munin-memory /home/heimdall/.ssh/heimdall_ed25519
+ReadWritePaths=<home>/.heimdall
+ReadOnlyPaths=<deploy-path> <home>/.munin-memory <home>/.ssh/heimdall_ed25519
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only

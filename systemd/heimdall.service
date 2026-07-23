@@ -4,27 +4,27 @@ After=network.target
 
 [Service]
 Type=simple
-User=heimdall
-WorkingDirectory=/home/heimdall/repos/heimdall
+User=<user>
+WorkingDirectory=<deploy-path>
 # Free port 3033 from any stale Heimdall server before (re)starting (issue #8).
 # The helper kills ONLY a process verified to be this repo's node src/server.js
 # (cwd + cmdline + listening on the port) and waits for the port to actually
 # free — closing the TOCTOU race a bare `pkill` leaves open. `-` prefix is a
 # backstop so a missing script never blocks startup; the helper itself exits 0.
-ExecStartPre=-/home/heimdall/repos/heimdall/scripts/clear-heimdall-port.sh
+ExecStartPre=-<deploy-path>/scripts/clear-heimdall-port.sh
 ExecStart=/usr/bin/node src/server.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=PORT=3033
-Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
-EnvironmentFile=-/home/heimdall/.heimdall/env
+Environment=DB_PATH=<home>/.heimdall/heimdall.db
+EnvironmentFile=<home>/.heimdall/env
 
 # Sandboxing. Node's JIT requires executable memory; do not set
 # MemoryDenyWriteExecute=yes.
 ProtectSystem=strict
-ReadWritePaths=/home/heimdall/.heimdall
-ReadOnlyPaths=/home/heimdall/repos/heimdall /home/heimdall/.munin-memory
+ReadWritePaths=<home>/.heimdall
+ReadOnlyPaths=<deploy-path> <home>/.munin-memory
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only

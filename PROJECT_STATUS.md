@@ -22,3 +22,8 @@ coordinated rotation helper. It updates the server and sender private secret
 paths together, verifies replacement acceptance and previous-token rejection,
 and rolls both services back without printing credential values if validation
 fails.
+
+The four declared Node systemd service templates use Grimnir's bounded runtime
+placeholders for the service account, home, and deploy target. They require the
+registered host-owned environment file and must be rendered and preflighted by
+Grimnir's `systemd_runtime` deployment path before installation.

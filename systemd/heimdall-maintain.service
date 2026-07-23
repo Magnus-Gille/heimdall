@@ -3,17 +3,18 @@ Description=Heimdall daily maintenance (aggregation + cleanup)
 
 [Service]
 Type=oneshot
-User=heimdall
-WorkingDirectory=/home/heimdall/repos/heimdall
+User=<user>
+WorkingDirectory=<deploy-path>
 ExecStart=/usr/bin/node src/maintain.js
 Environment=NODE_ENV=production
-Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
+Environment=DB_PATH=<home>/.heimdall/heimdall.db
+EnvironmentFile=<home>/.heimdall/env
 
 # Sandboxing — maintenance only needs DB write access.
 # Node's JIT requires executable memory; do not set MemoryDenyWriteExecute=yes.
 ProtectSystem=strict
-ReadWritePaths=/home/heimdall/.heimdall
-ReadOnlyPaths=/home/heimdall/repos/heimdall
+ReadWritePaths=<home>/.heimdall
+ReadOnlyPaths=<deploy-path>
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
