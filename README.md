@@ -49,7 +49,11 @@ Run the collector separately when you want live host data:
 npm run collect
 ```
 
-The production examples in `systemd/` run the web server and collection jobs independently. The Python push agent is documented in `agent/README.md`.
+The production templates in `systemd/` run the web server and collection jobs independently. Their
+active host facts use Grimnir's bounded `<user>`, `<home>`, and `<deploy-path>` placeholders; render
+and preflight them through Grimnir's `systemd_runtime` deployment contract rather than installing
+the templates byte-for-byte. Private environment values remain in the host-owned env file and are
+never rendered into a unit. The Python push agent is documented in `agent/README.md`.
 
 ## Configuration
 

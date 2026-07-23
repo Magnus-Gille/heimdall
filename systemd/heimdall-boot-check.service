@@ -5,18 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=heimdall
-WorkingDirectory=/home/heimdall/repos/heimdall
+User=<user>
+WorkingDirectory=<deploy-path>
 ExecStart=/usr/bin/node src/boot-check.js
 Environment=NODE_ENV=production
-Environment=DB_PATH=/home/heimdall/.heimdall/heimdall.db
-EnvironmentFile=-/home/heimdall/.heimdall/env
+Environment=DB_PATH=<home>/.heimdall/heimdall.db
+EnvironmentFile=<home>/.heimdall/env
 
 # Sandboxing — needs DB write access and read access to the repo + network (no SSH).
 # Node's JIT requires executable memory; do not set MemoryDenyWriteExecute=yes.
 ProtectSystem=strict
-ReadWritePaths=/home/heimdall/.heimdall
-ReadOnlyPaths=/home/heimdall/repos/heimdall
+ReadWritePaths=<home>/.heimdall
+ReadOnlyPaths=<deploy-path>
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
