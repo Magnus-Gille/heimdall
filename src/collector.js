@@ -599,6 +599,19 @@ async function run() {
     console.error('  Alert engine failed:', err.message);
   }
 
+  // 9c. Deliver newly fired critical alerts through the existing private
+  // Ratatoskr/Telegram path. Delivery state is persisted on each alert row, so
+  // repeats are quiet and transport failures retry on later collector cycles.
+  try {
+    const { sendCriticalAlertNotifications } = require('./notify');
+    const result = await sendCriticalAlertNotifications(db);
+    if (result.pending > 0) {
+      console.log(`  Critical notifications: ${result.sent} sent, ${result.failed} failed`);
+    }
+  } catch (err) {
+    console.error('  Critical notification check failed:', err.message);
+  }
+
   // 10. Sync alert state changes to Munin
   try {
     await syncAlertsToMunin(db);

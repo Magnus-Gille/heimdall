@@ -44,7 +44,10 @@ function makeDb() {
     CREATE TABLE alerts (
       id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, host TEXT NOT NULL,
       category TEXT NOT NULL, severity TEXT NOT NULL, title TEXT NOT NULL,
-      detail TEXT, resolved_at TEXT, acknowledged INTEGER DEFAULT 0
+      detail TEXT, resolved_at TEXT, acknowledged INTEGER DEFAULT 0,
+      dedup_key TEXT, source TEXT, notification_sent_at TEXT,
+      notification_attempts INTEGER NOT NULL DEFAULT 0,
+      notification_last_error TEXT, notification_next_attempt_at TEXT
     );
   `);
   return db;
@@ -189,6 +192,7 @@ async function testPerformSomeDown() {
   const alerts = activeAlerts(db);
   assert.strictEqual(alerts.length, 1, 'one dashboard alert raised');
   assert.ok(alerts[0].title.toLowerCase().includes('boot'));
+  assert.ok(alerts[0].notification_sent_at, 'immediate boot notification marks the durable outbox sent');
   assert.strictEqual(metricVal(db, 'boot_check_healthy').value, 0);
   assert.strictEqual(metricVal(db, 'boot_check_down_count').value, 1);
   console.log('  PASS: performBootCheck — a down service → alert + Telegram');
@@ -276,7 +280,7 @@ async function testPerformNoChatIdNoThrow() {
 
 async function testPerformNotifyFailureDoesNotAbort() {
   const db = makeDb();
-  const notify = async () => { throw new Error('ratatoskr 500'); };
+  const notify = async () => { throw new Error('private-token=do-not-store'); };
   const summary = await performBootCheck(db, '2026-06-20T00:00:00Z', {
     services: SAMPLE_SERVICES,
     probe: mockProbe({ hugin: false }),
@@ -284,7 +288,11 @@ async function testPerformNotifyFailureDoesNotAbort() {
   });
   assert.strictEqual(summary.alerted, true);
   assert.strictEqual(summary.notified, false, 'notify failure recorded as not-notified');
-  assert.strictEqual(activeAlerts(db).length, 1, 'dashboard alert raised despite Telegram failure');
+  const alerts = activeAlerts(db);
+  assert.strictEqual(alerts.length, 1, 'dashboard alert raised despite Telegram failure');
+  assert.strictEqual(alerts[0].notification_last_error, 'transport-error');
+  assert.ok(alerts[0].notification_next_attempt_at, 'failed boot delivery remains retryable');
+  assert.ok(!JSON.stringify(alerts[0]).includes('do-not-store'), 'raw transport error is not persisted');
   console.log('  PASS: performBootCheck — a Telegram failure never aborts the check');
   db.close();
 }

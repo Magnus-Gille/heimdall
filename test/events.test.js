@@ -48,6 +48,16 @@ describe('checkThresholds', () => {
     db.close();
   });
 
+  it('updates an active warning to critical so the critical transition can notify', () => {
+    checkThresholds(db, 'control-node', { cpu_temp: 68 });
+    checkThresholds(db, 'control-node', { cpu_temp: 80 });
+    const alerts = getActiveAlerts(db);
+    assert.strictEqual(alerts.length, 1);
+    assert.strictEqual(alerts[0].severity, 'critical');
+    assert.strictEqual(alerts[0].notification_sent_at, null);
+    db.close();
+  });
+
   it('resolves alert when value returns to normal', () => {
     checkThresholds(db, 'control-node', { cpu_temp: 80 });
     assert.strictEqual(getActiveAlerts(db).length, 1);

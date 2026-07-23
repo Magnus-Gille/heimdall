@@ -222,6 +222,20 @@ describe('sendTaskNotifications — chat_id configured', () => {
     await sendTaskNotifications(db);
     assert.equal(fetchCalls[0].url, 'http://localhost:9999/api/send');
   });
+
+  it('rejects a partially numeric chat id', async () => {
+    process.env.HEIMDALL_NOTIFY_CHAT_ID = '1234-not-a-chat';
+    delete require.cache[require.resolve(path.join(__dirname, '..', 'src', 'notify.js'))];
+    const { sendTaskNotifications } = require(path.join(__dirname, '..', 'src', 'notify.js'));
+    const db = makeDb([{
+      task_key: 'tasks/20240101-120000-test/status',
+      last_status: 'completed',
+      last_updated: new Date().toISOString(),
+    }]);
+    const result = await sendTaskNotifications(db);
+    assert.equal(result.skipped, true);
+    assert.equal(fetchCalls.length, 0);
+  });
 });
 
 // --- (d)+(e) fetch failure → does NOT throw, marks failed --------------------

@@ -64,7 +64,7 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 6); // bump when MIGRATIONS grows (v3 fleet, v4 service_snapshots, v5 alerts dedup_key/source, v6 panels)
+    assert.strictEqual(version, 7); // bump when MIGRATIONS grows (v7 critical-alert delivery outbox)
     db2.close();
   });
 });
