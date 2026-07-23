@@ -77,6 +77,8 @@ Heimdall is an operator tool, not a hardened multi-user SaaS application.
 - Remote SSH probes require strict host-key checking and a dedicated known-hosts file. Prefer a restricted account and command allowlist.
 
 See `SECURITY.md` for reporting and deployment guidance.
+For secret-safe alert-ingest diagnostics and coordinated token rotation, see
+[`docs/alert-token-operations.md`](docs/alert-token-operations.md).
 
 ## Service contract and API
 
