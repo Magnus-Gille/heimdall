@@ -19,8 +19,14 @@
 # and the mimir sync switched to a heartbeat stamp; both probe paths had drifted
 # here and produced false critical "Backup stale" alerts until 2026-06-13.
 
-# Section 0: CPU temp
-cat /sys/class/thermal/thermal_zone0/temp
+# Section 0: CPU temp — enumerate every thermal zone as `type<TAB>temp` (one
+# line each). Zone index (thermal_zone0, thermal_zone1, ...) is boot-order
+# assignment, not a stable identifier, so it must never be hard-coded here
+# (issue #5). src/metrics.js selects the CPU reading by declared zone type
+# via src/thermal.js — this loop MUST stay byte-for-byte in sync with
+# buildZoneEnumerateShellSnippet() in src/metrics.js; test/nas-collect-script.test.js
+# enforces that.
+for z in /sys/class/thermal/thermal_zone*/; do [ -d "$z" ] || continue; printf "%s\t%s\n" "$(cat "${z}type" 2>/dev/null)" "$(cat "${z}temp" 2>/dev/null)"; done
 echo ---
 # Section 1: meminfo
 cat /proc/meminfo
