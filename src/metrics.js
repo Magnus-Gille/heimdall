@@ -4,6 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const {
+  readCpuTempC,
+  buildZoneEnumerateShellSnippet,
+  parseZoneEnumerateOutput,
+  selectCpuTempC,
+} = require('./thermal');
 
 // Validate that a string is a safe hostname or IP (no shell metacharacters)
 function isValidHost(str) {
@@ -43,11 +49,12 @@ function collectLocalMetrics() {
   const metrics = {};
   const timestamp = new Date().toISOString();
 
-  // CPU temperature
-  try {
-    const raw = fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf8');
-    metrics.cpu_temp = { value: parseFloat(raw) / 1000, unit: 'celsius' };
-  } catch { metrics.cpu_temp = { value: null, unit: 'celsius' }; }
+  // CPU temperature — discovered from sysfs thermal zones, keyed on each
+  // zone's declared `type` (issue #5). Zone index is not a stable identifier,
+  // so it is never used for selection; see src/thermal.js and
+  // src/config/thermal-zone-types.js for the discovery/priority logic.
+  // `value` is null (never a false 0°C) whenever no zone can be resolved.
+  metrics.cpu_temp = { value: readCpuTempC().value, unit: 'celsius' };
 
   // Memory (including swap and available MB)
   try {
@@ -178,10 +185,13 @@ function parseSSHOutput(output) {
   const sections = output.split('---\n');
   const metrics = {};
 
-  // Section 0: CPU temp
+  // Section 0: CPU temp — one `type\ttemp` line per remote thermal zone (see
+  // buildZoneEnumerateShellSnippet / scripts/nas-collect.sh), selected the
+  // same way as the local read: by declared type, never by zone index
+  // (issue #5). value stays null (never a false 0°C) when nothing resolves.
   try {
-    const raw = safeFloat(sections[0]?.trim());
-    metrics.cpu_temp = { value: raw != null ? raw / 1000 : null, unit: 'celsius' };
+    const zones = parseZoneEnumerateOutput(sections[0]);
+    metrics.cpu_temp = { value: selectCpuTempC(zones).value, unit: 'celsius' };
   } catch { metrics.cpu_temp = { value: null, unit: 'celsius' }; }
 
   // Section 1: meminfo
@@ -394,7 +404,11 @@ const NAS_PROBE_PATHS = {
 
 function buildNASProbeCommand(paths = NAS_PROBE_PATHS) {
   return [
-    'cat /sys/class/thermal/thermal_zone0/temp',
+    // Section 0: enumerate every thermal zone as `type<TAB>temp` (one line
+    // each) instead of assuming thermal_zone0 is the CPU sensor — that index
+    // is not stable across reboots (issue #5). parseSSHOutput selects by
+    // declared type via the shared src/thermal.js logic.
+    buildZoneEnumerateShellSnippet(),
     'echo "---"',
     'cat /proc/meminfo',
     'echo "---"',
