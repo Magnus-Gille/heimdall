@@ -17,6 +17,7 @@ const { esc } = require('./util');
 const { kpi, emptyState } = require('./components');
 const { card, grid } = require('./cards');
 const { deriveMetrics, computeSis, buildObjective } = require('../insights');
+const { bandStatus, bandTitle, SIS_BAND, OUTCOME_QUALITY_BAND, FIRST_PASS_BAND } = require('../config/insight-thresholds');
 
 function insightsCssLink(gitVersion) {
   return `  <link rel="stylesheet" href="/css/insights.css?v=${esc(gitVersion || 'dev')}">`;
@@ -39,29 +40,26 @@ function renderKpiRow(latestRecord) {
   const m = deriveMetrics(latestRecord);
   const sis = computeSis(latestRecord);
   const sisStr = sis != null ? String(sis) : '—';
-  const sisState = sis != null ? (sis >= 75 ? 'ok' : sis >= 55 ? 'warn' : 'crit') : 'stale';
+  const sisState = bandStatus(sis, SIS_BAND);
 
   const outcomeStr = m.outcomeQuality !== null
     ? `${(m.outcomeQuality * 100).toFixed(1)}%`
     : '—';
-  const outcomeState = m.outcomeQuality !== null
-    ? (m.outcomeQuality >= 0.80 ? 'ok' : m.outcomeQuality >= 0.60 ? 'warn' : 'crit')
-    : 'stale';
+  const outcomeState = bandStatus(m.outcomeQuality, OUTCOME_QUALITY_BAND);
 
   const fpcStr = m.firstPassCorrectness !== null
     ? `${(m.firstPassCorrectness * 100).toFixed(1)}%`
     : '—';
-  const fpcState = m.firstPassCorrectness !== null
-    ? (m.firstPassCorrectness >= 0.70 ? 'ok' : m.firstPassCorrectness >= 0.50 ? 'warn' : 'crit')
-    : 'stale';
+  const fpcState = bandStatus(m.firstPassCorrectness, FIRST_PASS_BAND);
 
   const headline = latestRecord.headline || {};
   const commitsStr = headline.commits != null ? String(headline.commits) : '—';
 
+  const pct = (v) => `${Math.round(v * 100)}%`;
   return `<div class="kpi-row">
-    ${kpi(sisStr, 'Self-Improvement Score', sisState)}
-    ${kpi(outcomeStr, 'Outcome success', outcomeState)}
-    ${kpi(fpcStr, 'First-pass correctness', fpcState)}
+    ${kpi(sisStr, 'Self-Improvement Score', sisState, bandTitle(SIS_BAND))}
+    ${kpi(outcomeStr, 'Outcome success', outcomeState, bandTitle(OUTCOME_QUALITY_BAND, pct))}
+    ${kpi(fpcStr, 'First-pass correctness', fpcState, bandTitle(FIRST_PASS_BAND, pct))}
     ${kpi(commitsStr, 'Commits (latest week)', 'info')}
   </div>`;
 }

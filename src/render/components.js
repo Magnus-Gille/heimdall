@@ -80,9 +80,10 @@ function meterRow(label, valueText, pct, state) {
   </div>`;
 }
 
-function kpi(value, label, state) {
+function kpi(value, label, state, title) {
   const cls = state ? ` is-${normState(state)}` : '';
-  return `<div class="kpi"><span class="kpi-val${cls}">${esc(value)}</span><span class="kpi-label">${esc(label)}</span></div>`;
+  const titleAttr = title ? ` title="${esc(title)}"` : '';
+  return `<div class="kpi"${titleAttr}><span class="kpi-val${cls}">${esc(value)}</span><span class="kpi-label">${esc(label)}</span></div>`;
 }
 
 function metricRow(label, value) {
