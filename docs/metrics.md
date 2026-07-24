@@ -21,3 +21,19 @@ policy exists. Heimdall shows them without inventing red/amber thresholds.
 
 There are no sampled Memory Health series today. Historical charts must not be
 rendered until the sampler and retention contract actually exist.
+
+# Insights KPI thresholds
+
+`src/config/insight-thresholds.js` is the runtime source of truth for the
+`/insights` KPI row. This section is its human-readable mirror.
+
+| Signal | OK | Warning | Critical / unknown |
+|---|---|---|---|
+| Self-Improvement Score | ≥75 | 55–74 | <55; missing is stale |
+| Outcome success | ≥80% | 60–79% | <60%; missing is stale |
+| First-pass correctness | ≥70% | 50–69% | <50%; missing is stale |
+| Commits (latest week) | Informational — no status band | — | missing shows as — |
+
+Unknown or calibrating values render as stale, never as good. Each KPI carries
+a tooltip stating its band, so the UI itself explains what good, degraded, and
+bad mean.
