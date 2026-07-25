@@ -18,6 +18,7 @@ const { aggregateCounts } = require('../fleet/liveness');
 const {
   servicesGridFragment, serviceView, isActionableServiceException,
 } = require('./service-page');
+const { driftStateFromRow } = require('../drift-compare');
 
 /**
  * Pure: roll fleet + services + alerts into the overview KPI view-model.
@@ -53,11 +54,18 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
     if (monitorable && v.state === 'crit') svcDown += 1;
     if (v.deploy && Number(v.deploy.drift) > 0) behindServices.add(s.service);
   }
+  // Drift is counted from the explicit state, never from the raw number. The old
+  // `b !== 0` test swept in the `-1` sentinel — which meant "these two values are
+  // not equal", including when one of them was never a commit — so five services
+  // whose drift is not measurable at all were counted as behind.
+  const unmeasurable = new Set();
   for (const ver of versions) {
-    const b = Number(ver.commits_behind);
-    if (Number.isFinite(b) && b !== 0) behindServices.add(ver.service);
+    const state = driftStateFromRow(ver);
+    if (state === 'drift') behindServices.add(ver.service);
+    else if (state === 'unknown') unmeasurable.add(ver.service);
   }
   const svcDrift = behindServices.size;
+  const svcUnmeasurable = unmeasurable.size;
   const svcTotal = snapshots.length;
 
   const count = Number(alertCount) || 0;
@@ -69,6 +77,9 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
   return {
     fleetOnline, fleetOffline, fleetStale, fleetTotal,
     svcOk, svcWarn, svcDown, svcTotal, svcDrift,
+    // A measurement gap is reported, but it is NOT an outage: it must not colour
+    // a KPI or trip the "Attention needed" banner.
+    svcUnmeasurable,
     alertCount: count, allHealthy,
   };
 }
@@ -126,25 +137,31 @@ function buildDeployRows(versions = []) {
     const deployed = v.deployed_commit || null;
     const latest = v.latest_commit || null;
     const raw = Number(v.commits_behind);
-    // Explicit null/undefined is "no count" — Number(null) is 0, so guard before the
-    // finite check, else an absent count would masquerade as a real "0 behind".
-    const hasCount = v.commits_behind != null && Number.isFinite(raw);
-    const behind = hasCount ? raw : 0;
-    // Mirror drift.js: a count exists only when BOTH deployed & latest are known.
-    let state;
-    if (!deployed || !latest) {
-      // nothing deployed, or the remote latest couldn't be fetched → can't compare
-      state = 'stale';
-    } else if (hasCount) {
-      // drift.js writes commits_behind = -1 for "behind, count unknown" — any
-      // non-zero value means GitHub is ahead, so treat it (not just >0) as drift.
-      state = behind !== 0 ? 'warn' : 'ok';
-    } else {
-      // both commits known but no count recorded → derive from prefix equality
-      const eq = deployed.startsWith(latest) || latest.startsWith(deployed);
-      state = eq ? 'ok' : 'warn';
-    }
-    return { service: v.service, host: v.host || null, deployed, latest, behind, state };
+    // A count exists only when it is a real, NON-NEGATIVE number. The old code
+    // accepted -1 here and rendered it as drift; -1 was never a measurement.
+    const hasCount = v.commits_behind != null && Number.isFinite(raw) && raw >= 0;
+    const behind = hasCount ? raw : null;
+
+    // One source of truth for the verdict (src/drift-compare.js), so the card,
+    // the KPI and the alert can never disagree about what a row means.
+    const drift = driftStateFromRow(v);
+    const state = drift === 'drift' ? 'warn'
+      : (drift === 'unknown' ? 'stale' : 'ok');
+
+    return {
+      service: v.service,
+      host: v.host || null,
+      deployed,
+      latest,
+      behind,
+      state,
+      drift,
+      // Why we cannot answer. Shown on the card so "unknown" is diagnosable
+      // rather than mysterious.
+      reason: drift === 'unknown'
+        ? (v.drift_reason || 'deploy drift is not measurable for this service')
+        : null,
+    };
   });
   const rank = { warn: 0, stale: 1, ok: 2 };
   return rows.sort((a, b) =>
@@ -156,9 +173,13 @@ function buildDeployRows(versions = []) {
 /** One compact deploy card: service name + drift badge + the running→latest commits. */
 function deployCard(r) {
   let badgeLabel;
-  if (r.state === 'warn') badgeLabel = r.behind > 0 ? `${r.behind} behind` : 'behind'; // -1 → count unknown
-  else if (r.state === 'ok') badgeLabel = 'up to date';
-  else badgeLabel = r.deployed ? 'unknown' : 'no data';  // deployed but latest unknown vs nothing deployed
+  if (r.drift === 'drift') badgeLabel = r.behind > 0 ? `${r.behind} behind` : 'behind';
+  else if (r.drift === 'ahead') badgeLabel = 'ahead of main';
+  else if (r.drift === 'up-to-date') badgeLabel = 'up to date';
+  // "not measurable" reads as an instrumentation gap; "unknown"/"no data" read
+  // like a problem with the service itself, which is what misled the operator.
+  else badgeLabel = 'not measurable';
+
   const commits = r.deployed
     ? `<div class="deploy-commits"><span class="commit">${esc(r.deployed)}</span>${
         r.latest && r.latest !== r.deployed
@@ -166,12 +187,14 @@ function deployCard(r) {
           : ''
       }</div>`
     : '';
+  const reason = r.reason ? `<div class="deploy-reason">${esc(r.reason)}</div>` : '';
   return `<div class="card">
     <div class="card-head">
       <span class="card-title">${esc(r.service)}</span>
       ${statusBadge(r.state, badgeLabel)}
     </div>
     ${commits}
+    ${reason}
     ${r.host ? `<div class="deploy-host mono">${esc(r.host)}</div>` : ''}
   </div>`;
 }
@@ -182,14 +205,63 @@ function deployCard(r) {
  */
 function deploysGridFragment(versions = [], opts = {}) {
   const rows = buildDeployRows(versions);
-  const visible = opts.exceptionsOnly ? rows.filter((r) => r.state === 'warn') : rows;
   if (!rows.length) {
     return grid([`<div class="card col-full">${emptyState('No deployment data yet')}</div>`]);
   }
+  if (!opts.exceptionsOnly) return grid(rows.map(deployCard));
+
+  // Default (exceptions) view: a card ONLY for what the owner can act on. The
+  // rest collapses to a single quiet line — present, countable, not shouting.
+  const visible = rows.filter((r) => r.state === 'warn');
+  const okCount = rows.filter((r) => r.state === 'ok').length;
+  const unknownCount = rows.filter((r) => r.state === 'stale').length;
+
+  const parts = [];
+  if (okCount) parts.push(`${okCount} up to date`);
+  if (unknownCount) parts.push(`${unknownCount} not measurable`);
+  const summary = parts.length
+    ? `<div class="card col-full deploy-summary muted">${esc(parts.join(' · '))}</div>`
+    : '';
+
   if (!visible.length) {
-    return grid([`<div class="card col-full">${emptyState('No deployment drift.', '✓')}</div>`]);
+    return grid([
+      `<div class="card col-full">${emptyState('No deployment drift.', '✓')}</div>`,
+      summary,
+    ].filter(Boolean));
   }
-  return grid(visible.map(deployCard));
+  return grid([...visible.map(deployCard), summary].filter(Boolean));
+}
+
+/**
+ * Jobs that RAN and reported findings.
+ *
+ * These are deliberately not alerts: nothing is broken, so paging on them would
+ * be the same "loud about the wrong thing" failure in a new costume. They are
+ * also deliberately not hidden — a finding count is the whole point of running
+ * an audit, and burying it behind a red "failed service" badge is why the live
+ * grimnir-validate output went unread.
+ */
+function findingsFromSnapshots(snapshots = []) {
+  const out = [];
+  for (const s of snapshots) {
+    const v = serviceView(s);
+    if (v.kind !== 'timer' || v.timerOutcome !== 'findings') continue;
+    out.push({ service: v.name, count: v.findings, lastRun: (v.timer && v.timer.lastRun) || null });
+  }
+  return out.sort((a, b) => a.service.localeCompare(b.service));
+}
+
+/** One compact line per job with findings. Renders nothing when there are none. */
+function findingsFragment(findings = []) {
+  if (!findings.length) return '';
+  const items = findings.map((f) => `<div class="card">
+    <div class="card-head">
+      <span class="card-title">${esc(f.service)}</span>
+      ${statusBadge('info', f.count != null ? `${f.count} findings` : 'findings')}
+    </div>
+    <div class="deploy-reason">Completed successfully. Review its report.</div>
+  </div>`);
+  return grid(items);
 }
 
 /** A section heading with an optional "view all →" affordance on the right. */
@@ -212,6 +284,7 @@ function overviewPage(gitVersion, deps = {}) {
   const { db, now = Date.now(), thresholds, snapshots = [], alertCount = 0, versions = [] } = deps;
   const machines = buildMachines(db, now, thresholds);
   const status = buildOverviewStatus({ machines, snapshots, alertCount, versions });
+  const findings = findingsFromSnapshots(snapshots);
 
   const content = `
     <div class="page-head">
@@ -233,6 +306,9 @@ function overviewPage(gitVersion, deps = {}) {
       ${servicesGridFragment(snapshots, { exceptionsOnly: true })}
     </div>
 
+    ${findings.length ? `${sectionHead('Findings')}
+    ${findingsFragment(findings)}` : ''}
+
     ${sectionHead('Deployment attention')}
     <div hx-get="/api/overview/deploys?mode=exceptions" hx-trigger="every 60s" hx-swap="innerHTML">
       ${deploysGridFragment(versions, { exceptionsOnly: true })}
@@ -250,4 +326,5 @@ function overviewPage(gitVersion, deps = {}) {
 module.exports = {
   buildOverviewStatus, overviewStatusFragment, overviewStatusSection,
   buildDeployRows, deploysGridFragment, overviewPage,
+  findingsFromSnapshots, findingsFragment,
 };

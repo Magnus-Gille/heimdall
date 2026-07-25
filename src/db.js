@@ -193,6 +193,31 @@ const MIGRATIONS = [
       ON alerts(severity, resolved_at, notification_sent_at, notification_next_attempt_at);
     `,
   },
+  {
+    // Alert observability + honest drift state.
+    //
+    // `alerts.last_observed_at` records the last time a condition was actually
+    // RE-ASSERTED (not merely when the alert was first raised). It is what lets
+    // alert-reaper.js close alerts whose host/metric series has disappeared —
+    // the zombie class that kept "mem_used_pct % threshold on huginmunin" firing
+    // after that host identity stopped reporting. Backfilled from created_at so
+    // existing rows have a defensible starting observation.
+    //
+    // `service_versions.drift_state` replaces the `commits_behind = -1` sentinel
+    // with an explicit 'up-to-date'|'drift'|'ahead'|'unknown', so an
+    // instrumentation failure (no .git in the deploy path, /health without a
+    // commit) can no longer be rendered or alerted as drift. `drift_reason`
+    // carries the human explanation for an unknown.
+    version: 8,
+    sql: `
+      ALTER TABLE alerts ADD COLUMN last_observed_at TEXT;
+      UPDATE alerts SET last_observed_at = created_at WHERE last_observed_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_alerts_observed ON alerts(last_observed_at) WHERE resolved_at IS NULL;
+
+      ALTER TABLE service_versions ADD COLUMN drift_state TEXT;
+      ALTER TABLE service_versions ADD COLUMN drift_reason TEXT;
+    `,
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -364,6 +389,7 @@ function createAlert(db, host, category, severity, title, detail, opts = {}) {
           title = @title,
           detail = @detail,
           source = @source,
+          last_observed_at = @observedAt,
           notification_sent_at = CASE
             WHEN severity <> @severity AND (severity = 'critical' OR @severity = 'critical')
               THEN NULL ELSE notification_sent_at END,
@@ -385,14 +411,19 @@ function createAlert(db, host, category, severity, title, detail, opts = {}) {
       title,
       detail: detail || null,
       source,
+      // Every re-assertion refreshes the observation stamp. This is the signal
+      // alert-reaper.js uses to tell a live alert from an orphaned one whose
+      // evaluator no longer runs (see src/alert-reaper.js).
+      observedAt: new Date().toISOString(),
     });
     return existing.id;
   }
 
+  const nowIso = new Date().toISOString();
   const result = db.prepare(`
-    INSERT INTO alerts (created_at, host, category, severity, title, detail, dedup_key, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(new Date().toISOString(), host, category, severity, title, detail || null, dedupKey, source);
+    INSERT INTO alerts (created_at, host, category, severity, title, detail, dedup_key, source, last_observed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(nowIso, host, category, severity, title, detail || null, dedupKey, source, nowIso);
   return result.lastInsertRowid;
 }
 
@@ -458,11 +489,13 @@ function markCriticalAlertNotificationFailed(db, id, errorClass, nextAttemptAt) 
   `).run(errorClass, nextAttemptAt, id);
 }
 
-function insertServiceVersion(db, checkedAt, service, host, deployedCommit, latestCommit, commitsBehind) {
+function insertServiceVersion(db, checkedAt, service, host, deployedCommit, latestCommit, commitsBehind, driftState, driftReason) {
   db.prepare(`
-    INSERT INTO service_versions (checked_at, service, host, deployed_commit, latest_commit, commits_behind)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(checkedAt, service, host, deployedCommit, latestCommit, commitsBehind);
+    INSERT INTO service_versions
+      (checked_at, service, host, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(checkedAt, service, host, deployedCommit, latestCommit, commitsBehind,
+    driftState || null, driftReason || null);
 }
 
 function getLatestServiceVersions(db) {
@@ -479,7 +512,7 @@ function getLatestServiceVersions(db) {
 
 function getDriftHistory(db, limitPerService = 24) {
   return db.prepare(`
-    SELECT service, host, checked_at, deployed_commit, latest_commit, commits_behind
+    SELECT service, host, checked_at, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason
     FROM (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY service ORDER BY checked_at DESC) as rn
       FROM service_versions
@@ -659,6 +692,31 @@ function pruneFleetMetrics(db, olderThanIso) {
  * snap: { service, kind, status, descriptor(object|null), fetchedAt, reachable,
  *         schemaVersion, source, error }
  */
+/**
+ * Strip empty scaffolding from a descriptor before it is persisted.
+ *
+ * Every stored descriptor on the live instance carried `"metrics":[],"panels":[]`
+ * — zero information, repeated once per service, inside a blob an operator
+ * sometimes has to read by hand. `serviceView` already defaults an absent array
+ * to [], so dropping them changes nothing except the noise.
+ *
+ * Required identity fields (`service`, `kind`, `status`) are never dropped, even
+ * when null: their absence is itself meaningful.
+ */
+const DESCRIPTOR_REQUIRED = new Set(['service', 'kind', 'status', '_schema']);
+
+function compactDescriptor(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return d;
+  const out = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (DESCRIPTOR_REQUIRED.has(k)) { out[k] = v; continue; }
+    if (v == null) continue;
+    if (Array.isArray(v) && v.length === 0) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 function upsertServiceSnapshot(db, snap) {
   db.prepare(`
     INSERT INTO service_snapshots
@@ -677,7 +735,7 @@ function upsertServiceSnapshot(db, snap) {
     service: snap.service,
     kind: snap.kind ?? null,
     status: snap.status ?? null,
-    descriptor: snap.descriptor ? JSON.stringify(snap.descriptor) : null,
+    descriptor: snap.descriptor ? JSON.stringify(compactDescriptor(snap.descriptor)) : null,
     fetched_at: snap.fetchedAt ?? null,
     reachable: snap.reachable ? 1 : 0,
     schema_version: snap.schemaVersion ?? null,
@@ -881,4 +939,5 @@ module.exports = {
   getServiceSnapshot,
   pruneServiceSnapshots,
   getLatestTimerRun,
+  compactDescriptor,
 };

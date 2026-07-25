@@ -73,6 +73,24 @@ Important settings:
 - `HOMESERVER_GATEWAY_URL` and `HOMESERVER_GATEWAY_API_KEY` enable local-inference panels.
 - `HEIMDALL_SELF_HEAL_ENABLED=1` opts into recovery-task submission.
 
+Two settings live in the JSON overlay rather than the environment:
+
+- `fleet.host_aliases` maps retired host identities onto the canonical one
+  (e.g. `{"huginmunin": "control-node"}`). One machine must have one identity, or
+  its metric series and alerts split and orphaned alerts can never be resolved.
+- A timer service may declare `findings_exit_codes` (e.g. `[1]`) for jobs whose
+  exit status still means "I ran and found things" rather than "I could not run".
+  Without it, a non-zero exit is treated as a failure — the safe default.
+
+### Alert lifecycle
+
+An active alert is expected to be RE-ASSERTED by whatever raised it. An alert
+that nobody re-asserts within `HEIMDALL_ALERT_STALE_HOURS` (default 6h) is
+auto-closed as "stale — no data", with an audit event, because its host or metric
+has stopped reporting and no evaluator can ever resolve it. Producers pushing to
+`POST /api/alerts` should either re-push while the condition holds or send
+`state: "resolved"` with the same `dedup_key`.
+
 ## Security model
 
 Heimdall is an operator tool, not a hardened multi-user SaaS application.

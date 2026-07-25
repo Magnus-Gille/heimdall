@@ -63,7 +63,8 @@
       "type": "timer",
       "repo": "Magnus-Gille/grimnir",
       "systemd_unit": "grimnir-validate",
-      "deploy_path": "/home/heimdall/repos/grimnir"
+      "deploy_path": "/home/heimdall/repos/grimnir",
+      "findings_exit_codes": [1]
     },
     {
       "name": "brokkr-maintenance-os",
@@ -99,6 +100,9 @@
     }
   ],
   "fleet": {
+    "host_aliases": {
+      "huginmunin": "control-node"
+    },
     "stale_after_s": 90,
     "offline_after_s": 600,
     "sleep_after_s": 1800,

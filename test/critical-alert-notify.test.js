@@ -52,6 +52,17 @@ describe('critical alert notification migration', () => {
         dedup_key TEXT,
         source TEXT
       );
+      -- A genuine v6 database also has service_versions (created in v1); the
+      -- v8 migration adds drift_state/drift_reason to it.
+      CREATE TABLE service_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        checked_at TEXT NOT NULL,
+        service TEXT NOT NULL,
+        host TEXT NOT NULL,
+        deployed_commit TEXT,
+        latest_commit TEXT,
+        commits_behind INTEGER
+      );
       INSERT INTO alerts (created_at, host, category, severity, title)
       VALUES ('2026-07-22T10:00:00Z', 'control-node', 'system', 'critical', 'Existing outage');
       PRAGMA user_version = 6;
@@ -59,7 +70,7 @@ describe('critical alert notification migration', () => {
     old.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 7);
+    assert.equal(db.pragma('user_version', { simple: true }), 8);
     const row = db.prepare('SELECT notification_sent_at FROM alerts').get();
     assert.equal(row.notification_sent_at, 'backfilled');
     db.close();

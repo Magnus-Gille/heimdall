@@ -12,6 +12,7 @@
  */
 
 const { validateDescriptor } = require('./contract/schema');
+const { deriveTimerOutcome, outcomeToStatus } = require('./timer-outcome');
 const { upsertServiceSnapshot, getLatestTimerRun } = require('./db');
 const { knownPanelsFor: defaultKnownPanelsFor } = require('./plugins/known-panels');
 
@@ -45,21 +46,20 @@ function repoUrl(repo) {
 
 /**
  * Map a systemd-timer's last-run record to a contract status (#97).
- *   - null   → no real outcome yet (never ran; note systemd's ExecMainStatus
- *              defaults to 0, so we must gate "pass" on an actual lastRun)
- *   - 'fail' → last invocation exited non-zero
- *   - 'warn' → overdue: next scheduled fire is well past due, no newer run
- *   - 'pass' → last run succeeded and it's on schedule
+ *
+ * Delegates the actual judgement to src/timer-outcome.js, because a two-state
+ * pass/fail read of the exit byte is wrong in BOTH directions: it rendered
+ * brokkr-maintenance-os's genuine "could not run" the same as grimnir-validate's
+ * "ran fine, found 2 issues". `findings` maps to 'pass' — the job succeeded —
+ * and the findings themselves are carried on descriptor.timer.outcome so the UI
+ * can show a finding count instead of a red card.
+ *
+ * @param {object|null} run  the timer run record
+ * @param {number} now
+ * @param {object} [svc]     service config (may declare findings_exit_codes)
  */
-function deriveTimerState(run, now = Date.now()) {
-  if (!run || !run.lastRun) return null;
-  if (run.exitOk === false) return 'fail';
-  if (run.nextRun) {
-    const overdue = now - Date.parse(run.nextRun);
-    if (Number.isFinite(overdue) && overdue > TIMER_STALE_GRACE_MS) return 'warn';
-  }
-  if (run.exitOk === true) return 'pass';
-  return null; // ran, on schedule, but exit outcome unknown → not a false pass/warn
+function deriveTimerState(run, now = Date.now(), svc = {}) {
+  return outcomeToStatus(deriveTimerOutcome(run, svc, now).outcome);
 }
 
 /** Map a /health status string (or HTTP outcome) to a contract status. */
@@ -205,8 +205,18 @@ async function pollService(svc, deps = {}) {
   if (svc.type === 'timer' && typeof timerState === 'function') {
     const run = timerState(svc);
     if (run) {
-      timerStatus = deriveTimerState(run, now);
-      timerDetail = { lastRun: run.lastRun || null, nextRun: run.nextRun || null, lastResult: run.lastResult || null };
+      const o = deriveTimerOutcome(run, svc, now);
+      timerStatus = outcomeToStatus(o.outcome);
+      timerDetail = {
+        lastRun: run.lastRun || null,
+        nextRun: run.nextRun || null,
+        lastResult: run.lastResult || null,
+        // 'ok' | 'findings' | 'failed' | 'overdue' | 'never-run'. The renderer
+        // keys on THIS, not on `status`, so a completed-with-findings run reads
+        // as a finding count rather than a failed service.
+        outcome: o.outcome,
+        findings: o.findings,
+      };
     }
   }
 
@@ -243,5 +253,5 @@ async function pollAll(db, services, deps = {}) {
 
 module.exports = {
   pollService, pollAll, descriptorUrlFor, deriveBase, kindFromType, normalizeHealthStatus,
-  defaultFetchJson, MAX_FETCH_BYTES, deriveTimerState,
+  defaultFetchJson, MAX_FETCH_BYTES, deriveTimerState, TIMER_STALE_GRACE_MS,
 };

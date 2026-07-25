@@ -60,6 +60,13 @@ function pushedStatusSummary(rows = [], now = Date.now()) {
 }
 
 function unreachableNote(v, pushedSummary) {
+  // Timers and static sites are not "unreachable" — they have no probe endpoint
+  // by design, and saying otherwise contradicts the pass status right beside it.
+  if (v.kind === 'timer') {
+    return v.timer && v.timer.lastRun
+      ? 'Scheduled job — state comes from its last systemd run, not from a probe.'
+      : 'Scheduled job — no run recorded yet.';
+  }
   if (pushedSummary.hasFreshStatus) return 'Status reported by pushed panels; no probe endpoint.';
   if (pushedSummary.hasStatus) return 'Last pushed status is stale; no probe endpoint.';
   if (pushedSummary.updatedAt) return 'Panels are reporting, but no status panel or probe endpoint is available.';
@@ -169,6 +176,11 @@ function serviceView(snap) {
     version: d.version || (d.deploy && d.deploy.deployed_commit) || null,
     deploy: d.deploy || null,
     timer: d.timer || null,
+    // 'ok' | 'findings' | 'failed' | 'overdue' | 'never-run' (src/timer-outcome.js).
+    // The renderer keys on this rather than on `status`, so a job that ran and
+    // found things is shown as a finding count instead of a red failed service.
+    timerOutcome: (d.timer && typeof d.timer.outcome === 'string') ? d.timer.outcome : null,
+    findings: (d.timer && Number.isInteger(d.timer.findings)) ? d.timer.findings : null,
     metrics: Array.isArray(d.metrics) ? d.metrics : [],
     panels: Array.isArray(d.panels) ? d.panels : [],
     links: d.links || {},
@@ -188,8 +200,19 @@ function serviceView(snap) {
 }
 
 function stateLabel(v) {
-  // A timer with a real last-run outcome reads as Passed/Stale/Failed; a
-  // never-run timer (state still 'stale') falls through to Config below.
+  // A scheduled job has three meaningful results, not two. "Completed with
+  // findings" is the one a pass/fail model destroys: grimnir-validate exits 1 to
+  // say it found 2 issues, and rendering that as a crashed service is why nobody
+  // read the audit. Findings get their own label and their own (non-red) state.
+  if (v.kind === 'timer' && v.timerOutcome) {
+    if (v.timerOutcome === 'findings') {
+      return v.findings != null ? `${v.findings} findings` : 'Findings';
+    }
+    if (v.timerOutcome === 'ok') return 'Passed';
+    if (v.timerOutcome === 'failed') return 'Failed to run';
+    if (v.timerOutcome === 'overdue') return 'Overdue';
+    if (v.timerOutcome === 'never-run') return 'Not run yet';
+  }
   if (v.kind === 'timer' && v.state !== 'stale') {
     if (v.state === 'ok') return 'Passed';
     if (v.state === 'warn') return 'Stale';
@@ -227,6 +250,12 @@ function serviceCard(snap) {
       : 'stale pushed report';
   } else if (v.source === 'pushed') {
     foot = v.fetchedAt ? `pushed ${formatAge(v.fetchedAt)}` : 'pushed panels only';
+  } else if (v.kind === 'timer') {
+    // A timer has no endpoint by design. Reporting `reachable: 0` as
+    // "unreachable" next to `status: pass` is the contradiction the operator hit.
+    foot = 'scheduled job — not run yet';
+  } else if (v.kind === 'static') {
+    foot = 'static site';
   } else {
     foot = v.error === 'unreachable'
       ? 'unreachable'
@@ -462,7 +491,7 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
 }
 
 module.exports = {
-  buildSelfDescriptor, selfSnapshot, serviceView, serviceCard,
+  buildSelfDescriptor, selfSnapshot, serviceView, serviceCard, stateLabel,
   servicesGridFragment, servicesIndexPage, servicePage, countsFor, sortSnapshots,
   pushedStatusSummary, withPushedStatus, isActionableServiceException,
   PUSH_STATUS_STALE_MS,

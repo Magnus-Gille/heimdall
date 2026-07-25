@@ -121,3 +121,27 @@ describe('detectReboot', () => {
     db.close();
   });
 });
+
+describe('checkThresholds — retired metrics (regression)', () => {
+  let db;
+  beforeEach(() => { db = tmpDb(); });
+
+  it('resolves an alert when its metric disappears from the payload', () => {
+    // Live defect: "disk_used_pct_nas % threshold on nas" was open from
+    // 2026-07-02. The NAS probe stopped delivering that series on 2026-07-22,
+    // and the `if (value == null) continue;` guard made the resolve branch dead
+    // code — so the breach could never be un-asserted.
+    checkThresholds(db, 'nas', { disk_used_pct_nas: 85 });
+    assert.strictEqual(getActiveAlerts(db).length, 1);
+
+    checkThresholds(db, 'nas', { mem_used_pct: 10 }); // series retired
+    assert.deepStrictEqual(getActiveAlerts(db).map((a) => a.title), []);
+    db.close();
+  });
+
+  it('does not invent alerts for metrics a host never reports', () => {
+    checkThresholds(db, 'm5', {});
+    assert.deepStrictEqual(getActiveAlerts(db).map((a) => a.title), []);
+    db.close();
+  });
+});

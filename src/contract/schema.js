@@ -16,7 +16,11 @@
 
 const { MAX_LABEL, MAX_UNIT, MAX_CELL, normalizeTypedPanelData } = require('./panel-data');
 
-const SCHEMA_ID = 'https://monitor.example.com/schema/service/v1';
+// The stable identifier Heimdall STAMPS on descriptors it produces. It is an
+// identifier, not a fetched URL — the validator only requires an incoming
+// `_schema` to contain "/service/v1", so third-party producers using the old
+// documentation-placeholder id keep validating unchanged.
+const SCHEMA_ID = 'https://github.com/Magnus-Gille/heimdall/schema/service/v1';
 const ARCHETYPES = ['inference', 'http-service', 'timer', 'static', 'mcp'];
 const CRITICALITIES = ['high', 'normal', 'low'];
 const STATUSES = ['pass', 'warn', 'fail'];
