@@ -15,6 +15,8 @@ const { collectMcpHealth } = require('./mcp-probe');
 const { collectInferenceHealth } = require('./inference');
 const { syncAlertsToMunin } = require('./munin-sync');
 const { checkAndHeal } = require('./self-heal');
+const { loadServicesWithMeta } = require('./config/services');
+const { assertSafeStartupTargets } = require('./config/live-config');
 
 const NAS_IP = process.env.HEIMDALL_STORAGE_SSH_HOST || '192.0.2.20';
 const SSH_KEY = path.join(os.homedir(), '.ssh', 'heimdall_ed25519');
@@ -43,6 +45,8 @@ function deriveCpuBusyRow(db, host, curFlat, timestamp) {
 }
 
 async function run() {
+  const startupRegistry = loadServicesWithMeta();
+  assertSafeStartupTargets(startupRegistry.services);
   const db = openDatabase();
   const timestamp = new Date().toISOString();
   const cycleStartMs = Date.now();
