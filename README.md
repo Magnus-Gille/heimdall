@@ -19,6 +19,19 @@ Heimdall ──optional capability probes────────────▶
 
 Grimnir is the system-level architecture repository; Brokkr describes the hardware, OS, storage, and backup substrate. Ratatoskr and Skuld are optional integrations, not prerequisites for understanding or running Heimdall.
 
+### Backup freshness cadence
+
+The committed `heimdall.config.json` declares every backup source under
+`backups`. A private config selected by `HEIMDALL_CONFIG_PATH` inherits those
+definitions when it omits `backups`, and overrides them only when it explicitly
+supplies the section. Each source must provide `expected_interval_hours`,
+`warning_after_intervals`, and `critical_after_intervals`; startup rejects
+missing, non-positive, or non-escalating explicit values. The alert ages are calculated per source:
+`warning = expected interval × warning multiplier`, and `critical = expected
+interval × critical multiplier`. This intentionally prevents a weekly backup
+from inheriting an hourly or six-hour timeout. Define slow sources explicitly;
+there is no fallback cadence for unknown names.
+
 ## Features
 
 - Service discovery from Grimnir's `services.json`, enriched by `heimdall.config.json`.

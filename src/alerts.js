@@ -9,40 +9,35 @@ const {
   acknowledgeAlert,
   getActiveAlerts,
 } = require('./db');
+const { loadBackupDefinitions } = require('./backup-config');
 
-const backupInfo = {
-  'TM Backup': { desc: 'macOS Time Machine → NAS USB drive', schedule: 'automatic (macOS)', warnHours: 2, critHours: 6 },
-  // Relocated to the external HDD on a daily GFS schedule (2026-04-27). A 6h
-  // threshold against a once-a-day backup would be critical ~18h of every day,
-  // so tolerate a full day plus slack: warn after ~26h, critical after ~30h.
-  'Munin DB': { desc: 'Munin SQLite → NAS (external HDD)', schedule: 'daily 03:00 (systemd timer)', warnHours: 26, critHours: 30 },
-  'Mímir Backup': { desc: 'NAS SD → NAS USB drive', schedule: 'hourly (cron)', warnHours: 2, critHours: 6 },
-  'Mímir Sync': { desc: 'Workstation artifacts → storage node', schedule: 'every 30 min', warnHours: 2, critHours: 6 },
-};
+function formatMultiplier(multiplier) {
+  return Number.isInteger(multiplier) ? String(multiplier) : multiplier.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
 
-function checkBackupStaleness(db, backupName, timestamp) {
+function checkBackupStaleness(db, backupName, timestamp, backups = loadBackupDefinitions()) {
   if (!timestamp) return;
   const ageMs = Date.now() - new Date(timestamp).getTime();
   const ageHours = ageMs / 3600000;
   const alertTitle = `Backup stale: ${backupName}`;
-  const info = backupInfo[backupName];
-  const warnHours = info ? info.warnHours : 2;
-  const critHours = info ? info.critHours : 6;
+  const info = backups[backupName];
+  if (!info) throw new Error(`No backup freshness configuration declared for ${JSON.stringify(backupName)}`);
+  const warnHours = info.expectedIntervalHours * info.warningAfterIntervals;
+  const critHours = info.expectedIntervalHours * info.criticalAfterIntervals;
 
   const ageMins = Math.floor(ageMs / 60000);
   const ageH = Math.floor(ageMins / 60);
   const ageM = ageMins % 60;
   const ageStr = ageH > 0 ? `${ageH}h ${ageM}m` : `${ageM}m`;
 
-  const schedule = info ? info.schedule : 'unknown';
-  const desc = info ? info.desc : backupName;
+  const cadence = `expected every ${info.expectedIntervalHours}h; warning after ${formatMultiplier(info.warningAfterIntervals)}× expected interval, critical after ${formatMultiplier(info.criticalAfterIntervals)}× expected interval`;
 
   if (ageHours > critHours) {
     createAlert(db, 'nas', 'backup', 'critical', alertTitle,
-      `${desc} · runs ${schedule} · last seen ${ageStr} ago · threshold: >${critHours}h critical`);
+      `${info.description} · runs ${info.schedule} · ${cadence} · last seen ${ageStr} ago · threshold: >${critHours}h critical`);
   } else if (ageHours > warnHours) {
     createAlert(db, 'nas', 'backup', 'warning', alertTitle,
-      `${desc} · runs ${schedule} · last seen ${ageStr} ago · threshold: >${warnHours}h warning`);
+      `${info.description} · runs ${info.schedule} · ${cadence} · last seen ${ageStr} ago · threshold: >${warnHours}h warning`);
   } else {
     resolveAlert(db, 'nas', alertTitle);
   }
