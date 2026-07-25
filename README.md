@@ -21,10 +21,12 @@ Grimnir is the system-level architecture repository; Brokkr describes the hardwa
 
 ### Backup freshness cadence
 
-`heimdall.config.json` declares every backup source under `backups`. Each source
-must provide `expected_interval_hours`, `warning_after_intervals`, and
-`critical_after_intervals`; startup rejects missing, non-positive, or
-non-escalating values. The alert ages are calculated per source:
+The committed `heimdall.config.json` declares every backup source under
+`backups`. A private config selected by `HEIMDALL_CONFIG_PATH` inherits those
+definitions when it omits `backups`, and overrides them only when it explicitly
+supplies the section. Each source must provide `expected_interval_hours`,
+`warning_after_intervals`, and `critical_after_intervals`; startup rejects
+missing, non-positive, or non-escalating explicit values. The alert ages are calculated per source:
 `warning = expected interval × warning multiplier`, and `critical = expected
 interval × critical multiplier`. This intentionally prevents a weekly backup
 from inheriting an hourly or six-hour timeout. Define slow sources explicitly;

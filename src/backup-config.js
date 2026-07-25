@@ -61,14 +61,28 @@ function validateBackupDefinitions(backups) {
   return Object.freeze(validated);
 }
 
-function loadBackupDefinitions(configPath = process.env.HEIMDALL_CONFIG_PATH || DEFAULT_CONFIG_PATH) {
+function readConfig(configPath) {
   let config;
   try {
     config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   } catch (err) {
     throw new Error(`Unable to load backup freshness configuration from ${configPath}: ${err.message}`, { cause: err });
   }
-  return validateBackupDefinitions(config.backups);
+  return config;
+}
+
+/**
+ * The committed config owns the public backup cadence contract. A host-local
+ * config selected through HEIMDALL_CONFIG_PATH is an overlay for private host
+ * facts, so it inherits that contract unless it explicitly provides `backups`.
+ */
+function loadBackupDefinitions(configPath = process.env.HEIMDALL_CONFIG_PATH || DEFAULT_CONFIG_PATH) {
+  const canonical = validateBackupDefinitions(readConfig(DEFAULT_CONFIG_PATH).backups);
+  if (configPath === DEFAULT_CONFIG_PATH) return canonical;
+
+  const overlay = readConfig(configPath);
+  if (!Object.prototype.hasOwnProperty.call(overlay, 'backups')) return canonical;
+  return validateBackupDefinitions(overlay.backups);
 }
 
 module.exports = { loadBackupDefinitions, validateBackupDefinitions };

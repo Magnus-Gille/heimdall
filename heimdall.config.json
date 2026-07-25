@@ -101,11 +101,11 @@
   ],
   "backups": {
     "TM Backup": {
-      "description": "macOS Time Machine to NAS USB drive",
-      "schedule": "automatic (macOS)",
-      "expected_interval_hours": 1,
-      "warning_after_intervals": 2,
-      "critical_after_intervals": 6
+      "description": "macOS Time Machine weekly archive to NAS USB drive",
+      "schedule": "weekly (macOS Time Machine)",
+      "expected_interval_hours": 168,
+      "warning_after_intervals": 1.5,
+      "critical_after_intervals": 2
     },
     "Munin DB": {
       "description": "Munin SQLite to NAS external HDD",

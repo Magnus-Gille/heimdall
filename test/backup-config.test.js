@@ -30,9 +30,18 @@ describe('backup freshness configuration', () => {
     assert.throws(() => validateBackupDefinitions(invalid), /critical_after_intervals.*greater/);
   });
 
-  it('fails loudly when the selected config omits backup declarations', () => {
+  it('uses canonical backup definitions when a selected private overlay omits them', () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-config-')), 'heimdall.config.json');
-    fs.writeFileSync(file, JSON.stringify({ services: [] }));
-    assert.throws(() => loadBackupDefinitions(file), /backups must be a non-empty object/);
+    fs.writeFileSync(file, JSON.stringify({ services: [], fleet: {} }));
+    const backups = loadBackupDefinitions(file);
+    assert.equal(backups['Munin DB'].expectedIntervalHours, 24);
+    assert.equal(backups['Munin DB'].warningAfterIntervals, 1.0833333333333333);
+    assert.equal(backups['TM Backup'].expectedIntervalHours, 168);
+  });
+
+  it('fails loudly when an overlay explicitly supplies invalid backup declarations', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-config-')), 'heimdall.config.json');
+    fs.writeFileSync(file, JSON.stringify({ services: [], fleet: {}, backups: {} }));
+    assert.throws(() => loadBackupDefinitions(file), /backups must not be empty/);
   });
 });
