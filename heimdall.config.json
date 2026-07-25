@@ -99,6 +99,36 @@
       "additive": true
     }
   ],
+  "backups": {
+    "TM Backup": {
+      "description": "macOS Time Machine to NAS USB drive",
+      "schedule": "automatic (macOS)",
+      "expected_interval_hours": 1,
+      "warning_after_intervals": 2,
+      "critical_after_intervals": 6
+    },
+    "Munin DB": {
+      "description": "Munin SQLite to NAS external HDD",
+      "schedule": "daily 03:00 (systemd timer)",
+      "expected_interval_hours": 24,
+      "warning_after_intervals": 1.0833333333333333,
+      "critical_after_intervals": 1.25
+    },
+    "Mímir Backup": {
+      "description": "NAS SD to NAS USB drive",
+      "schedule": "hourly (cron)",
+      "expected_interval_hours": 1,
+      "warning_after_intervals": 2,
+      "critical_after_intervals": 6
+    },
+    "Mímir Sync": {
+      "description": "Workstation artifacts to storage node",
+      "schedule": "every 30 min",
+      "expected_interval_hours": 0.5,
+      "warning_after_intervals": 4,
+      "critical_after_intervals": 12
+    }
+  },
   "fleet": {
     "host_aliases": {
       "huginmunin": "control-node"

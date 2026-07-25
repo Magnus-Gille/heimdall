@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const { openDatabase, getActiveAlerts } = require('../src/db');
 const { createAlert, resolveAlert, checkBackupStaleness } = require('../src/alerts');
+const { validateBackupDefinitions } = require('../src/backup-config');
 
 function tmpDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
@@ -75,12 +76,33 @@ describe('checkBackupStaleness', () => {
     db.close();
   });
 
-  it('uses default thresholds for unknown backup names', () => {
-    const staleTs = new Date(Date.now() - 3 * 3600000).toISOString();
-    checkBackupStaleness(db, 'Unknown Backup', staleTs);
+  it('does not apply a global threshold to an undeclared backup source', () => {
+    assert.throws(
+      () => checkBackupStaleness(db, 'Unknown Backup', new Date().toISOString()),
+      /No backup freshness configuration/,
+    );
+    db.close();
+  });
+
+  it('keeps a weekly backup healthy at 45 hours but alerts after two missed cycles', () => {
+    const backups = validateBackupDefinitions({
+      'Weekly archive': {
+        description: 'Weekly archive to external storage',
+        schedule: 'weekly',
+        expected_interval_hours: 168,
+        warning_after_intervals: 1.5,
+        critical_after_intervals: 2,
+      },
+    });
+
+    checkBackupStaleness(db, 'Weekly archive', new Date(Date.now() - 45 * 3600000).toISOString(), backups);
+    assert.strictEqual(getActiveAlerts(db).length, 0);
+
+    checkBackupStaleness(db, 'Weekly archive', new Date(Date.now() - 337 * 3600000).toISOString(), backups);
     const alerts = getActiveAlerts(db);
     assert.strictEqual(alerts.length, 1);
-    assert.strictEqual(alerts[0].severity, 'warning');
+    assert.strictEqual(alerts[0].severity, 'critical');
+    assert.match(alerts[0].detail, /2× expected interval/);
     db.close();
   });
 });

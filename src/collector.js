@@ -10,6 +10,7 @@ const { readHuginTasks, detectTaskChanges, readHuginHeartbeat, getTimeoutCalibra
 const { collectServiceDrift } = require('./drift');
 const { logEvent, detectSSHLogins, detectServiceRestarts, checkThresholds, checkTempRateOfChange, detectReboot } = require('./events');
 const { checkBackupStaleness } = require('./alerts');
+const { loadBackupDefinitions } = require('./backup-config');
 const { collectMicrosoftMcpHealth } = require('./microsoft-mcp');
 const { collectMcpHealth } = require('./mcp-probe');
 const { collectInferenceHealth } = require('./inference');
@@ -44,6 +45,8 @@ function deriveCpuBusyRow(db, host, curFlat, timestamp) {
 
 async function run() {
   const db = openDatabase();
+  // Fail before collecting partial data if a source lacks an explicit cadence.
+  const backupDefinitions = loadBackupDefinitions();
   const timestamp = new Date().toISOString();
   const cycleStartMs = Date.now();
   let collectorSuccess = 1;
@@ -251,7 +254,7 @@ async function run() {
         // Check backup staleness and create events (Issue 3 + Issue 8)
         if (parsed.tm_last_backup?.value) {
           const tmTimestamp = new Date(parsed.tm_last_backup.value * 1000).toISOString();
-          checkBackupStaleness(db, 'TM Backup', tmTimestamp);
+          checkBackupStaleness(db, 'TM Backup', tmTimestamp, backupDefinitions);
 
           // Detect fresh TM backup (event)
           const prevTm = db.prepare(
@@ -267,11 +270,11 @@ async function run() {
           const filename = parsed.munin_backup_latest.metadata.filename;
           const match = filename.match(/(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})/);
           if (match) {
-            checkBackupStaleness(db, 'Munin DB', `${match[1]}T${match[2]}:${match[3]}:00Z`);
+            checkBackupStaleness(db, 'Munin DB', `${match[1]}T${match[2]}:${match[3]}:00Z`, backupDefinitions);
           } else {
             const dateOnly = filename.match(/(\d{4}-\d{2}-\d{2})/);
             if (dateOnly) {
-              checkBackupStaleness(db, 'Munin DB', dateOnly[1] + 'T00:00:00Z');
+              checkBackupStaleness(db, 'Munin DB', dateOnly[1] + 'T00:00:00Z', backupDefinitions);
             }
           }
           // Detect new munin backup
@@ -290,14 +293,14 @@ async function run() {
 
         if (parsed.mimir_sync_latest?.value) {
           const syncTimestamp = new Date(parsed.mimir_sync_latest.value * 1000).toISOString();
-          checkBackupStaleness(db, 'Mímir Sync', syncTimestamp);
+          checkBackupStaleness(db, 'Mímir Sync', syncTimestamp, backupDefinitions);
         }
 
         if (parsed.mimir_backup_last?.metadata?.line) {
           const line = parsed.mimir_backup_last.metadata.line;
           const match = line.match(/(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2})/);
           if (match) {
-            checkBackupStaleness(db, 'Mímir Backup', match[1].replace(' ', 'T') + ':00Z');
+            checkBackupStaleness(db, 'Mímir Backup', match[1].replace(' ', 'T') + ':00Z', backupDefinitions);
           }
         }
       } catch (sshErr) {
