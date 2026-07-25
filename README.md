@@ -51,10 +51,10 @@ Requirements: Node.js 22 or newer, npm, and Python 3 with `pytest` for the optio
 npm ci
 mkdir -p ~/.heimdall
 cp .env.example ~/.heimdall/env
-npm start
+HEIMDALL_CONFIG_MODE=demo npm start
 ```
 
-Open <http://127.0.0.1:3033>. The committed `heimdall.config.json` uses RFC 5737 documentation addresses; replace its examples or point `HEIMDALL_CONFIG_PATH` to your own JSON. Set `GRIMNIR_SERVICES_JSON` to consume a Grimnir registry checkout. Without either integration, the committed overlay is a usable demonstration inventory.
+Open <http://127.0.0.1:3033>. The committed `heimdall.config.json` uses RFC 5737 documentation addresses; replace its examples or point `HEIMDALL_CONFIG_PATH` to your own JSON. Set `GRIMNIR_SERVICES_JSON` to consume a Grimnir registry checkout. Without either integration, the committed overlay is a usable demonstration inventory. Its documentation targets require `HEIMDALL_CONFIG_MODE=demo` (or `NODE_ENV=test`); production always rejects them at startup.
 
 Run the collector separately when you want live host data:
 
@@ -76,6 +76,7 @@ Important settings:
 
 - `HEIMDALL_BIND` and `PORT` control the listener; loopback is the safe default.
 - `HEIMDALL_CONFIG_PATH` selects the service/fleet overlay.
+- `HEIMDALL_CONFIG_MODE=demo` permits the committed documentation-only overlay outside production.
 - `GRIMNIR_SERVICES_JSON` selects the ecosystem registry source.
 - `HEIMDALL_FLEET_TOKEN` authenticates `/api/fleet/push`.
 - `HEIMDALL_ALERT_TOKEN` authenticates `/api/alerts` ingestion.

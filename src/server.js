@@ -40,6 +40,7 @@ const { loadFleetConfig } = require('./fleet/config');
 // v2 platform: self-describing service contract + discovery
 const { pollAll } = require('./discovery');
 const { loadServices, loadServicesWithMeta } = require('./config/services');
+const { assertSafeStartupTargets } = require('./config/live-config');
 const { servicesIndexPage, servicesGridFragment, servicePage, buildSelfDescriptor, selfSnapshot, withPushedStatus } = require('./render/service-page');
 const { overviewPage, overviewStatusSection, buildOverviewStatus, deploysGridFragment } = require('./render/overview');
 const { buildMachines } = require('./fleet/render');
@@ -958,6 +959,11 @@ if (isNaN(PORT) || PORT < 1 || PORT > 65535) {
   console.error(`Invalid PORT: ${process.env.PORT}`);
   process.exit(1);
 }
+
+// Do this before opening the listener. A dashboard that probes public
+// documentation targets is worse than a failed startup: it looks operational.
+const startupRegistry = loadServicesWithMeta();
+assertSafeStartupTargets(startupRegistry.services);
 
 const { app, db, serviceConfigs, getRuntimeVersion } = buildApp();
 
