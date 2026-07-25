@@ -38,6 +38,11 @@ function isExplicitDemoOrTest(environment) {
   return environment.NODE_ENV === 'test' || environment.HEIMDALL_CONFIG_MODE === 'demo';
 }
 
+/** The collector's direct storage probe is not part of the service overlay. */
+function storageSshHost(environment = process.env) {
+  return environment.HEIMDALL_STORAGE_SSH_HOST || '192.0.2.20';
+}
+
 /**
  * Throw before startup if a service target is a documentation address/domain.
  * Production always validates, even if a stale demo-mode variable is present.
@@ -63,4 +68,4 @@ function assertSafeStartupTargets(services, environment = process.env) {
   }
 }
 
-module.exports = { assertSafeStartupTargets, isDocumentationIpv4, isExampleHost };
+module.exports = { assertSafeStartupTargets, isDocumentationIpv4, isExampleHost, storageSshHost };

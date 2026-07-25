@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { assertSafeStartupTargets } = require('../src/config/live-config');
+const { assertSafeStartupTargets, storageSshHost } = require('../src/config/live-config');
 
 describe('live configuration target guard (#27)', () => {
   it('rejects every RFC 5737 documentation range in production', () => {
@@ -40,5 +40,23 @@ describe('live configuration target guard (#27)', () => {
       () => assertSafeStartupTargets(demoService, { NODE_ENV: 'production', HEIMDALL_CONFIG_MODE: 'demo' }),
       /documentation target/u,
     );
+  });
+
+  it('rejects the collector storage probe documentation fallback in production', () => {
+    const storage = storageSshHost({});
+    assert.equal(storage, '192.0.2.20');
+    assert.throws(
+      () => assertSafeStartupTargets([{ name: 'collector-storage', ssh_host: storage }], { NODE_ENV: 'production' }),
+      /collector-storage\.ssh_host=192\.0\.2\.20/u,
+    );
+  });
+
+  it('accepts an explicitly configured private collector storage host', () => {
+    const storage = storageSshHost({ HEIMDALL_STORAGE_SSH_HOST: '192.168.10.20' });
+    assert.equal(storage, '192.168.10.20');
+    assert.doesNotThrow(() => assertSafeStartupTargets(
+      [{ name: 'collector-storage', ssh_host: storage }],
+      { NODE_ENV: 'production' },
+    ));
   });
 });

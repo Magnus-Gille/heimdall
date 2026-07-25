@@ -16,9 +16,9 @@ const { collectInferenceHealth } = require('./inference');
 const { syncAlertsToMunin } = require('./munin-sync');
 const { checkAndHeal } = require('./self-heal');
 const { loadServicesWithMeta } = require('./config/services');
-const { assertSafeStartupTargets } = require('./config/live-config');
+const { assertSafeStartupTargets, storageSshHost } = require('./config/live-config');
 
-const NAS_IP = process.env.HEIMDALL_STORAGE_SSH_HOST || '192.0.2.20';
+const NAS_IP = storageSshHost();
 const SSH_KEY = path.join(os.homedir(), '.ssh', 'heimdall_ed25519');
 
 // Derive a cpu_busy_pct metric row from this cycle's CPU ticks vs. the previous
@@ -46,7 +46,13 @@ function deriveCpuBusyRow(db, host, curFlat, timestamp) {
 
 async function run() {
   const startupRegistry = loadServicesWithMeta();
-  assertSafeStartupTargets(startupRegistry.services);
+  // NAS ping/SSH is a collector-owned direct probe, not a service-overlay
+  // entry. Include it explicitly so an omitted production env cannot revive
+  // the RFC 5737 demonstration fallback.
+  assertSafeStartupTargets([
+    ...startupRegistry.services,
+    { name: 'collector-storage', ssh_host: NAS_IP },
+  ]);
   const db = openDatabase();
   const timestamp = new Date().toISOString();
   const cycleStartMs = Date.now();
