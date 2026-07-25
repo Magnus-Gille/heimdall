@@ -426,28 +426,49 @@ async function run() {
 
   // 4. Collect deploy drift + service restart counts
   try {
-    const driftResults = await collectServiceDrift(db);
-    const behind = driftResults.filter(s => s.commits_behind !== 0);
-    console.log(`  Drift: ${driftResults.length} services checked, ${behind.length} behind`);
-
-    // Sustained-drift alerting: warn if a service has been behind for 3+ consecutive checks (~15 min)
-    const { createAlert: createDriftAlert } = require('./alerts');
-    const { resolveAlert: resolveDriftAlert } = require('./alerts');
-    const DRIFT_THRESHOLD = 3;
-    for (const result of driftResults) {
-      if (!result.deployed_commit) continue;
-      const recent = db.prepare(
-        'SELECT commits_behind FROM service_versions WHERE service = ? ORDER BY checked_at DESC LIMIT ?'
-      ).all(result.service, DRIFT_THRESHOLD);
-      const sustained = recent.length >= DRIFT_THRESHOLD
-        && recent.every(r => r.commits_behind !== 0 && r.commits_behind != null);
-      const alertTitle = `Deploy drift: ${result.service}`;
-      if (sustained) {
-        createDriftAlert(db, result.host || 'control-node', 'deploy', 'warning', alertTitle,
-          `${result.service} has been behind origin/main for ${DRIFT_THRESHOLD}+ consecutive checks`);
-      } else {
-        resolveDriftAlert(db, result.host || 'control-node', alertTitle);
+    // Fold alerts still keyed to a retired host identity onto the canonical one
+    // BEFORE evaluating, or the evaluator's resolve can never match them.
+    try {
+      const { reconcileAlertHosts } = require('./alert-reaper');
+      const { loadConfig } = require('./config/services');
+      const { loadHostAliases } = require('./host-identity');
+      const rec = reconcileAlertHosts(db, loadHostAliases(loadConfig()));
+      if (rec.migrated || rec.merged) {
+        console.log(`  Alert host reconcile: ${rec.migrated} re-hosted, ${rec.merged} merged`);
       }
+    } catch (err) {
+      console.error('  Alert host reconcile failed:', err.message);
+    }
+
+    const driftResults = await collectServiceDrift(db);
+    const drifting = driftResults.filter(s => s.drift_state === 'drift');
+    const unmeasurable = driftResults.filter(s => s.drift_state === 'unknown');
+    console.log(`  Drift: ${driftResults.length} services checked, ${drifting.length} behind, ${unmeasurable.length} not measurable`);
+
+    // Deploy drift is a property of a repo CHECKOUT on a host, not of each
+    // systemd unit reading from it, and an uninterpretable comparison is an
+    // instrumentation failure rather than drift. Both rules live in drift-alerts.js.
+    const { evaluateDriftAlerts } = require('./drift-alerts');
+    const driftAlerts = evaluateDriftAlerts(db, driftResults);
+    if (driftAlerts.fired.length) {
+      console.log(`  Drift alerts: ${driftAlerts.fired.map(f => `${f.repo} (${f.units.join(', ')})`).join('; ')}`);
+    }
+    for (const u of driftAlerts.unknown) {
+      // Reported, never alerted: a number nobody can interpret must not page anyone.
+      console.log(`  Drift not measurable for ${u.service}: ${u.reason}`);
+    }
+
+    // A scheduled job that could not run is exactly what should reach the owner,
+    // and it had no path to an alert at all before this (the alert engine only
+    // evaluates descriptor rules, which config-only timers do not have).
+    const { evaluateTimerAlerts } = require('./timer-alerts');
+    const timerAlerts = evaluateTimerAlerts(db, driftResults);
+    if (timerAlerts.failed.length) {
+      console.log(`  Timer failures: ${timerAlerts.failed.map(f => `${f.service} (${f.outcome})`).join(', ')}`);
+    }
+    if (timerAlerts.findings.length) {
+      // Findings are a RESULT, not a failure — reported, not alerted.
+      console.log(`  Timer findings: ${timerAlerts.findings.map(f => `${f.service}${f.count != null ? ` (${f.count})` : ''}`).join(', ')}`);
     }
 
     // Cache restart counts as metrics (avoid journalctl in request handlers)
@@ -597,6 +618,20 @@ async function run() {
     if (r.fired.length) console.log(`  Alert engine: firing ${r.fired.length} (${r.fired.join(', ')})`);
   } catch (err) {
     console.error('  Alert engine failed:', err.message);
+  }
+
+  // 9b-2. Close alerts nothing can resolve any more. Runs AFTER every evaluator
+  // above, so a live condition has already refreshed its observation stamp this
+  // cycle and cannot be reaped. This is the class fix for alerts orphaned by a
+  // host identity or metric that stopped reporting (src/alert-reaper.js).
+  try {
+    const { reapStaleAlerts } = require('./alert-reaper');
+    const reaped = reapStaleAlerts(db);
+    if (reaped.resolved.length) {
+      console.log(`  Alert reaper: auto-closed ${reaped.resolved.length} stale alert(s): ${reaped.resolved.map(r => r.title).join(', ')}`);
+    }
+  } catch (err) {
+    console.error('  Alert reaper failed:', err.message);
   }
 
   // 9c. Deliver newly fired critical alerts through the existing private

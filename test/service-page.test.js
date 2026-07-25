@@ -170,10 +170,13 @@ describe('service-page timer cards (#97)', () => {
     assert.ok(html.includes('Failed'), 'failed timer reads Failed');
   });
 
-  it('a never-run timer keeps the Config badge and config-only footer', () => {
+  it('a never-run timer says it has not run — never "config only"/"unreachable"', () => {
+    // CONTRACT CHANGE. "config only" beside `reachable: 0` and `status: pass`
+    // read as a broken probe. A timer has no endpoint by design; the honest
+    // statement is that no run has been recorded yet.
     const html = serviceCard(timerSnap(null, null));
-    assert.ok(html.includes('Config'), 'never-run timer stays Config');
-    assert.ok(html.includes('config only'), 'footer stays config only');
+    assert.ok(html.includes('not run yet'), 'footer states the real situation');
+    assert.ok(!/unreachable/i.test(html), 'a timer is never "unreachable"');
   });
 
   it('the detail page shows a Schedule card with last run + result', () => {

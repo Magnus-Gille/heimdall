@@ -47,7 +47,8 @@ function makeDb() {
       detail TEXT, resolved_at TEXT, acknowledged INTEGER DEFAULT 0,
       dedup_key TEXT, source TEXT, notification_sent_at TEXT,
       notification_attempts INTEGER NOT NULL DEFAULT 0,
-      notification_last_error TEXT, notification_next_attempt_at TEXT
+      notification_last_error TEXT, notification_next_attempt_at TEXT,
+      last_observed_at TEXT
     );
   `);
   return db;

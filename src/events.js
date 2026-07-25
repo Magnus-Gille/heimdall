@@ -92,9 +92,17 @@ const THRESHOLDS = {
 function checkThresholds(db, host, metrics) {
   for (const [metric, thresholds] of Object.entries(THRESHOLDS)) {
     const value = metrics[metric];
-    if (value == null) continue;
-
     const alertTitle = `${metric} ${thresholds.unit} threshold on ${host}`;
+
+    if (value == null) {
+      // The metric is no longer in this host's payload. `continue` left the
+      // resolve branch unreachable, which is how "disk_used_pct_nas % threshold
+      // on nas" stayed open from 2026-07-02 after the NAS probe stopped
+      // delivering that series on 2026-07-22. We cannot assert a breach we can
+      // no longer measure, so clear it.
+      resolveAlert(db, host, alertTitle);
+      continue;
+    }
 
     if (value >= thresholds.critical) {
       logEvent(db, host, 'anomaly', 'critical',

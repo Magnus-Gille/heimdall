@@ -4,6 +4,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { compareCommits } = require('./drift-compare');
 
 // Validate IP address (IPv4 only — Tailscale uses 100.x.x.x)
 function isValidIP(str) {
@@ -80,6 +81,7 @@ function getTimerStatus(unitName) {
     return {
       lastRun: parseSystemdTimestamp(lastTrigger),
       lastResult: exitCode === 0 ? 'ok' : `exit ${exitCode}`,
+      exitOk: exitCode === 0,
       nextRun: parseSystemdTimestamp(nextElapse),
       activeState,
     };
@@ -181,6 +183,31 @@ function getLatestRemoteCommit(svc) {
   return null;
 }
 
+/**
+ * Count how far a deployed revision is behind / ahead of origin/main using the
+ * local checkout. Returns { behind, ahead } or null when the question cannot be
+ * answered here (no local clone, unknown revision, unrelated histories).
+ *
+ * This is what replaces the old `-1` guess: either we can count, or we say so.
+ */
+function countCommitGap(svc, deployed, latest) {
+  if (!svc.repo || !/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(svc.repo)) return null;
+  if (!/^[0-9a-f]{7,40}$/i.test(deployed) || !/^[0-9a-f]{7,40}$/i.test(latest)) return null;
+  const repoDir = path.join(os.homedir(), 'repos', svc.repo.split('/')[1]);
+  try {
+    const raw = execSync(
+      `git -C "${repoDir}" rev-list --left-right --count ${deployed}...${latest} 2>/dev/null`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+    const m = /^(\d+)\s+(\d+)$/.exec(raw);
+    if (!m) return null;
+    // left = commits only in `deployed` (ahead), right = only in origin/main (behind)
+    return { ahead: Number(m[1]), behind: Number(m[2]) };
+  } catch {
+    return null;
+  }
+}
+
 async function collectServiceDrift(db) {
   const services = loadServiceRegistry();
   const timestamp = new Date().toISOString();
@@ -189,7 +216,10 @@ async function collectServiceDrift(db) {
   for (const svc of services) {
     let deployed = null;
     let latest = null;
-    let commitsBehind = null;
+    // Assigned unconditionally in Step 3 below.
+    let commitsBehind;
+    let driftState;
+    let driftReason;
     let healthLatencyMs = null;
     let commitMessage = null;
     let timerStatus = null;
@@ -272,20 +302,26 @@ async function collectServiceDrift(db) {
       } catch { /* ok — repo may not be local */ }
     }
 
-    // Step 3: Calculate drift
-    if (deployed && latest) {
-      if (deployed.startsWith(latest) || latest.startsWith(deployed)) {
-        commitsBehind = 0;
-      } else {
-        commitsBehind = -1; // behind but count unknown
-      }
-    }
+    // Step 3: Calculate drift.
+    //
+    // The previous implementation wrote `-1` for every non-equal pair, which
+    // conflated "4 commits behind" with "the deployed value was never a commit"
+    // and with "origin/main could not be fetched". Now the comparison returns an
+    // explicit state; `commits_behind` is null or a NON-NEGATIVE count, and
+    // callers gate alerting on the state (see src/drift-alerts.js).
+    const cmp = compareCommits(deployed, latest, {
+      count: (d, l) => countCommitGap(svc, d, l),
+    });
+    commitsBehind = cmp.commitsBehind;
+    driftState = cmp.state;
+    driftReason = cmp.reason;
 
     // Write to DB
     db.prepare(`
-      INSERT INTO service_versions (checked_at, service, host, deployed_commit, latest_commit, commits_behind)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(timestamp, svc.name, svc.host, deployed, latest, commitsBehind);
+      INSERT INTO service_versions
+        (checked_at, service, host, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(timestamp, svc.name, svc.host, deployed, latest, commitsBehind, driftState, driftReason);
 
     // Store health latency as a metric
     if (healthLatencyMs != null) {
@@ -326,11 +362,18 @@ async function collectServiceDrift(db) {
     const result = {
       service: svc.name,
       host: svc.host,
+      repo: svc.repo || null,
+      deploy_path: svc.deploy_path || null,
       deployed_commit: deployed,
       latest_commit: latest,
       commits_behind: commitsBehind,
+      drift_state: driftState,
+      drift_reason: driftReason,
       health_latency_ms: healthLatencyMs,
       commit_message: commitMessage,
+      // Exit codes this job uses to mean "ran fine, found things" rather than
+      // "could not run" (see src/timer-outcome.js).
+      findings_exit_codes: Array.isArray(svc.findings_exit_codes) ? svc.findings_exit_codes : undefined,
     };
     if (timerStatus) result.timer_status = timerStatus;
     if (svc.type === 'timer') result.type = 'timer';
@@ -385,4 +428,4 @@ function getLastDeployTime(db, serviceName) {
   }
 }
 
-module.exports = { loadServiceRegistry, collectServiceDrift, getServiceRestartCount, getLastDeployTime, getTimerStatus, getDeployedCommitStamp, parseSystemdTimestamp, isSafeUnitName };
+module.exports = { loadServiceRegistry, collectServiceDrift, countCommitGap, getServiceRestartCount, getLastDeployTime, getTimerStatus, getDeployedCommitStamp, parseSystemdTimestamp, isSafeUnitName };

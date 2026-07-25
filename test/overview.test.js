@@ -87,14 +87,16 @@ describe('buildOverviewStatus', () => {
       machines: [],
       snapshots: [snap('a', 'pass', { drift: 0 })],   // snapshot says clean (drift rarely self-reported)
       versions: [
-        { service: 'a', host: 'h', deployed_commit: 'x', latest_commit: 'y', commits_behind: 2 },  // same service
-        { service: 'b', host: 'h', deployed_commit: 'p', latest_commit: 'q', commits_behind: -1 }, // count-unknown drift
-        { service: 'c', host: 'h', deployed_commit: 'r', latest_commit: 'r', commits_behind: 0 },  // up to date
+        { service: 'a', host: 'h', deployed_commit: 'aaaaaaa', latest_commit: 'bbbbbbb', commits_behind: 2 },  // same service
+        { service: 'b', host: 'h', deployed_commit: 'ccccccc', latest_commit: 'ddddddd', commits_behind: -1 }, // legacy sentinel
+        { service: 'c', host: 'h', deployed_commit: 'eeeeeee', latest_commit: 'eeeeeee', commits_behind: 0 },  // up to date
       ],
       alertCount: 0,
     });
-    // a (versions) + b (versions, -1) behind; c is fine. Union by service → 2.
-    assert.equal(s.svcDrift, 2);
+    // `a` is genuinely 2 behind. `b` carries the legacy `-1` sentinel, which was
+    // never a measurement — it is counted as unmeasurable, not as drift.
+    assert.equal(s.svcDrift, 1);
+    assert.equal(s.svcUnmeasurable, 1);
     assert.equal(s.allHealthy, true);   // drift is a warning, not "broken"
   });
 
@@ -219,7 +221,7 @@ describe('buildDeployRows', () => {
   it('classifies up-to-date, drifted, and no-data services', () => {
     const rows = buildDeployRows([
       ver('a', { behind: 0 }),
-      ver('b', { deployed: 'aaa', latest: 'bbb', behind: 2 }),
+      ver('b', { deployed: 'aaaaaaa', latest: 'bbbbbbb', behind: 2 }),
       ver('c', { deployed: null, latest: null, behind: 0 }),
     ]);
     const byName = Object.fromEntries(rows.map((r) => [r.service, r]));
@@ -233,17 +235,19 @@ describe('buildDeployRows', () => {
     const rows = buildDeployRows([
       ver('zeta', { behind: 0 }),
       ver('alpha', { behind: 0 }),
-      ver('drift-b', { deployed: 'x', latest: 'y', behind: 1 }),
-      ver('drift-a', { deployed: 'x', latest: 'y', behind: 3 }),
+      ver('drift-b', { deployed: 'aaaaaaa', latest: 'bbbbbbb', behind: 1 }),
+      ver('drift-a', { deployed: 'aaaaaaa', latest: 'bbbbbbb', behind: 3 }),
       ver('nodata', { deployed: null, latest: null }),
     ]);
     assert.deepEqual(rows.map((r) => r.service), ['drift-a', 'drift-b', 'nodata', 'alpha', 'zeta']);
   });
 
   it('derives up-to-date from commit equality when both are known but no count is recorded', () => {
-    const rows = buildDeployRows([{ service: 'a', host: 'h', deployed_commit: 'abc', latest_commit: 'abc' }]);
-    assert.equal(rows[0].behind, 0);
+    const rows = buildDeployRows([{ service: 'a', host: 'h', deployed_commit: 'abc1234', latest_commit: 'abc1234' }]);
     assert.equal(rows[0].state, 'ok');
+    // `behind` is null, not 0: nothing was counted. The STATE carries the verdict,
+    // so an absent count can no longer masquerade as a measured "0 behind".
+    assert.equal(rows[0].behind, null);
   });
 
   it('marks a deployed service with unknown latest (no count) as unknown, not up-to-date', () => {
@@ -259,11 +263,15 @@ describe('buildDeployRows', () => {
     assert.equal(rows[0].state, 'warn');   // differing commits → drift, even though Number(null)===0
   });
 
-  it('treats commits_behind === -1 (behind, count unknown) as drift, not up-to-date', () => {
-    // drift.js writes -1 when the service is behind but the exact count is unknown.
-    const rows = buildDeployRows([ver('a', { deployed: 'x', latest: 'y', behind: -1 })]);
-    assert.equal(rows[0].state, 'warn');
-    assert.equal(rows[0].behind, -1);
+  it('treats the legacy commits_behind === -1 sentinel as NOT MEASURABLE, not as drift', () => {
+    // CONTRACT CHANGE. drift.js used to write -1 for "these two values differ,
+    // count unknown" — including when one of them was never a commit. It drove
+    // six false "Deploy drift" warnings on the live instance. A negative count is
+    // an instrumentation failure, so it now reads as unknown and never alerts.
+    const rows = buildDeployRows([ver('a', { deployed: 'aaaaaaa', latest: 'bbbbbbb', behind: -1 })]);
+    assert.equal(rows[0].state, 'stale');
+    assert.equal(rows[0].drift, 'unknown');
+    assert.ok(rows[0].behind === null || rows[0].behind >= 0, 'a negative count never reaches the renderer');
   });
 
   it('returns [] for no versions', () => {
@@ -288,15 +296,15 @@ describe('deploysGridFragment', () => {
     assert.match(html, /class="arrow"/);
   });
 
-  it('labels a deployed-but-uncomparable service "unknown" (latest fetch failed) and shows its commit', () => {
+  it('labels a deployed-but-uncomparable service "not measurable" (latest fetch failed) and shows its commit', () => {
     const html = deploysGridFragment([{ service: 'm', host: 'h', deployed_commit: 'abc1234', latest_commit: null, commits_behind: null }]);
-    assert.match(html, /unknown/);
+    assert.match(html, /not measurable/);
     assert.match(html, /abc1234/);
     assert.doesNotMatch(html, /up to date/);
   });
 
-  it('labels an unknown-count drift (-1) as "behind" (not "-1 behind")', () => {
-    const html = deploysGridFragment([ver('munin', { deployed: 'aaaaaaa', latest: 'bbbbbbb', behind: -1 })]);
+  it('labels a real drift with no count as "behind" (never "-1 behind")', () => {
+    const html = deploysGridFragment([{ service: 'munin', host: 'h', deployed_commit: 'aaaaaaa', latest_commit: 'bbbbbbb', commits_behind: null, drift_state: 'drift' }]);
     assert.match(html, />behind</);
     assert.doesNotMatch(html, /-1 behind/);
   });
@@ -310,7 +318,7 @@ describe('deploysGridFragment', () => {
   it('exception mode shows only drift and a clear all-clear when none exists', () => {
     const html = deploysGridFragment([
       ver('clean', { behind: 0 }),
-      ver('drifted', { deployed: 'a', latest: 'b', behind: 2 }),
+      ver('drifted', { deployed: 'aaaaaaa', latest: 'bbbbbbb', behind: 2 }),
     ], { exceptionsOnly: true });
     assert.match(html, /drifted/);
     assert.doesNotMatch(html, />clean</);

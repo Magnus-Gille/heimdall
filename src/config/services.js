@@ -24,6 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { canonicalHost, loadHostAliases } = require('../host-identity');
 
 const CONFIG_PATH = process.env.HEIMDALL_CONFIG_PATH
   || path.join(__dirname, '..', '..', 'heimdall.config.json');
@@ -44,8 +45,19 @@ function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 
-function stripHost(host) {
-  return typeof host === 'string' ? host.replace(/\.local$/, '') : host;
+/**
+ * Normalize a registry host id to Heimdall's canonical identity.
+ *
+ * Grimnir's services.json declares `host: "huginmunin.local"` for the box
+ * Heimdall itself runs on and calls `control-node`. Left alone, that split every
+ * service_versions row and every deploy alert onto a host identity no collector
+ * writes any more — so those alerts could never be re-evaluated or resolved.
+ * `fleet.host_aliases` in the config overlay reconciles the two names here,
+ * without Heimdall having to edit another repository's registry.
+ */
+function stripHost(host, aliases) {
+  if (typeof host !== 'string') return host;
+  return canonicalHost(host, aliases);
 }
 
 /** Drop undefined keys so merged entries stay clean. */
@@ -61,9 +73,14 @@ function stripMeta(o) {
   return rest;
 }
 
+/** The parsed config overlay object (or null). */
+function loadConfig(configPath = CONFIG_PATH) {
+  return readJson(configPath);
+}
+
 /** The overlay/fallback `services` array from heimdall.config.json. */
 function loadOverlay(configPath = CONFIG_PATH) {
-  const cfg = readJson(configPath);
+  const cfg = loadConfig(configPath);
   const arr = cfg && Array.isArray(cfg.services) ? cfg.services : [];
   // Defend against a hand-edit mistake: a null / non-object / nameless entry
   // would otherwise throw on `o.name` and take out the whole registry.
@@ -81,10 +98,10 @@ function loadGrimnir(candidates = grimnirCandidates()) {
 }
 
 /** Derive base service entries from grimnir components (one per systemd unit). */
-function deriveBaseServices(grimnir) {
+function deriveBaseServices(grimnir, aliases = {}) {
   const base = [];
   for (const c of (grimnir && grimnir.components) || []) {
-    const host = stripHost(c.host);
+    const host = stripHost(c.host, aliases);
     const repo = c.repo ? `Magnus-Gille/${c.repo}` : undefined;
     const units = Array.isArray(c.systemd_units) ? c.systemd_units : [];
     // A component usually has one service unit whose name equals the component
@@ -116,15 +133,21 @@ function deriveBaseServices(grimnir) {
  */
 function loadServicesWithMeta({ configPath, grimnirPath, logger = console } = {}) {
   const overlay = loadOverlay(configPath);
+  const aliases = loadHostAliases(loadConfig(configPath));
   const grimnir = loadGrimnir(grimnirPath ? [grimnirPath] : undefined);
 
   // Fallback: no source of truth available → the overlay list, verbatim. Callers
   // use `source` to avoid pruning grimnir-derived rows while running degraded.
   if (!grimnir) {
-    return { source: 'fallback', services: overlay.filter((o) => o.monitor !== false).map(stripMeta) };
+    return {
+      source: 'fallback',
+      services: overlay
+        .filter((o) => o.monitor !== false)
+        .map((o) => clean({ ...stripMeta(o), host: stripHost(o.host, aliases) })),
+    };
   }
 
-  const base = deriveBaseServices(grimnir);
+  const base = deriveBaseServices(grimnir, aliases);
   // Match overlay↔base by a normalized key so a case/whitespace difference
   // doesn't silently drop the overlay's pinned probe details as "stale".
   const key = (n) => String(n == null ? '' : n).trim().toLowerCase();
@@ -158,7 +181,7 @@ function loadServicesWithMeta({ configPath, grimnirPath, logger = console } = {}
     // Mark as emitted so a second overlay entry with the same normalized key
     // can't be appended twice (duplicate snapshot PK).
     emitted.add(key(o.name));
-    if (o.additive) { out.push(stripMeta(o)); continue; }
+    if (o.additive) { out.push(clean({ ...stripMeta(o), host: stripHost(o.host, aliases) })); continue; }
     dropped.push(o.name); // unmatched + not additive → stale after a rename
   }
   if (dropped.length && logger && typeof logger.warn === 'function') {
@@ -173,4 +196,6 @@ function loadServices(opts = {}) {
   return loadServicesWithMeta(opts).services;
 }
 
-module.exports = { loadServices, loadServicesWithMeta, deriveBaseServices, loadOverlay, loadGrimnir, stripHost };
+module.exports = {
+  loadServices, loadServicesWithMeta, deriveBaseServices, loadOverlay, loadGrimnir, loadConfig, stripHost,
+};
