@@ -189,6 +189,10 @@ async function performBootCheck(db, timestamp, opts = {}) {
 async function run() {
   const { openDatabase } = require('./db');
   const { sendTelegram, parseChatId } = require('./notify');
+  const { loadServicesWithMeta } = require('./config/services');
+  const { assertSafeStartupTargets } = require('./config/live-config');
+  const startupRegistry = loadServicesWithMeta();
+  assertSafeStartupTargets(startupRegistry.services);
   const db = openDatabase(); // DB_PATH comes from the systemd unit's Environment=
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Starting boot health check`);
@@ -204,7 +208,7 @@ async function run() {
       console.log('  Boot check: HEIMDALL_NOTIFY_CHAT_ID not set — Telegram disabled');
     }
 
-    const summary = await performBootCheck(db, timestamp, { notify });
+    const summary = await performBootCheck(db, timestamp, { notify, services: startupRegistry.services });
     if (summary.alerted) {
       console.log(
         `  Boot check: ${summary.down.length}/${summary.checked} DOWN — ` +
