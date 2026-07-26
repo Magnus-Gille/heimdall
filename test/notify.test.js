@@ -88,6 +88,40 @@ describe('buildNotifyText', () => {
     assert.ok(text.length < 600, 'message should not be excessively long');
   });
 
+  it('turns an Ollama response table into readable plain text', () => {
+    const task = {
+      name: 'daily-analysis',
+      status: 'completed',
+      result: [
+        'Metadata: ignored by result extraction',
+        '### Response',
+        '```markdown',
+        '| Metric | Value |',
+        '| --- | --- |',
+        '| Total tasks executed | 1 |',
+        '| **Success rate** | `100%` |',
+        '```',
+      ].join('\n'),
+    };
+    const text = buildNotifyText(task);
+    assert.match(text, /Metric · Value/);
+    assert.match(text, /Total tasks executed · 1/);
+    assert.match(text, /Success rate · 100%/);
+    assert.doesNotMatch(text, /### Response|```|\| ---|\*\*|`/);
+  });
+
+  it('truncates at a word boundary with an ellipsis and Munin pointer', () => {
+    const task = {
+      name: 'long-task',
+      status: 'completed',
+      result: '### Response\n' + 'useful words '.repeat(600),
+    };
+    const text = buildNotifyText(task);
+    assert.ok(text.length <= 4096, 'must fit Telegram text limit');
+    assert.match(text, /…\n\nFull result in Munin\.$/);
+    assert.match(text, /\b(?:useful|words)…\n\nFull result/, 'must not end in a partial word');
+  });
+
   it('handles missing result gracefully', () => {
     const task = { name: 'empty-task', status: 'failed', result: null };
     const text = buildNotifyText(task);

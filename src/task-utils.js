@@ -6,8 +6,9 @@
  *
  * Strategy:
  *  1. Try extracting from a ```### Output``` code block
- *  2. Fallback: everything from the first ### heading onwards (inclusive)
- *  3. Final fallback: full result text
+ *  2. Extract an Ollama-style `### Response` section
+ *  3. Fallback: everything after the first ### heading
+ *  4. Final fallback: full result text
  */
 function extractResultOutput(result) {
   if (!result) return '';
@@ -16,11 +17,18 @@ function extractResultOutput(result) {
   const outputMatch = result.match(/### Output\n```[\s\S]*?\n([\s\S]*?)```/);
   if (outputMatch) return outputMatch[1].trim();
 
-  // Fallback: everything from first ### heading onwards (keep heading)
+  // Ollama returns a plain Response section rather than the shell-runtime
+  // Output code fence. Its heading is metadata, not user-visible result text.
+  const responseMatch = result.match(/^###\s+Response\s*$/im);
+  if (responseMatch && responseMatch.index !== undefined) {
+    return result.slice(responseMatch.index + responseMatch[0].length).trim();
+  }
+
+  // Fallback: everything after the first result heading, without leaking it.
   const lines = result.split('\n');
   const metaEnd = lines.findIndex((l, i) => i > 0 && l.startsWith('### '));
   if (metaEnd > 0) {
-    return lines.slice(metaEnd).join('\n').trim();
+    return lines.slice(metaEnd + 1).join('\n').trim();
   }
 
   // Final fallback: full result text
