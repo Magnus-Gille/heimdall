@@ -13,6 +13,7 @@ const MAX_DISKS = 32;
 const MAX_MOUNT = 200;
 const MAX_EXTRA_KEYS = 32;
 const MAX_EXTRA_STRING = 500;
+const { validateCapabilityContract } = require('./capabilities');
 
 const NUMERIC_FIELDS = [
   'cpu_pct', 'ram_total_mb', 'ram_used_mb', 'ram_used_pct',
@@ -39,6 +40,10 @@ function validatePushPayload(body) {
   }
 
   const value = { hostname };
+
+  const capabilityContract = validateCapabilityContract(body.capability_contract);
+  if (!capabilityContract.ok) errors.push(...capabilityContract.errors);
+  else if (capabilityContract.value) value.capability_contract = capabilityContract.value;
 
   if (body.os != null) {
     if (typeof body.os !== 'string' || body.os.length > 32) errors.push('os must be a string ≤32 chars');

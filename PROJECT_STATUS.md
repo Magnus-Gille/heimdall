@@ -27,3 +27,7 @@ The four declared Node systemd service templates use Grimnir's bounded runtime
 placeholders for the service account, home, and deploy target. They require the
 registered host-owned environment file and must be rendered and preflighted by
 Grimnir's `systemd_runtime` deployment path before installation.
+
+Issue #7 capability negotiation is implemented in the current review branch:
+legacy fleet pushes remain compatible, while v1 agents can negotiate bounded
+observation-only Brokkr freshness/lifecycle evidence. It is not deployed.

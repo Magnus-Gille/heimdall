@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Magnus-Gille/heimdall/docs/monitoring-agent-capability-contract-v1.schema.json",
+  "title": "Heimdall monitoring-agent capability contract v1",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "required": { "$ref": "#/$defs/capabilities" },
+    "optional": { "$ref": "#/$defs/capabilities" },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node-capability-freshness": { "$ref": "#/$defs/freshnessEvidence" },
+        "lifecycle-result": { "$ref": "#/$defs/lifecycleEvidence" }
+      }
+    }
+  },
+  "$defs": {
+    "capabilities": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "freshnessEvidence": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "observed_at": { "type": "string", "maxLength": 64 }, "status": { "type": "string", "maxLength": 64 } }
+    },
+    "lifecycleEvidence": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "observed_at": { "type": "string", "maxLength": 64 }, "result": { "type": "string", "maxLength": 64 } }
+    }
+  }
+}

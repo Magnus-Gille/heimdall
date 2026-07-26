@@ -3,6 +3,7 @@
 const { checkFleetAuth } = require('./auth');
 const { validatePushPayload } = require('./validate');
 const { recordFleetPush } = require('../db');
+const { negotiationResponse } = require('./capabilities');
 
 /**
  * Orchestrate a fleet push end-to-end (auth → validate → persist), independent
@@ -24,6 +25,16 @@ function handlePush(db, opts) {
   if (!result.ok) return { status: 400, body: { error: 'invalid payload', details: result.errors } };
 
   const payload = result.value;
+  const negotiation = payload.capability_contract;
+  if (negotiation && negotiation.unsupportedRequired.length) {
+    return {
+      status: 422,
+      body: {
+        error: 'unsupported required capabilities',
+        capability_contract: negotiationResponse(negotiation),
+      },
+    };
+  }
   // Source IP from the connection is authoritative over any self-reported ip.
   if (sourceIp) payload.ip = sourceIp;
   // Reject a clock-skewed FUTURE ts (>2 min ahead) so a bad/malicious agent
@@ -37,7 +48,10 @@ function handlePush(db, opts) {
   } catch (err) {
     return { status: 500, body: { error: 'persist failed', detail: String(err && err.message || err) } };
   }
-  return { status: 200, body: { ok: true, hostname: payload.hostname, received_at: receivedAt } };
+  return {
+    status: 200,
+    body: { ok: true, hostname: payload.hostname, received_at: receivedAt, capability_contract: negotiationResponse(negotiation) },
+  };
 }
 
 module.exports = { handlePush };

@@ -588,6 +588,12 @@ const FLEET_SERIES_COLS = new Set(['cpu_pct', 'ram_used_pct', 'temp_cpu_c', 'tem
  */
 function recordFleetPush(db, p, receivedAt) {
   const ts = p.ts || receivedAt;
+  // Capability evidence is a bounded agent observation retained alongside the
+  // existing extensible telemetry map. It does not confer topology/workload
+  // authority on Heimdall and is intentionally not promoted into host config.
+  const extra = p.capability_contract && p.capability_contract.evidence
+    ? { ...(p.extra || {}), capability_evidence: p.capability_contract.evidence }
+    : p.extra;
   const tx = db.transaction(() => {
     db.prepare(`
       INSERT INTO fleet_metrics
@@ -609,7 +615,7 @@ function recordFleetPush(db, p, receivedAt) {
       temp_cpu_c: p.temp_cpu_c ?? null,
       temp_gpu_c: p.temp_gpu_c ?? null,
       disk: p.disk ? JSON.stringify(p.disk) : null,
-      extra: p.extra ? JSON.stringify(p.extra) : null,
+      extra: extra ? JSON.stringify(extra) : null,
       received_at: receivedAt,
     });
 
