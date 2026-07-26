@@ -271,7 +271,7 @@ async function collectServiceDrift() {
 
 #### NAS Liveness State Machine
 
-The collector must distinguish between different failure modes to avoid misreporting a healthy NAS as unreachable. The NAS has four possible states:
+The collector must distinguish between different failure modes to avoid misreporting a healthy NAS as unreachable. Before its first successful SSH collection it is `unknown`; after that it has four operational states:
 
 ```
 ┌──────────────────┐    ping fails    ┌──────────────────┐
@@ -353,6 +353,7 @@ async function collectRemote() {
 
 | NAS State | Status Indicator | Detail |
 |-----------|-----------------|--------|
+| `unknown` | 🔴 Unknown | "Storage probe has not yet completed successfully" |
 | `NAS_HEALTHY` | 🟢 Online | Normal metrics display |
 | `NAS_UNREACHABLE` | 🔴 Unreachable | "Host down — ping failed. Last seen: {timestamp}" |
 | `NAS_SSH_BROKEN` | 🟠 SSH Failed | "Host reachable but SSH collection broken. Last data: {timestamp}" |

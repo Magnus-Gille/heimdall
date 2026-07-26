@@ -94,7 +94,11 @@ Important settings:
 - `HEIMDALL_NOTIFY_CHAT_ID` enables task and critical-alert delivery through Ratatoskr.
 - `RATATOSKR_URL` stays loopback by default; non-loopback deployments should set
   `RATATOSKR_SEND_API_KEY`.
-- `HEIMDALL_STORAGE_SSH_HOST` and `HEIMDALL_STORAGE_SSH_USER` enable remote storage probes.
+- `HEIMDALL_STORAGE_SSH_HOST`, `HEIMDALL_STORAGE_SSH_USER`, and
+  `HEIMDALL_STORAGE_SSH_KEY` are all required to enable remote storage probes. The key must be a
+  dedicated, readable key: Heimdall deliberately disables SSH-agent and
+  personal-key fallback, so a missing probe credential is reported as
+  `ssh_broken` instead of silently borrowing broader access.
 - `HOMESERVER_GATEWAY_URL` and `HOMESERVER_GATEWAY_API_KEY` enable local-inference panels.
 - `HEIMDALL_SELF_HEAL_ENABLED=1` opts into recovery-task submission.
 

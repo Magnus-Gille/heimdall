@@ -46,7 +46,7 @@ function computeOverallStatus(db) {
 
   // 3. Check NAS state
   const nasState = getState(db);
-  if (nasState.state === 'unreachable' || nasState.state === 'ssh_broken') {
+  if (nasState.state === 'unknown' || nasState.state === 'unreachable' || nasState.state === 'ssh_broken') {
     hasCritical = true;
     if (reasons.length < 3) reasons.push(`NAS ${nasState.state}`);
   } else if (nasState.state === 'degraded') {

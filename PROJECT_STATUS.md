@@ -31,3 +31,9 @@ Grimnir's `systemd_runtime` deployment path before installation.
 Issue #7 capability negotiation is implemented in the current review branch:
 legacy fleet pushes remain compatible, while v1 agents can negotiate bounded
 observation-only Brokkr freshness/lifecycle evidence. It is not deployed.
+
+Issue #23 storage-probe code is prepared in a local review branch: Heimdall now
+requires an explicit, readable dedicated SSH key and reports missing identity
+as `ssh_broken`; obsolete `/home/heimdall` forced-command scripts are retired.
+The NAS restricted account/key and forced-command authorization remain a
+separate substrate operation, so this advances rather than closes #23.
