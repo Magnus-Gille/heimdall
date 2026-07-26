@@ -27,6 +27,54 @@ describe('service-page XSS hardening', () => {
   });
 });
 
+describe('service-page panel normalization warnings (#40)', () => {
+  it('renders panel identity and reason without discarded payload contents', () => {
+    const secret = 'discarded-row-payload-must-not-render';
+    const html = servicePage('test', {
+      service: 'producer', kind: 'http-service', status: 'pass', reachable: true, source: 'descriptor',
+      fetchedAt: new Date(0).toISOString(),
+      descriptor: {
+        service: { name: 'producer', label: 'Producer' }, kind: 'http-service', status: 'pass',
+        metrics: [], panels: [], links: {},
+        panel_warnings: [{ panel: 'queue', reason: 'non_object_table_rows_discarded', count: 2, discarded: secret }],
+      },
+    });
+    assert.ok(html.includes('Panel input warnings'));
+    assert.ok(html.includes('queue'));
+    assert.ok(html.includes('discarded 2 non-object table rows'));
+    assert.ok(!html.includes(secret));
+  });
+
+  it('escapes a descriptor-supplied panel identifier in the warning card', () => {
+    const hostilePanel = '<img src=x onerror=alert(1)>';
+    const html = servicePage('test', {
+      service: 'producer', kind: 'http-service', status: 'pass', reachable: true, source: 'descriptor',
+      descriptor: {
+        service: { name: 'producer', label: 'Producer' }, kind: 'http-service', status: 'pass',
+        metrics: [], panels: [], links: {},
+        panel_warnings: [{ panel: hostilePanel, reason: 'non_object_table_rows_discarded', count: 1 }],
+      },
+    });
+    assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
+    assert.ok(!html.includes(hostilePanel));
+  });
+
+  it('renders the distinct nested detail-row reason without payload contents', () => {
+    const secret = 'discarded-detail-payload-must-not-render';
+    const html = servicePage('test', {
+      service: 'producer', kind: 'http-service', status: 'pass', reachable: true, source: 'descriptor',
+      descriptor: {
+        service: { name: 'producer', label: 'Producer' }, kind: 'http-service', status: 'pass',
+        metrics: [], panels: [], links: {},
+        panel_warnings: [{ panel: 'trend', reason: 'non_object_detail_table_rows_discarded', count: 1, discarded: secret }],
+      },
+    });
+    assert.ok(html.includes('trend'));
+    assert.ok(html.includes('discarded 1 non-object detail table row'));
+    assert.ok(!html.includes(secret));
+  });
+});
+
 describe('service-page plugin panels', () => {
   const inferenceSnap = {
     service: 'm5-gateway', kind: 'inference', status: 'pass', reachable: true, source: 'plugin',

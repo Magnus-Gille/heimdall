@@ -68,6 +68,40 @@ describe('discovery.pollService tiers', () => {
     assert.equal(snap.status, 'pass');
   });
 
+  it('tier 1: persists a content-blind warning when descriptor table rows are discarded (#40)', async () => {
+    const secret = 'discarded-row-payload-must-not-surface';
+    const svc = { name: 'producer', health_url: 'http://producer/health' };
+    const snap = await pollService(svc, { fetchJson: mockFetch({
+      'http://producer/heimdall.json': {
+        ok: true, status: 200,
+        json: { service: { name: 'producer' }, panels: [{ id: 'queue', kind: 'table', rows: [[secret]] }] },
+      },
+    }), now: NOW });
+    assert.equal(snap.source, 'descriptor');
+    assert.deepEqual(snap.descriptor.panel_warnings, [
+      { panel: 'queue', reason: 'non_object_table_rows_discarded', count: 1 },
+    ]);
+    assert.doesNotMatch(JSON.stringify(snap.descriptor.panel_warnings), new RegExp(secret));
+  });
+
+  it('tier 1: persists a distinct content-blind warning for discarded detail rows (#40)', async () => {
+    const secret = 'discarded-detail-payload-must-not-surface';
+    const svc = { name: 'producer', health_url: 'http://producer/health' };
+    const snap = await pollService(svc, { fetchJson: mockFetch({
+      'http://producer/heimdall.json': {
+        ok: true, status: 200,
+        json: {
+          service: { name: 'producer' },
+          panels: [{ id: 'trend', kind: 'timeseries', points: [{ t: 'now', y: 1 }], detail: { rows: [[secret]] } }],
+        },
+      },
+    }), now: NOW });
+    assert.deepEqual(snap.descriptor.panel_warnings, [
+      { panel: 'trend', reason: 'non_object_detail_table_rows_discarded', count: 1 },
+    ]);
+    assert.doesNotMatch(JSON.stringify(snap.descriptor.panel_warnings), new RegExp(secret));
+  });
+
   it('tier 2: falls back to /health when no descriptor', async () => {
     const svc = { name: 'munin', health_url: 'http://munin/health', repo: 'Magnus-Gille/munin-memory' };
     const fetchJson = mockFetch({

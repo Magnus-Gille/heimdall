@@ -137,6 +137,18 @@ For secret-safe alert-ingest diagnostics and coordinated token rotation, see
 
 Services may expose `<base>/heimdall.json` with identity, status, version, metrics, alert rules, panels, and links. Heimdall discovers state in this order: descriptor, `/health`, then static configuration. Heimdall exposes its own descriptor at `/heimdall.json`.
 
+### Typed-panel input warnings
+
+Table panel rows, including nested `detail` table rows, must be JSON objects.
+Heimdall keeps valid object rows and leniently discards non-object rows for
+compatibility, but never silently: a
+`POST /api/panels` response includes a content-blind warning, while a
+descriptor-backed service page shows a **Panel input warnings** card. The
+normalized descriptor snapshot carries `panel_warnings` records with only
+`{ panel, reason, count }`; discarded row and cell contents are never stored or
+displayed. Producers should treat these warnings as a contract error and send
+object rows rather than `string[][]`.
+
 Primary pages are `/`, `/services`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above.
 
 ## Development

@@ -189,7 +189,7 @@ const PANEL_SCHEMA_DOC = {
   kinds: {
     stat: '{ value:number, unit?, delta?:{ value:number, dir?:"up"|"down" } }',
     timeseries: '{ points:[{t:string,y:number}], unit?, summary?:{ latest?, window?, n?, ...extra } } — points capped to last 500; extra scalar summary fields (boolean/number/string) are preserved & rendered generically (≤20 fields, keys ≤64 chars, string values ≤200 chars)',
-    table: '{ cols?:string[], rows:[object] }  (rows ≤200, cols ≤20)',
+    table: '{ cols?:string[], rows:[object] }  (rows ≤200, cols ≤20; non-object rows are discarded and reported in response warnings)',
     status: '{ state:"pass"|"warn"|"fail", message? }',
   },
   detail: 'optional nested table-kind object ({ kind:"table", rows:[...] }) rendered beneath the panel',

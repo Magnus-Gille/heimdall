@@ -183,6 +183,7 @@ function serviceView(snap) {
     findings: (d.timer && Number.isInteger(d.timer.findings)) ? d.timer.findings : null,
     metrics: Array.isArray(d.metrics) ? d.metrics : [],
     panels: Array.isArray(d.panels) ? d.panels : [],
+    panelWarnings: Array.isArray(d.panel_warnings) ? d.panel_warnings : [],
     links: d.links || {},
     alerts: d.alerts || null,
     checks: d.checks || null,
@@ -421,6 +422,25 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
   }
   const metricsCard = metricsBody ? card({ title: 'Metrics', body: metricsBody }) : '';
 
+  // Normalization is lenient, but discarded rows must not look like a valid
+  // empty panel. This data is content-blind: panel identity, reason and count.
+  const panelWarningsCard = v.panelWarnings.length
+    ? card({
+      title: 'Panel input warnings', fullWidth: true,
+      body: v.panelWarnings.map((warning) => {
+        const panel = typeof warning.panel === 'string' ? warning.panel : 'unknown panel';
+        const count = Number.isSafeInteger(warning.count) && warning.count > 0 ? warning.count : null;
+        const rowLabel = warning.reason === 'non_object_detail_table_rows_discarded'
+          ? 'non-object detail table row'
+          : (warning.reason === 'non_object_table_rows_discarded' ? 'non-object table row' : null);
+        const reason = rowLabel
+          ? `discarded ${count || 'some'} ${rowLabel}${count === 1 ? '' : 's'}`
+          : 'discarded invalid panel data';
+        return metricRow(panel, reason);
+      }).join(''),
+    })
+    : '';
+
   // archetype/plugin panels — a registered plugin renders a LIVE HTMX fragment
   // (the fragment supplies its own heading, so no card title here); an unknown
   // plugin degrades to a labelled placeholder.
@@ -478,7 +498,7 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
     <div class="page-head">
       <a href="/services" class="page-sub">← Services</a>
     </div>
-    ${grid([header, memHealthPanel, deployCard, timerCard, metricsCard, ...panelCards, ...pushedStatusCards, pushedSupporting, subViewsCard, linksCard, alertsCard].filter(Boolean))}`;
+    ${grid([header, memHealthPanel, deployCard, timerCard, metricsCard, panelWarningsCard, ...panelCards, ...pushedStatusCards, pushedSupporting, subViewsCard, linksCard, alertsCard].filter(Boolean))}`;
 
   // Inject each active plugin's stylesheet once (panels render their own markup).
   const pluginCss = [...new Set(v.panels.map((p) => p.plugin).filter(Boolean))]
