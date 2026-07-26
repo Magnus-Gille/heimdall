@@ -2,6 +2,7 @@
 
 const { execSync } = require('child_process');
 const { createAlert, resolveAlert } = require('./db');
+const { loadDiskThresholds } = require('./config/disk-thresholds');
 
 function logEvent(db, host, category, severity, title, detail, source) {
   const timestamp = new Date().toISOString();
@@ -84,13 +85,12 @@ function detectServiceRestarts(since) {
 const THRESHOLDS = {
   cpu_temp: { warning: 65, critical: 75, unit: '°C' },
   mem_used_pct: { warning: 80, critical: 90, unit: '%' },
-  disk_used_pct_sd: { warning: 80, critical: 90, unit: '%' },
-  disk_used_pct_nas: { warning: 80, critical: 90, unit: '%' },
   load_1m: { warning: 2.0, critical: 4.0, unit: '' },
+  ...loadDiskThresholds(),
 };
 
-function checkThresholds(db, host, metrics) {
-  for (const [metric, thresholds] of Object.entries(THRESHOLDS)) {
+function checkThresholds(db, host, metrics, thresholdsByMetric = THRESHOLDS) {
+  for (const [metric, thresholds] of Object.entries(thresholdsByMetric)) {
     const value = metrics[metric];
     const alertTitle = `${metric} ${thresholds.unit} threshold on ${host}`;
 

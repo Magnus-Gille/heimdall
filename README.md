@@ -32,6 +32,17 @@ interval × critical multiplier`. This intentionally prevents a weekly backup
 from inheriting an hourly or six-hour timeout. Define slow sources explicitly;
 there is no fallback cadence for unknown names.
 
+### Disk-volume policy
+
+`disk_volumes` declares the purpose of each monitored filesystem. A `general`
+volume provides explicit `warning_pct` and `critical_pct` values. A
+`quota_backup` instead declares public capacity and Time Machine quota facts,
+then the fraction of the non-quota reserve that must remain at warning and
+critical. Its calculated alert point is `used = total - reserve × fraction`.
+This lets managed backups mature normally while alerting when they consume the
+filesystem safety margin. Private overlays inherit the committed policy unless
+they explicitly replace `disk_volumes`.
+
 ## Features
 
 - Service discovery from Grimnir's `services.json`, enriched by `heimdall.config.json`.
@@ -95,6 +106,9 @@ Two settings live in the JSON overlay rather than the environment:
 - A timer service may declare `findings_exit_codes` (e.g. `[1]`) for jobs whose
   exit status still means "I ran and found things" rather than "I could not run".
   Without it, a non-zero exit is treated as a failure — the safe default.
+- `disk_volumes` is a public-safe per-metric capacity policy. Use
+  `purpose: "quota_backup"` for a quota-managed backup disk, never a global
+  percentage shared with an unlike filesystem.
 
 ### Alert lifecycle
 

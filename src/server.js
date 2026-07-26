@@ -40,6 +40,7 @@ const { loadFleetConfig } = require('./fleet/config');
 // v2 platform: self-describing service contract + discovery
 const { pollAll } = require('./discovery');
 const { loadServices, loadServicesWithMeta } = require('./config/services');
+const { loadDiskThresholds } = require('./config/disk-thresholds');
 const { assertSafeStartupTargets } = require('./config/live-config');
 const { servicesIndexPage, servicesGridFragment, servicePage, buildSelfDescriptor, selfSnapshot, withPushedStatus } = require('./render/service-page');
 const { overviewPage, overviewStatusSection, buildOverviewStatus, deploysGridFragment } = require('./render/overview');
@@ -964,6 +965,7 @@ if (isNaN(PORT) || PORT < 1 || PORT > 65535) {
 // documentation targets is worse than a failed startup: it looks operational.
 const startupRegistry = loadServicesWithMeta();
 assertSafeStartupTargets(startupRegistry.services);
+loadDiskThresholds();
 
 const { app, db, serviceConfigs, getRuntimeVersion } = buildApp();
 
