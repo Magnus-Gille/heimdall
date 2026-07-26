@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const {
   readCpuTempC,
   buildZoneEnumerateShellSnippet,
@@ -450,18 +450,37 @@ function buildNASProbeCommand(paths = NAS_PROBE_PATHS) {
   ].join('\n');
 }
 
+function buildStorageSshArgs(sshKeyPath, nasIP, sshUser, knownHostsFile) {
+  return [
+    '-i', sshKeyPath,
+    '-o', 'IdentitiesOnly=yes',
+    '-o', 'IdentityAgent=none',
+    '-o', 'ConnectTimeout=5',
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${knownHostsFile}`,
+    '-o', 'BatchMode=yes',
+    `${sshUser}@${nasIP}`,
+    buildNASProbeCommand(),
+  ];
+}
+
 function collectRemoteViaSSH(sshKeyPath, nasIP) {
   if (!isValidHost(nasIP)) {
     throw new Error(`Invalid NAS IP address: ${nasIP}`);
   }
-  const command = buildNASProbeCommand();
-
+  try {
+    fs.accessSync(sshKeyPath, fs.constants.R_OK);
+  } catch {
+    throw new Error('Storage SSH probe credential is unavailable: provision HEIMDALL_STORAGE_SSH_KEY');
+  }
   const knownHostsFile = path.join(os.homedir(), '.heimdall', 'known_hosts');
   const sshUser = process.env.HEIMDALL_STORAGE_SSH_USER || 'heimdall';
   if (!/^[a-zA-Z0-9._-]+$/.test(sshUser)) throw new Error('Invalid storage SSH user');
-  const sshCommand = `ssh -i ${sshKeyPath} -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${knownHostsFile} -o BatchMode=yes ${sshUser}@${nasIP} '${command.replace(/'/g, "'\\''")}'`;
-
-  const output = execSync(sshCommand, { encoding: 'utf8', timeout: 15000 });
+  // Never fall back to the service account's personal SSH identities. A missing
+  // dedicated key must be visible as a broken storage probe, not silently use
+  // broader authority and make the probe look healthy.
+  const sshArgs = buildStorageSshArgs(sshKeyPath, nasIP, sshUser, knownHostsFile);
+  const output = execFileSync('ssh', sshArgs, { encoding: 'utf8', timeout: 15000 });
   return output;
 }
 
@@ -548,6 +567,7 @@ module.exports = {
   CPU_TICK_FIELDS,
   parseSSHOutput,
   collectRemoteViaSSH,
+  buildStorageSshArgs,
   buildNASProbeCommand,
   NAS_PROBE_PATHS,
   ping,

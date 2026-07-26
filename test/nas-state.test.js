@@ -15,6 +15,7 @@ function tmpDb() {
 
 describe('STATES', () => {
   it('defines expected states', () => {
+    assert.strictEqual(STATES.UNKNOWN, 'unknown');
     assert.strictEqual(STATES.HEALTHY, 'healthy');
     assert.strictEqual(STATES.UNREACHABLE, 'unreachable');
     assert.strictEqual(STATES.SSH_BROKEN, 'ssh_broken');
@@ -47,9 +48,9 @@ describe('NAS state machine', () => {
   let db;
   beforeEach(() => { db = tmpDb(); });
 
-  it('default state is healthy', () => {
+  it('default state is unknown until the SSH collector proves it healthy', () => {
     const state = getState(db);
-    assert.strictEqual(state.state, 'healthy');
+    assert.strictEqual(state.state, 'unknown');
     db.close();
   });
 

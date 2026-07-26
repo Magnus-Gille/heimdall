@@ -21,7 +21,7 @@ const { loadServicesWithMeta } = require('./config/services');
 const { assertSafeStartupTargets, storageSshHost } = require('./config/live-config');
 
 const NAS_IP = storageSshHost();
-const SSH_KEY = path.join(os.homedir(), '.ssh', 'heimdall_ed25519');
+const SSH_KEY = process.env.HEIMDALL_STORAGE_SSH_KEY;
 
 // Derive a cpu_busy_pct metric row from this cycle's CPU ticks vs. the previous
 // cycle's stored ticks. Returns null if either snapshot is incomplete (e.g. the
