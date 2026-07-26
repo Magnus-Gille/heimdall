@@ -20,6 +20,7 @@ const { extractResultOutput } = require('./task-utils');
 const RATATOSKR_DEFAULT = 'http://127.0.0.1:3034/api/send';
 const MAX_PER_CYCLE = 3;
 const FETCH_TIMEOUT_MS = 8000;
+const TELEGRAM_TEXT_MAX = 4096;
 const ALERT_TEXT_MAX = 800;
 const ALERT_RETRY_BASE_MS = 60_000;
 const ALERT_RETRY_MAX_MS = 60 * 60_000;
@@ -58,6 +59,51 @@ function markNotifyFailed(db, taskKey) {
 
 // --- Message builder ---------------------------------------------------------
 
+/** Remove presentation-only Markdown while retaining readable text and lines. */
+function stripMarkdownForTelegram(text) {
+  let result = String(text || '');
+
+  // Keep fenced content, dropping only the fence and optional language marker.
+  result = result.replace(/^```[^\n]*\n?/gm, '').replace(/^```\s*$/gm, '');
+  result = result.replace(/`([^`]+)`/g, '$1');
+  result = result.replace(/^#{1,6}\s+/gm, '');
+  result = result.replace(/\*{3}(.+?)\*{3}/g, '$1');
+  result = result.replace(/\*{2}(.+?)\*{2}/g, '$1');
+  result = result.replace(/\*(.+?)\*/g, '$1');
+  result = result.replace(/~~(.+?)~~/g, '$1');
+  result = result.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
+  result = result.replace(/\[([^\]]*)\]\([^)]+\)/g, '$1');
+  result = result.replace(/^>\s?/gm, '');
+  result = result.replace(/^[-*_]{3,}\s*$/gm, '');
+  result = result.replace(/^(\s*)[-*+]\s+/gm, '$1');
+
+  // Tables need their lines: flattening them loses both headers and values.
+  result = result.split('\n').map((line) => {
+    const trimmed = line.trim();
+    if (!/^\|.*\|$/.test(trimmed)) return line;
+    const cells = trimmed.slice(1, -1).split('|').map((cell) => cell.trim());
+    if (cells.length && cells.every((cell) => /^:?-{3,}:?$/.test(cell))) return '';
+    return cells.join(' · ');
+  }).join('\n');
+
+  return result.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Bound the complete payload without splitting words, preserving Telegram's limit. */
+function truncateForTelegram(text) {
+  if (text.length <= TELEGRAM_TEXT_MAX) return text;
+  const footer = '\n\nFull result in Munin.';
+  const maxContent = TELEGRAM_TEXT_MAX - footer.length - 1; // one ellipsis
+  const candidate = text.slice(0, maxContent + 1);
+  const boundary = Math.max(
+    candidate.lastIndexOf(' '),
+    candidate.lastIndexOf('\n'),
+    candidate.lastIndexOf('\t'),
+  );
+  const content = (boundary > 0 ? candidate.slice(0, boundary) : text.slice(0, maxContent)).trimEnd();
+  return `${content}…${footer}`;
+}
+
 /**
  * Build a concise plain-text Telegram message for a terminal task.
  * @param {{ name:string, status:string, result:string|null }} task
@@ -67,10 +113,10 @@ function buildNotifyText(task) {
   const statusLabel = (task.status === 'completed' || task.status === 'done') ? 'completed' : task.status || 'unknown';
   const name = task.name || 'unknown task';
   const outcome = extractResultOutput(task.result) || task.result || '';
-  const snippet = outcome.slice(0, 200).replace(/\n+/g, ' ');
+  const snippet = stripMarkdownForTelegram(outcome);
   let text = `[Grimnir] ${name} — ${statusLabel}`;
   if (snippet) text += `\n${snippet}`;
-  return text;
+  return truncateForTelegram(text);
 }
 
 // --- Telegram send -----------------------------------------------------------
@@ -293,6 +339,8 @@ async function sendTaskNotifications(db) {
 module.exports = {
   sendTaskNotifications,
   buildNotifyText,
+  stripMarkdownForTelegram,
+  truncateForTelegram,
   markNotified,
   markNotifyFailed,
   sendTelegram,
