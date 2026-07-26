@@ -23,6 +23,11 @@ const CAPABILITY_CONTRACT = Object.freeze({
 function validateCapabilityContract(raw) {
   if (raw == null) return { ok: true, value: null };
   if (typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, errors: ['capability_contract must be an object'] };
+  for (const key of Object.keys(raw)) {
+    if (!['version', 'required', 'optional', 'evidence'].includes(key)) {
+      return { ok: false, errors: [`capability_contract.${key} is not allowed`] };
+    }
+  }
   if (raw.version !== CONTRACT_VERSION) return { ok: false, errors: [`capability_contract.version must be ${CONTRACT_VERSION}`] };
 
   for (const field of ['required', 'optional']) {

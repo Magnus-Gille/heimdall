@@ -81,4 +81,16 @@ describe('fleet monitoring-agent capability negotiation', () => {
     assert.equal(getLatestFleetMetric(db, 'bad-evidence'), undefined);
     db.close();
   });
+
+  it('rejects unknown capability-envelope fields before persistence', () => {
+    const db = tmpDb();
+    const result = handlePush(db, {
+      body: { hostname: 'bad-envelope', capability_contract: { version: 1, required: [], topology: { host: 'private' } } },
+      allowInsecureLoopback: true,
+    });
+    assert.equal(result.status, 400);
+    assert.match(result.body.details.join(' '), /capability_contract.topology is not allowed/);
+    assert.equal(getLatestFleetMetric(db, 'bad-envelope'), undefined);
+    db.close();
+  });
 });
