@@ -139,8 +139,9 @@ Services may expose `<base>/heimdall.json` with identity, status, version, metri
 
 ### Typed-panel input warnings
 
-Table panel rows must be JSON objects. Heimdall keeps valid object rows and
-leniently discards non-object rows for compatibility, but never silently: a
+Table panel rows, including nested `detail` table rows, must be JSON objects.
+Heimdall keeps valid object rows and leniently discards non-object rows for
+compatibility, but never silently: a
 `POST /api/panels` response includes a content-blind warning, while a
 descriptor-backed service page shows a **Panel input warnings** card. The
 normalized descriptor snapshot carries `panel_warnings` records with only

@@ -175,10 +175,18 @@ function panelWarnings(arr) {
   if (!Array.isArray(arr)) return [];
   const out = [];
   for (const panel of arr) {
-    if (!isObj(panel) || typeof panel.id !== 'string' || panel.kind !== 'table' || !Array.isArray(panel.rows)) continue;
-    const discarded = panel.rows.filter((row) => !isObj(row)).length;
-    if (discarded > 0) {
-      out.push({ panel: panel.id, reason: 'non_object_table_rows_discarded', count: discarded });
+    if (!isObj(panel) || typeof panel.id !== 'string') continue;
+    if (panel.kind === 'table' && Array.isArray(panel.rows)) {
+      const discarded = panel.rows.filter((row) => !isObj(row)).length;
+      if (discarded > 0) {
+        out.push({ panel: panel.id, reason: 'non_object_table_rows_discarded', count: discarded });
+      }
+    }
+    if (isObj(panel.detail) && Array.isArray(panel.detail.rows)) {
+      const discarded = panel.detail.rows.filter((row) => !isObj(row)).length;
+      if (discarded > 0) {
+        out.push({ panel: panel.id, reason: 'non_object_detail_table_rows_discarded', count: discarded });
+      }
     }
   }
   return out;

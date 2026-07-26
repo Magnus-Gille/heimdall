@@ -430,8 +430,11 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
       body: v.panelWarnings.map((warning) => {
         const panel = typeof warning.panel === 'string' ? warning.panel : 'unknown panel';
         const count = Number.isSafeInteger(warning.count) && warning.count > 0 ? warning.count : null;
-        const reason = warning.reason === 'non_object_table_rows_discarded'
-          ? `discarded ${count || 'some'} non-object table row${count === 1 ? '' : 's'}`
+        const rowLabel = warning.reason === 'non_object_detail_table_rows_discarded'
+          ? 'non-object detail table row'
+          : (warning.reason === 'non_object_table_rows_discarded' ? 'non-object table row' : null);
+        const reason = rowLabel
+          ? `discarded ${count || 'some'} ${rowLabel}${count === 1 ? '' : 's'}`
           : 'discarded invalid panel data';
         return metricRow(panel, reason);
       }).join(''),

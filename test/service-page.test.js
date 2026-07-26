@@ -58,6 +58,21 @@ describe('service-page panel normalization warnings (#40)', () => {
     assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
     assert.ok(!html.includes(hostilePanel));
   });
+
+  it('renders the distinct nested detail-row reason without payload contents', () => {
+    const secret = 'discarded-detail-payload-must-not-render';
+    const html = servicePage('test', {
+      service: 'producer', kind: 'http-service', status: 'pass', reachable: true, source: 'descriptor',
+      descriptor: {
+        service: { name: 'producer', label: 'Producer' }, kind: 'http-service', status: 'pass',
+        metrics: [], panels: [], links: {},
+        panel_warnings: [{ panel: 'trend', reason: 'non_object_detail_table_rows_discarded', count: 1, discarded: secret }],
+      },
+    });
+    assert.ok(html.includes('trend'));
+    assert.ok(html.includes('discarded 1 non-object detail table row'));
+    assert.ok(!html.includes(secret));
+  });
 });
 
 describe('service-page plugin panels', () => {
