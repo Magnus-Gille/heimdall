@@ -1,6 +1,5 @@
 'use strict';
 
-const archiver = require('archiver');
 const crypto = require('crypto');
 const { parse: markedParse } = require('marked');
 
@@ -146,7 +145,10 @@ async function buildEpub(opts) {
   const bodyXhtml = toXhtml(bodyHtml);
   const modIso = modified.toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-  const archive = archiver('zip', { zlib: { level: 9 } });
+  // archiver v8 is ESM-only; dynamic import keeps this CommonJS module usable
+  // on every supported Node runtime.
+  const { ZipArchive } = await import('archiver');
+  const archive = new ZipArchive({ zlib: { level: 9 } });
   const chunks = [];
   const done = new Promise((resolve, reject) => {
     archive.on('data', c => chunks.push(c));
