@@ -51,7 +51,7 @@ def load_config() -> dict:
                 cfg[key] = value
 
     # Real environment variables take precedence over the file
-    for key in ("HUB_URL", "FLEET_TOKEN", "INTERVAL", "HOSTNAME"):
+    for key in ("HUB_URL", "FLEET_TOKEN", "INTERVAL", "HOSTNAME", "CAPABILITY_CONTRACT_JSON"):
         env_val = os.environ.get(key)
         if env_val is not None:
             cfg[key] = env_val
@@ -75,6 +75,24 @@ def parse_interval(raw, default: int = 30, lo: int = 5, hi: int = 3600) -> int:
     if val > hi:
         return hi
     return val
+
+
+def attach_capability_contract(payload: dict, raw: str | None) -> dict:
+    """Attach an optional, overlay-supplied v1 capability envelope.
+
+    This keeps the shipped agent compatible with older Heimdall deployments:
+    absent configuration leaves the legacy payload byte-for-byte equivalent.
+    """
+    if not raw:
+        return payload
+    try:
+        contract = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("CAPABILITY_CONTRACT_JSON must be valid JSON") from exc
+    if not isinstance(contract, dict):
+        raise ValueError("CAPABILITY_CONTRACT_JSON must be a JSON object")
+    payload["capability_contract"] = contract
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +174,7 @@ def main() -> None:
     # --once: single shot
     if args.once:
         try:
-            payload = collect(cfg)
+            payload = attach_capability_contract(collect(cfg), cfg.get("CAPABILITY_CONTRACT_JSON"))
         except Exception as exc:
             print(f"collect error: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -176,7 +194,7 @@ def main() -> None:
     # Continuous loop
     while True:
         try:
-            payload = collect(cfg)
+            payload = attach_capability_contract(collect(cfg), cfg.get("CAPABILITY_CONTRACT_JSON"))
             status, body = post_payload(payload, hub_url, token)
             if not (200 <= status < 300):
                 print(f"POST failed {status}: {body}", file=sys.stderr)

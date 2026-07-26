@@ -99,6 +99,11 @@ launchctl unload ~/Library/LaunchAgents/org.grimnir.heimdall-agent.plist
 
 ## Payload schema
 
+For optional versioned capability negotiation (including Brokkr-originated
+observation evidence), see [`../docs/monitoring-agent-capability-contract-v1.md`](../docs/monitoring-agent-capability-contract-v1.md).
+Do not put hub URLs, credentials, topology, workloads, or private locations in
+the public contract payload.
+
 ```json
 {
   "hostname":      "worker-node",
