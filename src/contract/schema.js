@@ -166,6 +166,25 @@ function normalizePanels(arr, warnings = []) {
 }
 
 /**
+ * Content-blind, producer/operator-facing diagnostics for table rows that the
+ * lenient normalizer discarded. Keep this separate from the human-oriented
+ * `warnings` strings: it is persisted in the normalized descriptor while never
+ * copying a discarded row or cell.
+ */
+function panelWarnings(arr) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const panel of arr) {
+    if (!isObj(panel) || typeof panel.id !== 'string' || panel.kind !== 'table' || !Array.isArray(panel.rows)) continue;
+    const discarded = panel.rows.filter((row) => !isObj(row)).length;
+    if (discarded > 0) {
+      out.push({ panel: panel.id, reason: 'non_object_table_rows_discarded', count: discarded });
+    }
+  }
+  return out;
+}
+
+/**
  * Validate + normalize a raw descriptor object.
  * @returns {{ok: boolean, errors: string[], warnings: string[], value: object|null}}
  */
@@ -223,6 +242,11 @@ function validateDescriptor(obj) {
     links: normalizeLinks(obj.links),
     ui: isObj(obj.ui) ? obj.ui : {},
   };
+
+  // Stable, structured diagnostics for descriptor producers. These records are
+  // deliberately limited to normalization loss and never include row contents.
+  const normalizedPanelWarnings = panelWarnings(obj.panels);
+  if (normalizedPanelWarnings.length) value.panel_warnings = normalizedPanelWarnings;
 
   return { ok: true, errors, warnings, value };
 }

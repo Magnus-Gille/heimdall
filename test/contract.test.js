@@ -235,6 +235,19 @@ describe('contract.normalizePanels — pull-path cap (Fix 1)', () => {
     assert.ok(r.warnings.some((w) => w.includes('p1') && w.includes('label truncated')));
   });
 
+  it('exposes discarded non-object table rows through a content-blind panel warning (#40)', () => {
+    const secret = 'do-not-leak-this-row-value';
+    const r = validateDescriptor({
+      service: { name: 'producer' },
+      panels: [{ id: 'queue', kind: 'table', rows: [{ task: 'kept' }, [secret, 'other']] }],
+    });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value.panels[0].rows, [{ task: 'kept' }], 'valid object row remains compatible');
+    assert.deepEqual(r.value.panel_warnings, [{ panel: 'queue', reason: 'non_object_table_rows_discarded', count: 1 }]);
+    assert.ok(r.warnings.some((warning) => warning.includes('queue') && warning.includes('non-object table row')));
+    assert.doesNotMatch(JSON.stringify(r.value.panel_warnings), new RegExp(secret));
+  });
+
   it('caps the p.id-as-label fallback when id is over-long (LOW fix)', () => {
     // ids are normally short, but normalizePanels does not enforce the ingest
     // charset, so an over-long id used as the label fallback must still be bounded.

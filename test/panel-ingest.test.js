@@ -87,6 +87,15 @@ describe('validatePanel', () => {
     assert.equal(r.value.data.cols.length, 20);
   });
 
+  it('reports discarded non-object table rows without echoing their contents (#40)', () => {
+    const secret = 'discarded-row-payload-must-not-echo';
+    const r = validatePanel({ service: 'svc', panel: 'queue', kind: 'table', rows: [{ task: 'kept' }, [secret]] });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.value.data.rows, [{ task: 'kept' }]);
+    assert.ok(r.warnings.some((warning) => warning.includes('non-object table row')));
+    assert.doesNotMatch(JSON.stringify(r.warnings), new RegExp(secret));
+  });
+
   it('drops a bad optional delta but keeps the stat (lenient)', () => {
     const r = validatePanel({ service: 'svc', panel: 'p', kind: 'stat', value: 5, delta: 'nope' });
     assert.equal(r.ok, true);
