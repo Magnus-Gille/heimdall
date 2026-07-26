@@ -190,9 +190,11 @@ async function run() {
   const { openDatabase } = require('./db');
   const { sendTelegram, parseChatId } = require('./notify');
   const { loadServicesWithMeta } = require('./config/services');
+  const { loadDiskThresholds } = require('./config/disk-thresholds');
   const { assertSafeStartupTargets } = require('./config/live-config');
   const startupRegistry = loadServicesWithMeta();
   assertSafeStartupTargets(startupRegistry.services);
+  loadDiskThresholds();
   const db = openDatabase(); // DB_PATH comes from the systemd unit's Environment=
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Starting boot health check`);

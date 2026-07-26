@@ -129,6 +129,27 @@
       "critical_after_intervals": 12
     }
   },
+  "disk_volumes": {
+    "disk_used_pct_sd": {
+      "purpose": "general",
+      "warning_pct": 80,
+      "critical_pct": 90
+    },
+    "disk_used_pct_nas": {
+      "purpose": "quota_backup",
+      "total_bytes": 1800000000000,
+      "quota_bytes": 1500000000000,
+      "warning_reserve_fraction": 0.5,
+      "critical_reserve_fraction": 0.25
+    },
+    "disk_used_pct_m5": {
+      "purpose": "quota_backup",
+      "total_bytes": 3600000000000,
+      "quota_bytes": 3000000000000,
+      "warning_reserve_fraction": 0.5,
+      "critical_reserve_fraction": 0.25
+    }
+  },
   "fleet": {
     "host_aliases": {
       "huginmunin": "control-node"

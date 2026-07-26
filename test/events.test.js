@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const { openDatabase, getActiveAlerts } = require('../src/db');
 const { checkThresholds, detectReboot, THRESHOLDS } = require('../src/events');
+const { validateDiskThresholds } = require('../src/config/disk-thresholds');
 
 function tmpDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
@@ -25,6 +26,55 @@ describe('THRESHOLDS', () => {
     for (const [metric, t] of Object.entries(THRESHOLDS)) {
       assert.ok(t.warning < t.critical, `${metric}: warning should be < critical`);
     }
+  });
+});
+
+describe('quota-governed backup volume thresholds (#29)', () => {
+  const volumes = validateDiskThresholds({
+    disk_used_pct_nas: {
+      purpose: 'quota_backup',
+      total_bytes: 1_800_000_000_000,
+      quota_bytes: 1_500_000_000_000,
+      warning_reserve_fraction: 0.5,
+      critical_reserve_fraction: 0.25,
+    },
+    disk_used_pct_m5: {
+      purpose: 'quota_backup',
+      total_bytes: 3_600_000_000_000,
+      quota_bytes: 3_000_000_000_000,
+      warning_reserve_fraction: 0.5,
+      critical_reserve_fraction: 0.25,
+    },
+  });
+
+  it('keeps mature NAS and M5 Time Machine quotas quiet', () => {
+    const db = tmpDb();
+    checkThresholds(db, 'nas', { disk_used_pct_nas: 87 }, volumes);
+    checkThresholds(db, 'm5', { disk_used_pct_m5: 83 }, volumes);
+    assert.deepStrictEqual(getActiveAlerts(db), []);
+    db.close();
+  });
+
+  it('alerts when use consumes a material part of reserved non-quota slack', () => {
+    const db = tmpDb();
+    checkThresholds(db, 'nas', { disk_used_pct_nas: 92 }, volumes);
+    let alerts = getActiveAlerts(db);
+    assert.strictEqual(alerts.length, 1);
+    assert.strictEqual(alerts[0].severity, 'warning');
+
+    checkThresholds(db, 'm5', { disk_used_pct_m5: 96 }, volumes);
+    alerts = getActiveAlerts(db);
+    assert.strictEqual(alerts.find((a) => a.host === 'm5').severity, 'critical');
+    db.close();
+  });
+
+  it('rejects quota policies that cannot leave an escalating reserve', () => {
+    assert.throws(() => validateDiskThresholds({
+      bad: {
+        purpose: 'quota_backup', total_bytes: 100, quota_bytes: 100,
+        warning_reserve_fraction: 0.5, critical_reserve_fraction: 0.25,
+      },
+    }), /quota_bytes.*less than total_bytes/u);
   });
 });
 
@@ -131,7 +181,7 @@ describe('checkThresholds — retired metrics (regression)', () => {
     // 2026-07-02. The NAS probe stopped delivering that series on 2026-07-22,
     // and the `if (value == null) continue;` guard made the resolve branch dead
     // code — so the breach could never be un-asserted.
-    checkThresholds(db, 'nas', { disk_used_pct_nas: 85 });
+    checkThresholds(db, 'nas', { disk_used_pct_nas: 92 });
     assert.strictEqual(getActiveAlerts(db).length, 1);
 
     checkThresholds(db, 'nas', { mem_used_pct: 10 }); // series retired
