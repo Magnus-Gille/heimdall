@@ -10,6 +10,7 @@ const {
   defaultFetchJson, MAX_FETCH_BYTES, deriveTimerState,
 } = require('../src/discovery');
 const { openDatabase, getServiceSnapshots, getServiceSnapshot } = require('../src/db');
+const { refreshTimerSnapshots } = require('../src/timer-snapshots');
 
 const NOW = Date.parse('2026-06-23T12:00:00Z');
 
@@ -164,6 +165,30 @@ describe('discovery.pollAll persists snapshots', () => {
     assert.equal(getServiceSnapshot(db, 'm5').kind, 'inference');
     assert.equal(getServiceSnapshot(db, 'm5').descriptor.service.name, 'm5'); // hydrated JSON
     assert.equal(getServiceSnapshot(db, 'skuld').reachable, 0);
+    db.close();
+  });
+});
+
+// #26 — drift.js writes timer_* metrics during the collector cycle. The timer
+// snapshot must consume those new rows in that same cycle, rather than waiting
+// for the dashboard's next independent discovery tick.
+describe('timer snapshot refresh (#26)', () => {
+  it('reflects a successful timer metric written in the current collector cycle', async () => {
+    const db = tmpDb();
+    const timestamp = '2026-07-26T19:15:49.000Z';
+    const service = { name: 'grimnir-validate', type: 'timer' };
+    const { insertMetrics } = require('../src/db');
+    insertMetrics(db, [
+      { timestamp, host: 'control-node', metric: 'timer_last_result_grimnir-validate', value: 1, unit: 'status', metadata: 'ok' },
+      { timestamp, host: 'control-node', metric: 'timer_last_run_grimnir-validate', value: 0, unit: 'timestamp', metadata: timestamp },
+      { timestamp, host: 'control-node', metric: 'timer_next_run_grimnir-validate', value: 0, unit: 'timestamp', metadata: '2026-07-27T19:15:49.000Z' },
+    ]);
+
+    await refreshTimerSnapshots(db, [service], { now: Date.parse(timestamp) });
+
+    const snapshot = getServiceSnapshot(db, service.name);
+    assert.equal(snapshot.status, 'pass');
+    assert.equal(snapshot.descriptor.timer.lastResult, 'ok');
     db.close();
   });
 });

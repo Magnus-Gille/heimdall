@@ -8,6 +8,7 @@ const { collectLocalMetrics, parseSSHOutput, collectRemoteViaSSH, ping, checkInt
 const { STATES, recordState, getState } = require('./nas-state');
 const { readHuginTasks, detectTaskChanges, readHuginHeartbeat, getTimeoutCalibration } = require('./hugin');
 const { collectServiceDrift } = require('./drift');
+const { refreshTimerSnapshots } = require('./timer-snapshots');
 const { logEvent, detectSSHLogins, detectServiceRestarts, checkThresholds, checkTempRateOfChange, detectReboot } = require('./events');
 const { checkBackupStaleness } = require('./alerts');
 const { loadBackupDefinitions } = require('./backup-config');
@@ -487,6 +488,14 @@ async function run() {
     // Cache restart counts as metrics (avoid journalctl in request handlers)
     const { loadServiceRegistry, getServiceRestartCount } = require('./drift');
     const registry = loadServiceRegistry();
+
+    // collectServiceDrift above has just persisted each timer's timer_* rows.
+    // Refresh their config-only snapshots now, in this collector cycle, rather
+    // than letting the dashboard's independent discovery interval read stale
+    // rows for up to another cycle (#26).
+    const timerSnapshots = await refreshTimerSnapshots(db, registry);
+    if (timerSnapshots.length) console.log(`  Timer snapshots: ${timerSnapshots.length} refreshed`);
+
     const restartRows = [];
     for (const svc of registry) {
       if (svc.systemd_unit) {
