@@ -346,7 +346,7 @@ function servicesIndexPage(gitVersion, snapshots) {
 }
 
 /** Per-service detail page (generic, archetype-aware). */
-function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memAttention = null) {
+function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memAttention = null, maintenanceEvidence = null) {
   const pushedSummary = pushedStatusSummary(pushedPanels);
   const v = serviceView(withPushedStatus(snap, pushedPanels));
 
@@ -498,7 +498,7 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
     <div class="page-head">
       <a href="/services" class="page-sub">← Services</a>
     </div>
-    ${grid([header, memHealthPanel, deployCard, timerCard, metricsCard, panelWarningsCard, ...panelCards, ...pushedStatusCards, pushedSupporting, subViewsCard, linksCard, alertsCard].filter(Boolean))}`;
+    ${grid([header, memHealthPanel, deployCard, timerCard, metricsCard, panelWarningsCard, maintenanceEvidence, ...panelCards, ...pushedStatusCards, pushedSupporting, subViewsCard, linksCard, alertsCard].filter(Boolean))}`;
 
   // Inject each active plugin's stylesheet once (panels render their own markup).
   const pluginCss = [...new Set(v.panels.map((p) => p.plugin).filter(Boolean))]

@@ -37,3 +37,10 @@ requires an explicit, readable dedicated SSH key and reports missing identity
 as `ssh_broken`; obsolete `/home/heimdall` forced-command scripts are retired.
 The NAS restricted account/key and forced-command authorization remain a
 separate substrate operation, so this advances rather than closes #23.
+
+Issue #16's read-only Brokkr maintenance-evidence observer consumes the exact
+closed `maintenance-execution-result/v1` contract behind a dedicated,
+fail-closed token. It stores one monotonic latest record, renders unsupported,
+malformed, missing, stale, and negative evidence without changing service
+liveness or creating alert, promotion, policy, recovery, or actuation authority.
+Producer delivery and all live autonomy remain separately disabled.
