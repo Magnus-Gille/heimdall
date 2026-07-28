@@ -1,0 +1,61 @@
+{
+  "kind": "maintenance-execution-result",
+  "schema_version": "v1",
+  "result_id": "result-33333333333333333333333333333333",
+  "source": {
+    "source_id": "brokkr-maintenance",
+    "source_revision_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "configuration_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "freshness": {
+    "observed_at": "2026-07-28T10:00:00Z",
+    "valid_until": "2026-07-28T12:00:00Z",
+    "evaluated_at": "2026-07-28T11:04:00Z"
+  },
+  "execution_epoch": 7,
+  "journal": {
+    "journal_id": "maintenance-journal",
+    "binding_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "tail_sequence": 5,
+    "tail_receipt_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "config_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "tail_recorded_at": "2026-07-28T11:03:00Z",
+    "watch_anchor": {
+      "kind": "brokkr-durable-watch-anchor",
+      "schema_version": "v1",
+      "journal_id": "maintenance-journal",
+      "mutation_id": "maintenance-journal",
+      "attempt_id": "maintenance-attempt",
+      "target_scope_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "candidate_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "binding_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "journal_tail_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "anchored_at": "2026-07-28T10:03:00Z",
+      "anchor_digest": "sha256:7e0fde445fb27b90869f232df8140d941e43a423d6f94f74434989f5385104d1"
+    }
+  },
+  "receipt": {
+    "receipt_id": "maintenance-receipt",
+    "receipt_digest": "sha256:c9feae36ffc84c2c6ca8ba2272e084874e2f9aa1bc1006146d4736f48b736bd0",
+    "journal_tail_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "journal_id": "maintenance-journal",
+    "binding_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "reconciliation": "failed"
+  },
+  "probe_coverage": {
+    "expected_count": 2,
+    "observed_count": 2,
+    "state": "complete"
+  },
+  "reconciliation": "failed",
+  "phase": "commit",
+  "outcome": "failed",
+  "health": "unhealthy",
+  "promotion_eligible": false,
+  "recovery": {
+    "state": "failed",
+    "reason_digest": "sha256:c9feae36ffc84c2c6ca8ba2272e084874e2f9aa1bc1006146d4736f48b736bd0"
+  },
+  "extensions": [],
+  "result_digest": "sha256:af65e97c4b32946781dce78752ab18fc0dd8777b83c9ed0c7398dca6e68f587e"
+}

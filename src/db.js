@@ -218,6 +218,29 @@ const MIGRATIONS = [
       ALTER TABLE service_versions ADD COLUMN drift_reason TEXT;
     `,
   },
+  {
+    // Read-only Brokkr maintenance evidence. One current observation per
+    // bounded producer; the authoritative journal remains in Brokkr.
+    version: 9,
+    sql: `
+      CREATE TABLE IF NOT EXISTS maintenance_execution_results (
+        source_id TEXT PRIMARY KEY CHECK (source_id = 'brokkr-maintenance'),
+        valid_until TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        result TEXT NOT NULL,
+        execution_epoch INTEGER,
+        state TEXT NOT NULL CHECK (state IN ('valid', 'unsupported')),
+        schema_version TEXT NOT NULL,
+        CHECK (
+          (state = 'valid' AND execution_epoch IS NOT NULL
+            AND typeof(execution_epoch) = 'integer'
+            AND execution_epoch >= 1 AND schema_version = 'v1')
+          OR
+          (state = 'unsupported' AND schema_version <> 'v1')
+        )
+      );
+    `,
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -898,6 +921,46 @@ function listPanels(db) {
   ).all(...visiblePanelParams());
 }
 
+function upsertMaintenanceExecutionResult(db, result, receivedAt = new Date().toISOString()) {
+  const sourceId = result.source.source_id;
+  const body = JSON.stringify(result);
+  return db.transaction(() => {
+    const previous = db.prepare('SELECT execution_epoch, result, state FROM maintenance_execution_results WHERE source_id = ?').get(sourceId);
+    if (previous) {
+      if (previous.execution_epoch > result.execution_epoch) return { ok: false, code: 'older_epoch' };
+      if (previous.execution_epoch === result.execution_epoch) {
+        let previousDigest = null;
+        try { previousDigest = JSON.parse(previous.result).result_digest; } catch { /* malformed is never a replay */ }
+        if (previous.state === 'valid' && previousDigest === result.result_digest) return { ok: true, replay: true };
+        return { ok: false, code: 'epoch_conflict' };
+      }
+    }
+    db.prepare(`INSERT INTO maintenance_execution_results (source_id, valid_until, received_at, result, execution_epoch, state, schema_version)
+      VALUES (?, ?, ?, ?, ?, 'valid', 'v1')
+      ON CONFLICT(source_id) DO UPDATE SET valid_until = excluded.valid_until, received_at = excluded.received_at,
+        result = excluded.result, execution_epoch = excluded.execution_epoch, state = 'valid', schema_version = 'v1'`).run(sourceId, result.freshness.valid_until, receivedAt, body, result.execution_epoch);
+    return { ok: true, replay: false };
+  })();
+}
+function markUnsupportedMaintenanceExecutionResult(db, sourceId, schemaVersion, receivedAt = new Date().toISOString()) {
+  if (sourceId !== 'brokkr-maintenance') return { ok: false, code: 'source' };
+  const safeVersion = typeof schemaVersion === 'string' && /^v[0-9]{1,3}$/.test(schemaVersion)
+    ? schemaVersion : 'unknown';
+  const previous = db.prepare('SELECT execution_epoch FROM maintenance_execution_results WHERE source_id = ?').get(sourceId);
+  const floor = previous && Number.isSafeInteger(previous.execution_epoch) ? previous.execution_epoch : null;
+  db.prepare(`INSERT INTO maintenance_execution_results (source_id, valid_until, received_at, result, execution_epoch, state, schema_version)
+    VALUES (?, '', ?, ?, NULL, 'unsupported', ?)
+    ON CONFLICT(source_id) DO UPDATE SET valid_until = '', received_at = excluded.received_at, result = excluded.result,
+      execution_epoch = ?, state = 'unsupported', schema_version = excluded.schema_version`).run(sourceId, receivedAt, JSON.stringify({ state: 'unsupported', schema_version: safeVersion }), safeVersion, floor);
+  return { ok: true };
+}
+function getMaintenanceExecutionResult(db, sourceId = 'brokkr-maintenance') {
+  const row = db.prepare('SELECT * FROM maintenance_execution_results WHERE source_id = ?').get(sourceId);
+  if (!row) return { state: 'missing' };
+  if (row.state === 'unsupported') return { ...row, state: 'unsupported' };
+  try { return { ...row, state: 'valid', result: JSON.parse(row.result) }; } catch { return { ...row, state: 'malformed' }; }
+}
+
 module.exports = {
   openDatabase,
   upsertPanel,
@@ -907,6 +970,9 @@ module.exports = {
   countPanelServices,
   listPanelServices,
   listPanels,
+  upsertMaintenanceExecutionResult,
+  markUnsupportedMaintenanceExecutionResult,
+  getMaintenanceExecutionResult,
   isRetiredPushedPanel,
   insertMetric,
   insertMetrics,

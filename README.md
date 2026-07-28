@@ -91,6 +91,9 @@ Important settings:
 - `GRIMNIR_SERVICES_JSON` selects the ecosystem registry source.
 - `HEIMDALL_FLEET_TOKEN` authenticates `/api/fleet/push`.
 - `HEIMDALL_ALERT_TOKEN` authenticates `/api/alerts` ingestion.
+- `HEIMDALL_MAINTENANCE_RESULT_TOKEN` authenticates the separate, read-only
+  Brokkr v1 maintenance-evidence observer. It has no insecure-loopback mode;
+  its card does not affect liveness, alerting, promotion, or actuation.
 - `HEIMDALL_NOTIFY_CHAT_ID` enables task and critical-alert delivery through Ratatoskr.
 - `RATATOSKR_URL` stays loopback by default; non-loopback deployments should set
   `RATATOSKR_SEND_API_KEY`.

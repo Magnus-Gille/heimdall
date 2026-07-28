@@ -1,0 +1,52 @@
+{
+  "kind": "maintenance-execution-result-negative-fixture-set",
+  "schema_version": "v1",
+  "base": "clean.json",
+  "cases": [
+    {
+      "id": "unknown-cannot-be-healthy",
+      "mutations": {
+        "outcome": "unknown",
+        "health": "healthy",
+        "promotion_eligible": true
+      }
+    },
+    {
+      "id": "complete-coverage-counts-must-match",
+      "mutations": {
+        "probe_coverage.observed_count": 1
+      }
+    },
+    {
+      "id": "zero-probe-evidence-cannot-be-complete",
+      "mutations": {
+        "probe_coverage.expected_count": 0,
+        "probe_coverage.observed_count": 0
+      }
+    },
+    {
+      "id": "receipt-must-bind-journal-tail",
+      "mutations": {
+        "receipt.journal_tail_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    {
+      "id": "unknown-outcome-enum",
+      "mutations": {
+        "outcome": "mostly-clean"
+      }
+    },
+    {
+      "id": "command-field-is-forbidden",
+      "mutations": {
+        "command": "apt-get upgrade"
+      }
+    },
+    {
+      "id": "source-url-is-forbidden",
+      "mutations": {
+        "source.url": "https://private.invalid/result"
+      }
+    }
+  ]
+}

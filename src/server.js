@@ -15,10 +15,11 @@ try {
   }
 } catch { /* env file not present */ }
 const { resolveRuntimeVersion } = require('./version');
-const { openDatabase, getLatestMetrics, getMetricHistoryWithRollup, getRecentEvents, searchEvents, getActiveAlerts, getUnacknowledgedAlerts, acknowledgeAlert, getLatestServiceVersions, getDriftHistory, getLastCollectionTime, getProcessSnapshot, isValidMetricHost } = require('./db');
+const { openDatabase, getLatestMetrics, getMetricHistoryWithRollup, getRecentEvents, searchEvents, getActiveAlerts, getUnacknowledgedAlerts, acknowledgeAlert, getLatestServiceVersions, getDriftHistory, getLastCollectionTime, getProcessSnapshot, isValidMetricHost, getMaintenanceExecutionResult } = require('./db');
 const { alertsPage, alertsListFragment, alertsCountBadge } = require('./render/alerts');
 const { handleAlertIngest } = require('./alert-ingest');
 const { handlePanelIngest, PANEL_SCHEMA_DOC } = require('./panel-ingest');
+const { handleMaintenanceExecutionIngest } = require('./maintenance-execution-ingest');
 const { consolidationHealthCard, consolidationStatusCard, projectsListCard, taskHistoryCard, formatAgeWithTimestamp } = require('./html');
 const { fetchLedger, fetchModels, summarizeModels, fetchMetrics, parseMetrics, summarizeUsageMetrics, ledgerToMatrix, tallyVerdicts, deriveRoutingFromLedger, generateFindings, STATIC_FINDINGS } = require('./m5');
 const { listArticles, getArticle, isValidSlug, EXPORT_DIR } = require('./read-docs');
@@ -67,6 +68,7 @@ const SYNTHETIC_SERVICE_NAMES = ['heimdall', 'm5-gateway', 'munin-mcp'];
 // diff minimal/reviewable — buildApp() is a pure scope+lifecycle wrap (no logic change).
 function buildApp(injectedDb, options = {}) {
 const runtimeRoot = options.runtimeRoot || path.join(__dirname, '..');
+const now = typeof options.now === 'function' ? options.now : Date.now;
 let gitVersion = resolveRuntimeVersion(runtimeRoot);
 const app = Fastify({ logger: false });
 
@@ -719,6 +721,16 @@ app.post('/api/panels', { bodyLimit: 256 * 1024 }, async (request, reply) => {
   reply.code(result.status).send(result.body);
 });
 
+// Closed Brokkr #79 observation seam. It is distinct from generic panels so
+// malformed/partial evidence cannot be normalized into an apparently healthy card.
+app.post('/api/maintenance-execution-results', { bodyLimit: 64 * 1024 }, async (request, reply) => {
+  const result = handleMaintenanceExecutionIngest(db, {
+    authHeader: request.headers.authorization || '', token: process.env.HEIMDALL_MAINTENANCE_RESULT_TOKEN || '',
+    bindHost: process.env.HEIMDALL_BIND || '127.0.0.1', body: request.body, now: now(),
+  });
+  reply.code(result.status).send(result.body);
+});
+
 // Discoverable schema doc for the typed-panel ingest (kinds + canonical example).
 app.get('/api/panels/schema', async () => PANEL_SCHEMA_DOC);
 
@@ -891,7 +903,8 @@ app.get('/services/:name', async (request, reply) => {
     ]);
   }
   reply.header('Content-Type', 'text/html; charset=utf-8')
-    .send(servicePage(gitVersion, snap, pushedPanels, memHealth, memAttention));
+    .send(servicePage(gitVersion, snap, pushedPanels, memHealth, memAttention,
+      name === 'brokkr' ? require('./render/maintenance-execution-result').renderMaintenanceExecutionResult(getMaintenanceExecutionResult(db), now()) : null));
 });
 
 // v2 plugin panels: render a descriptor's plugin panel as a live HTMX fragment.

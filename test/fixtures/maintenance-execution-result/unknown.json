@@ -1,0 +1,49 @@
+{
+  "kind": "maintenance-execution-result",
+  "schema_version": "v1",
+  "result_id": "result-33333333333333333333333333333333",
+  "source": {
+    "source_id": "brokkr-maintenance",
+    "source_revision_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "configuration_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "freshness": {
+    "observed_at": "2026-07-28T10:00:00Z",
+    "valid_until": "2026-07-28T11:00:00Z",
+    "evaluated_at": "2026-07-28T10:30:00Z"
+  },
+  "execution_epoch": 7,
+  "journal": {
+    "journal_id": "maintenance-journal",
+    "binding_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "tail_sequence": 2,
+    "tail_receipt_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "config_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "tail_recorded_at": "2026-07-28T10:01:00Z",
+    "watch_anchor": null
+  },
+  "receipt": {
+    "receipt_id": "maintenance-receipt",
+    "receipt_digest": "sha256:8272557f7e7379046543be1b61d3abe4bb83f8ea77b7206c99b7bb506dcac692",
+    "journal_tail_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "journal_id": "maintenance-journal",
+    "binding_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "reconciliation": "reconciled"
+  },
+  "probe_coverage": {
+    "expected_count": 2,
+    "observed_count": 2,
+    "state": "complete"
+  },
+  "reconciliation": "reconciled",
+  "phase": "unknown",
+  "outcome": "unknown",
+  "health": "unknown",
+  "promotion_eligible": false,
+  "recovery": {
+    "state": "unknown",
+    "reason_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "extensions": [],
+  "result_digest": "sha256:084f3c212ecb5627baa0a3521f6b3fe8d6eb2a58d1a4b83387ce3e2781986454"
+}
