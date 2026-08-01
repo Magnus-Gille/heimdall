@@ -163,6 +163,7 @@ a.card:hover { text-decoration: none; border-color: var(--border-strong); transf
 .machine-name { font-size: var(--text-lg); font-weight: var(--weight-bold); color: var(--text-bright); }
 .machine-sub { font-size: var(--text-xs); color: var(--text-muted); margin-bottom: var(--space-3); display: flex; gap: var(--space-2); flex-wrap: wrap; }
 .machine-sub .mono { color: var(--text-muted); }
+.machine-agent { align-items: center; margin-top: calc(var(--space-2) * -1); }
 .machine-spark { margin: var(--space-2) 0 0; }
 .spark-cap { display: block; font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
 .machine-spark.is-temp .sparkline path:not(.area) { stroke: var(--status-warn); }

@@ -13,6 +13,7 @@ const MAX_DISKS = 32;
 const MAX_MOUNT = 200;
 const MAX_EXTRA_KEYS = 32;
 const MAX_EXTRA_STRING = 500;
+const MAX_AGENT_VERSION = 64;
 const { validateCapabilityContract } = require('./capabilities');
 
 const NUMERIC_FIELDS = [
@@ -52,6 +53,14 @@ function validatePushPayload(body) {
   if (body.platform != null) {
     if (typeof body.platform !== 'string' || body.platform.length > 32) errors.push('platform must be a string ≤32 chars');
     else value.platform = body.platform;
+  }
+  if (body.agent_version != null) {
+    const agentVersion = typeof body.agent_version === 'string' ? body.agent_version.trim() : '';
+    if (!agentVersion || agentVersion.length > MAX_AGENT_VERSION) {
+      errors.push(`agent_version must be a non-empty string ≤${MAX_AGENT_VERSION} chars`);
+    } else {
+      value.agent_version = agentVersion;
+    }
   }
   if (body.ts != null) {
     const t = Date.parse(body.ts);
@@ -108,5 +117,5 @@ function validatePushPayload(body) {
 
 module.exports = {
   validatePushPayload, HOSTNAME_RE, NUMERIC_FIELDS,
-  MAX_DISKS, MAX_MOUNT, MAX_EXTRA_KEYS, MAX_EXTRA_STRING,
+  MAX_DISKS, MAX_MOUNT, MAX_EXTRA_KEYS, MAX_EXTRA_STRING, MAX_AGENT_VERSION,
 };

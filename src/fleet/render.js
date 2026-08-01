@@ -6,15 +6,41 @@ const { grid, card } = require('../render/cards');
 const { machineCard, aggStrip, emptyState } = require('../render/components');
 const { deriveState, aggregateCounts } = require('./liveness');
 const { getFleetHosts, getLatestFleetMetric, getFleetMetricSeries } = require('../db');
+const { shortCommit } = require('../version');
 
 // critical → warning → stale → healthy, then alphabetical
 const STATE_RANK = { offline: 0, stale: 1, sleeping: 2, online: 3 };
 
+function displayAgentVersion(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text || null;
+}
+
+function comparableAgentVersion(value) {
+  const text = displayAgentVersion(value);
+  if (!text || text.toLowerCase() === 'unknown') return null;
+  return shortCommit(text);
+}
+
+/**
+ * The drift baseline is the runtime Heimdall checkout version currently serving
+ * the UI. When that runtime version is not a real commit (for example `dev`),
+ * drift is not knowable and must stay `unknown`.
+ */
+function agentVersionDriftState(agentVersion, baselineVersion) {
+  const current = comparableAgentVersion(agentVersion);
+  const baseline = comparableAgentVersion(baselineVersion);
+  if (!current || !baseline) return 'unknown';
+  return current === baseline ? 'current' : 'drift';
+}
+
 /** Build the view-model array (host config + latest metric + derived state). */
-function buildMachines(db, now, thresholds) {
+function buildMachines(db, now, thresholds, opts = {}) {
+  const baselineVersion = opts && typeof opts === 'object' ? opts.baselineVersion : null;
   const hosts = getFleetHosts(db);
   const machines = hosts.map((h) => {
     const m = getLatestFleetMetric(db, h.hostname) || {};
+    const agentVersion = displayAgentVersion(m.agent_version ?? h.agent_version ?? null);
     let spark = [];
     try { spark = getFleetMetricSeries(db, h.hostname, 'cpu_pct', 30); } catch { /* ignore */ }
     let tempSpark = [];
@@ -32,6 +58,8 @@ function buildMachines(db, now, thresholds) {
       temp_cpu_c: m.temp_cpu_c,
       uptime_s: m.uptime_s,
       lastSeen: h.last_seen,
+      agentVersion,
+      agentVersionState: agentVersionDriftState(agentVersion, baselineVersion),
       spark,
       tempSpark,
     };
@@ -43,7 +71,7 @@ function buildMachines(db, now, thresholds) {
 
 /** The refreshing grid fragment: aggregate strip + machine cards. */
 function fleetGridFragment(db, now, thresholds, opts = {}) {
-  const machines = buildMachines(db, now, thresholds);
+  const machines = buildMachines(db, now, thresholds, { baselineVersion: opts.baselineVersion });
   const visible = opts.exceptionsOnly
     ? machines.filter((m) => m.state === 'offline' || m.state === 'stale')
     : machines;
@@ -77,7 +105,7 @@ function fleetPage(gitVersion, db, now, thresholds) {
       <div class="fleet-temp-chart-wrap"><canvas id="fleet-temp-chart" height="260" data-hosts="${esc(JSON.stringify(hostnames))}"></canvas></div>
     </div>
     <div hx-get="/api/fleet/grid" hx-trigger="every 30s" hx-swap="innerHTML">
-      ${fleetGridFragment(db, now, thresholds)}
+      ${fleetGridFragment(db, now, thresholds, { baselineVersion: gitVersion })}
     </div>`;
   return pageShell({
     title: 'Heimdall — Fleet',
@@ -88,4 +116,7 @@ function fleetPage(gitVersion, db, now, thresholds) {
   });
 }
 
-module.exports = { buildMachines, fleetGridFragment, fleetPage, STATE_RANK };
+module.exports = {
+  buildMachines, fleetGridFragment, fleetPage, STATE_RANK,
+  agentVersionDriftState,
+};

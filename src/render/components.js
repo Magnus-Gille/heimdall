@@ -141,6 +141,11 @@ const MACHINE_STATE = {
   offline:  { cls: 'crit',  glyph: '●', label: 'Offline' },
   sleeping: { cls: 'stale', glyph: '?', label: 'Sleeping' },
 };
+const AGENT_VERSION_STATE = {
+  current: { cls: 'ok', label: 'current' },
+  drift: { cls: 'warn', label: 'drift' },
+  unknown: { cls: 'stale', label: 'unknown' },
+};
 
 /**
  * Fleet machine card.
@@ -156,12 +161,20 @@ function machineCard(m) {
     ? `${formatBytes(m.ram_used_mb * 1024 * 1024)} / ${formatBytes(m.ram_total_mb * 1024 * 1024)}`
     : (m.ram_used_pct != null ? `${Number(m.ram_used_pct).toFixed(0)}%` : '—');
   const offline = m.state === 'offline' || m.state === 'sleeping';
+  const subBits = [
+    tag(m.ip),
+    tag(m.platform),
+    m.temp_cpu_c != null ? `<span>${esc(tempStr)}</span>` : '',
+  ].filter(Boolean);
+  const agentState = AGENT_VERSION_STATE[m.agentVersionState] || AGENT_VERSION_STATE.unknown;
+  const agentLine = `<div class="machine-sub machine-agent"><span class="mono">agent ${esc(m.agentVersion || 'unknown')}</span>${statusBadge(agentState.cls, agentState.label)}</div>`;
   const inner = `
     <div class="machine-head">
       <span class="machine-name">${esc(m.label || m.hostname)}</span>
       ${statusBadge(view.cls, view.label)}
     </div>
-    <div class="machine-sub">${tag(m.ip)} ${tag(m.platform)} ${m.temp_cpu_c != null ? `<span>${esc(tempStr)}</span>` : ''}</div>
+    ${subBits.length ? `<div class="machine-sub">${subBits.join(' ')}</div>` : ''}
+    ${agentLine}
     <div class="machine-metrics">
       ${meterRow('CPU', offline ? '—' : `${Number(m.cpu_pct || 0).toFixed(0)}%`, offline ? 0 : m.cpu_pct, offline ? 'stale' : pctState(m.cpu_pct))}
       ${meterRow('RAM', offline ? '—' : ramStr, offline ? 0 : m.ram_used_pct, offline ? 'stale' : pctState(m.ram_used_pct))}

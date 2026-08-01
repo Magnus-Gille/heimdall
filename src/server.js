@@ -435,7 +435,7 @@ app.get('/', async (request, reply) => {
 // Overview status hero — self-refreshing fragment.
 app.get('/api/overview/status', async (request, reply) => {
   const status = buildOverviewStatus({
-    machines: buildMachines(db, Date.now(), fleetConfig.thresholds),
+    machines: buildMachines(db, Date.now(), fleetConfig.thresholds, { baselineVersion: gitVersion }),
     snapshots: snapshotsWithPushedOnly(),
     alertCount: getActiveAlerts(db).length,
     versions: getLatestServiceVersions(db),
@@ -813,6 +813,7 @@ app.get('/api/fleet/grid', async (request, reply) => {
   reply.header('Content-Type', 'text/html; charset=utf-8')
     .send(fleetGridFragment(db, Date.now(), fleetConfig.thresholds, {
       exceptionsOnly: request.query.mode === 'exceptions',
+      baselineVersion: gitVersion,
     }));
 });
 

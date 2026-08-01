@@ -282,7 +282,7 @@ function sectionHead(title, href, linkLabel) {
  */
 function overviewPage(gitVersion, deps = {}) {
   const { db, now = Date.now(), thresholds, snapshots = [], alertCount = 0, versions = [] } = deps;
-  const machines = buildMachines(db, now, thresholds);
+  const machines = buildMachines(db, now, thresholds, { baselineVersion: gitVersion });
   const status = buildOverviewStatus({ machines, snapshots, alertCount, versions });
   const findings = findingsFromSnapshots(snapshots);
 
@@ -298,7 +298,7 @@ function overviewPage(gitVersion, deps = {}) {
 
     ${sectionHead('Fleet attention', '/fleet', 'View fleet')}
     <div hx-get="/api/fleet/grid?mode=exceptions" hx-trigger="every 30s" hx-swap="innerHTML">
-      ${fleetGridFragment(db, now, thresholds, { exceptionsOnly: true })}
+      ${fleetGridFragment(db, now, thresholds, { exceptionsOnly: true, baselineVersion: gitVersion })}
     </div>
 
     ${sectionHead('Service attention', '/services', 'View services')}

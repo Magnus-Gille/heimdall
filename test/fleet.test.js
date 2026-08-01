@@ -74,6 +74,11 @@ describe('validate.validatePushPayload', () => {
     assert.equal(r.ok, true);
     assert.equal(r.value.hostname, 'control-node');
   });
+  it('accepts agent_version as an optional string', () => {
+    const r = validatePushPayload({ hostname: 'control-node', agent_version: 'abc1234' });
+    assert.equal(r.ok, true);
+    assert.equal(r.value.agent_version, 'abc1234');
+  });
   it('rejects missing/invalid hostname', () => {
     assert.equal(validatePushPayload({}).ok, false);
     assert.equal(validatePushPayload({ hostname: 'bad host!' }).ok, false);
@@ -168,6 +173,7 @@ describe('ingest.handlePush (integration)', () => {
     const db = tmpDb();
     const body = {
       hostname: 'control-node', os: 'linux', platform: 'pi5', ts: ago(0),
+      agent_version: 'abc1234',
       cpu_pct: 6, ram_used_pct: 28, ram_used_mb: 2300, ram_total_mb: 8096,
       uptime_s: 876300, load_1: 0.08, temp_cpu_c: 44,
       disk: [{ mount: '/', total_mb: 59000, used_mb: 6000, used_pct: 10 }],
@@ -180,11 +186,13 @@ describe('ingest.handlePush (integration)', () => {
     const latest = getLatestFleetMetric(db, 'control-node');
     assert.equal(latest.cpu_pct, 6);
     assert.equal(latest.temp_cpu_c, 44);
+    assert.equal(latest.agent_version, 'abc1234');
 
     const hosts = getFleetHosts(db);
     assert.equal(hosts.length, 1);
     assert.equal(hosts[0].ip, '192.0.2.10');
     assert.equal(hosts[0].platform, 'pi5');
+    assert.equal(hosts[0].agent_version, 'abc1234');
     assert.ok(hosts[0].last_seen);
 
     // fan-out into the generic metrics table for charting
@@ -301,6 +309,52 @@ describe('fleet render — temp sparkline', () => {
     assert.doesNotMatch(single, /class="machine-spark"><span class="spark-cap">CPU</);
     assert.match(single, /is-temp/);
     assert.equal((single.match(/machine-spark/g) || []).length, 1);
+  });
+});
+
+describe('fleet render — agent version drift', () => {
+  it('buildMachines exposes current, drift, and unknown against the explicit runtime baseline', () => {
+    const db = tmpDb();
+    handlePush(db, { body: { hostname: 'current-node', agent_version: 'abc1234' }, allowInsecureLoopback: true, now: NOW });
+    handlePush(db, { body: { hostname: 'drift-node', agent_version: 'deadbee' }, allowInsecureLoopback: true, now: NOW + 1000 });
+    handlePush(db, { body: { hostname: 'legacy-node' }, allowInsecureLoopback: true, now: NOW + 2000 });
+
+    const machines = buildMachines(db, NOW + 3000, {}, { baselineVersion: 'abc1234' });
+    const byHost = Object.fromEntries(machines.map((m) => [m.hostname, m]));
+
+    assert.equal(byHost['current-node'].agentVersion, 'abc1234');
+    assert.equal(byHost['current-node'].agentVersionState, 'current');
+    assert.equal(byHost['drift-node'].agentVersion, 'deadbee');
+    assert.equal(byHost['drift-node'].agentVersionState, 'drift');
+    assert.equal(byHost['legacy-node'].agentVersion, null);
+    assert.equal(byHost['legacy-node'].agentVersionState, 'unknown');
+    db.close();
+  });
+
+  it('machineCard renders the agent version with current, drift, and unknown badges', () => {
+    const current = machineCard({
+      hostname: 'a', label: 'A', state: 'online',
+      agentVersion: 'abc1234', agentVersionState: 'current',
+    });
+    assert.match(current, /agent abc1234/);
+    assert.match(current, /status-badge is-ok/);
+    assert.match(current, /current/);
+
+    const drift = machineCard({
+      hostname: 'b', label: 'B', state: 'online',
+      agentVersion: 'deadbee', agentVersionState: 'drift',
+    });
+    assert.match(drift, /agent deadbee/);
+    assert.match(drift, /status-badge is-warn/);
+    assert.match(drift, /drift/);
+
+    const legacy = machineCard({
+      hostname: 'c', label: 'C', state: 'online',
+      agentVersion: null, agentVersionState: 'unknown',
+    });
+    assert.match(legacy, /agent unknown/);
+    assert.match(legacy, /status-badge is-stale/);
+    assert.match(legacy, /unknown/);
   });
 });
 

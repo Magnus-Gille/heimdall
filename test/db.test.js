@@ -1,5 +1,6 @@
 'use strict';
 
+const Database = require('better-sqlite3');
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
@@ -64,8 +65,71 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 9); // bump when MIGRATIONS grows (v9 maintenance evidence ordering/state)
+    assert.strictEqual(version, 10); // bump when MIGRATIONS grows (v10 fleet agent_version persistence)
     db2.close();
+  });
+
+  it('migrates legacy fleet tables without inventing an agent version', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
+    const dbPath = path.join(dir, 'test.db');
+
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE fleet_hosts (
+        hostname TEXT PRIMARY KEY,
+        label TEXT,
+        role TEXT,
+        os TEXT,
+        platform TEXT,
+        ip TEXT,
+        always_on INTEGER NOT NULL DEFAULT 1,
+        first_seen TEXT,
+        last_seen TEXT
+      );
+
+      CREATE TABLE fleet_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        cpu_pct REAL,
+        ram_total_mb REAL,
+        ram_used_mb REAL,
+        ram_used_pct REAL,
+        uptime_s INTEGER,
+        load_1 REAL,
+        load_5 REAL,
+        load_15 REAL,
+        temp_cpu_c REAL,
+        temp_gpu_c REAL,
+        disk TEXT,
+        extra TEXT,
+        received_at TEXT NOT NULL
+      );
+    `);
+    legacy.prepare(`
+      INSERT INTO fleet_hosts (hostname, label, os, platform, first_seen, last_seen)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('legacy-node', 'Legacy node', 'linux', 'pi5', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
+    legacy.prepare(`
+      INSERT INTO fleet_metrics (timestamp, hostname, cpu_pct, received_at)
+      VALUES (?, ?, ?, ?)
+    `).run('2026-06-01T00:00:00Z', 'legacy-node', 12, '2026-06-01T00:00:00Z');
+    legacy.pragma('user_version = 9');
+    legacy.close();
+
+    const db = openDatabase(dbPath);
+    assert.equal(db.pragma('user_version', { simple: true }), 10);
+
+    const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
+    const metricCols = db.prepare('PRAGMA table_info(fleet_metrics)').all();
+    assert.ok(hostCols.some((c) => c.name === 'agent_version'));
+    assert.ok(metricCols.some((c) => c.name === 'agent_version'));
+
+    const host = db.prepare('SELECT hostname, agent_version FROM fleet_hosts WHERE hostname = ?').get('legacy-node');
+    const metric = db.prepare('SELECT hostname, agent_version FROM fleet_metrics WHERE hostname = ?').get('legacy-node');
+    assert.equal(host.agent_version, null);
+    assert.equal(metric.agent_version, null);
+    db.close();
   });
 });
 
