@@ -114,6 +114,12 @@ function insertRestartMetric(db, { serviceName = 'hugin', value = 0, timestamp =
   }]);
 }
 
+function extractEvidenceRefs(content) {
+  const match = content.match(/- \*\*Evidence refs:\*\* (.+)/u);
+  assert.ok(match, 'task content must include evidence refs');
+  return match[1].split(/,\s*/u);
+}
+
 test('self-heal is disabled by default without touching the database', async () => {
   const previous = process.env.HEIMDALL_SELF_HEAL_ENABLED;
   delete process.env.HEIMDALL_SELF_HEAL_ENABLED;
@@ -406,6 +412,45 @@ test('repeated post-diagnosis failures stay alert-only unknown', async () => {
   }
 });
 
+test('legacy lastHeal migration consumes the diagnosis budget after cooldown', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db);
+    const { result, writes, savedState } = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v0',
+        failures: { hugin: 1 },
+        lastHeal: { hugin: Date.parse('2026-08-01T10:00:00Z') },
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+    });
+    assert.equal(result.tasksSubmitted, 0);
+    assert.equal(writes.length, 0);
+    const alert = activeSelfHealAlert(db, 'hugin');
+    assert.ok(alert);
+    assert.match(alert.detail, /repeated failure/i);
+    assert.ok(savedState);
+    assert.deepEqual(savedState.diagnosisOutcomes.hugin, {
+      submittedAt: '2026-08-01T10:00:00Z',
+      mode: 'diagnosis-only',
+      taskId: null,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 test('self-heal enabled submits a diagnosis-only task with no shell snippets', async () => {
   const db = tmpDb();
   try {
@@ -437,7 +482,10 @@ test('self-heal enabled submits a diagnosis-only task with no shell snippets', a
     assert.match(write.args.content, /diagnosis-only/i);
     assert.match(write.args.content, /typed actuation blocked/i);
     assert.match(write.args.content, /grimnir #183/i);
-    assert.match(write.args.content, /ref:heim-self-heal-hugin-health/u);
+    const evidenceRefs = extractEvidenceRefs(write.args.content);
+    assert.equal(evidenceRefs.length, 2);
+    assert.match(evidenceRefs[0], /^ref:heim-sh-sv-r\d+-t\d{14}-d[a-f0-9]{12}$/u);
+    assert.match(evidenceRefs[1], /^ref:heim-sh-mt-r\d+-t\d{14}-d[a-f0-9]{12}$/u);
     assert.doesNotMatch(write.args.content, /\bssh\b|\bsudo\b|systemctl|journalctl|pgrep\b|df -h|free -h/u);
     assert.ok(savedState);
     assert.equal(savedState.diagnosisOutcomes.hugin.mode, 'diagnosis-only');
@@ -490,4 +538,66 @@ test('diagnosis task content rejects unbounded or non-opaque evidence refs', () 
     }),
     /opaque evidence ref/i,
   );
+});
+
+test('updated observations produce new opaque evidence refs for the next diagnosis envelope', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db, { timestamp: '2026-08-01T12:00:00Z', value: 1 });
+    const first = await runEnabled(db, {
+      nowMs: Date.parse('2026-08-01T12:01:00Z'),
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+    });
+    const firstWrite = first.writes.find((entry) => entry.method === 'memory_write');
+    assert.ok(firstWrite);
+    const firstRefs = extractEvidenceRefs(firstWrite.args.content);
+
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:05:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'cafebabe',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db, { timestamp: '2026-08-01T12:05:00Z', value: 2 });
+    const second = await runEnabled(db, {
+      nowMs: Date.parse('2026-08-01T12:06:00Z'),
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+    });
+    const secondWrite = second.writes.find((entry) => entry.method === 'memory_write');
+    assert.ok(secondWrite);
+    const secondRefs = extractEvidenceRefs(secondWrite.args.content);
+
+    assert.notEqual(firstRefs[0], secondRefs[0], 'health evidence ref must bind to one immutable observation');
+    assert.notEqual(firstRefs[1], secondRefs[1], 'restart evidence ref must bind to one immutable observation');
+  } finally {
+    db.close();
+  }
 });

@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -29,6 +30,12 @@ const UTC_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 function toUtcSecond(value) {
   return new Date(value).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function normalizeLegacySubmittedAt(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function loadApiKey() {
@@ -83,7 +90,7 @@ function normalizeState(raw) {
     }
   } else if (raw.lastHeal && typeof raw.lastHeal === 'object') {
     for (const [service, submittedAtMs] of Object.entries(raw.lastHeal)) {
-      const iso = toUtcSecond(submittedAtMs);
+      const iso = normalizeLegacySubmittedAt(submittedAtMs);
       if (SAFE_ID.test(service) && validUtcSecond(iso)) {
         next.lastDiagnosis[service] = { submittedAt: iso, mode: 'diagnosis-only', taskId: null };
       }
@@ -95,6 +102,10 @@ function normalizeState(raw) {
       const normalized = normalizeDiagnosisEntry(entry);
       if (SAFE_ID.test(service) && normalized) next.diagnosisOutcomes[service] = normalized;
     }
+  }
+
+  for (const [service, entry] of Object.entries(next.lastDiagnosis)) {
+    if (!next.diagnosisOutcomes[service]) next.diagnosisOutcomes[service] = { ...entry };
   }
 
   const recent = raw.circuitBreaker && Array.isArray(raw.circuitBreaker.recentDiagnoses)
@@ -146,12 +157,21 @@ function generateTaskId(serviceName, nowMs) {
   return `${taskTimestamp(nowMs)}-heal-${serviceName}`;
 }
 
-function makeEvidenceRef(service, subject) {
-  const token = String(subject || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  const ref = `ref:heim-self-heal-${service}-${token}`;
+function compactUtcSecond(value) {
+  return value.replace(/[^\d]/g, '').slice(0, 14);
+}
+
+function makeEvidenceRef(kind, { rowId, observedAt, digestParts = [] }) {
+  if (!['sv', 'mt'].includes(kind)) throw new Error(`opaque evidence kind invalid: ${kind}`);
+  if (!Number.isInteger(rowId) || rowId <= 0 || !validUtcSecond(observedAt)) {
+    throw new Error('opaque evidence identity invalid');
+  }
+
+  const digest = crypto.createHash('sha256')
+    .update(JSON.stringify([kind, rowId, observedAt, ...digestParts]))
+    .digest('hex')
+    .slice(0, 12);
+  const ref = `ref:heim-sh-${kind}-r${rowId}-t${compactUtcSecond(observedAt)}-d${digest}`;
   if (!OPAQUE_REF.test(ref)) throw new Error(`opaque evidence ref invalid: ${ref}`);
   return ref;
 }
@@ -192,17 +212,17 @@ function resolveBlockedAlert(db, service) {
 
 function latestServiceVersionRow(db, service) {
   return db.prepare(`
-    SELECT checked_at, service, host, deployed_commit
+    SELECT id, checked_at, service, host, deployed_commit
     FROM service_versions
     WHERE service = ?
-    ORDER BY checked_at DESC
+    ORDER BY checked_at DESC, id DESC
     LIMIT 1
   `).get(service);
 }
 
 function latestRestartMetricRow(db, service) {
   return db.prepare(`
-    SELECT timestamp, value
+    SELECT id, timestamp, metric, value
     FROM metrics
     WHERE metric = ?
     ORDER BY timestamp DESC, id DESC
@@ -219,7 +239,11 @@ function defaultHealthEvidenceLoader(db, service) {
     instanceId: row.host,
     observedAt: row.checked_at,
     outcome: row.deployed_commit == null ? 'failed' : 'ok',
-    diagnosticRef: makeEvidenceRef(service, 'health'),
+    diagnosticRef: makeEvidenceRef('sv', {
+      rowId: row.id,
+      observedAt: row.checked_at,
+      digestParts: [row.service, row.host],
+    }),
   };
 }
 
@@ -231,7 +255,11 @@ function defaultRestartEvidenceLoader(db, service) {
     serviceId: service,
     observedAt: row.timestamp,
     restartCount24h: row.value,
-    diagnosticRef: makeEvidenceRef(service, 'restarts'),
+    diagnosticRef: makeEvidenceRef('mt', {
+      rowId: row.id,
+      observedAt: row.timestamp,
+      digestParts: [service, row.metric],
+    }),
   };
 }
 
