@@ -11,7 +11,9 @@ const { validatePushPayload } = require('../src/fleet/validate');
 const { checkFleetAuth } = require('../src/fleet/auth');
 const { handlePush } = require('../src/fleet/ingest');
 const { loadFleetConfig } = require('../src/fleet/config');
-const { buildMachines, fleetPage } = require('../src/fleet/render');
+const {
+  buildMachines, fleetGridFragment, fleetPage, agentVersionDriftState,
+} = require('../src/fleet/render');
 const { machineCard } = require('../src/render/components');
 const { buildApp } = require('../src/server');
 const {
@@ -78,6 +80,23 @@ describe('validate.validatePushPayload', () => {
     const r = validatePushPayload({ hostname: 'control-node', agent_version: 'abc1234' });
     assert.equal(r.ok, true);
     assert.equal(r.value.agent_version, 'abc1234');
+  });
+  it('rejects a malformed agent_version', () => {
+    assert.equal(validatePushPayload({ hostname: 'a', agent_version: 123 }).ok, false);
+    assert.equal(validatePushPayload({ hostname: 'a', agent_version: { sha: 'abc1234' } }).ok, false);
+  });
+  it('rejects an empty agent_version after trimming whitespace', () => {
+    const r = validatePushPayload({ hostname: 'a', agent_version: '   ' });
+    assert.equal(r.ok, false);
+  });
+  it('rejects an overlong agent_version', () => {
+    const r = validatePushPayload({ hostname: 'a', agent_version: 'a'.repeat(65) });
+    assert.equal(r.ok, false);
+  });
+  it('trims surrounding whitespace from agent_version before persistence', () => {
+    const r = validatePushPayload({ hostname: 'a', agent_version: '  AbC1234  ' });
+    assert.equal(r.ok, true);
+    assert.equal(r.value.agent_version, 'AbC1234');
   });
   it('rejects missing/invalid hostname', () => {
     assert.equal(validatePushPayload({}).ok, false);
@@ -226,6 +245,37 @@ describe('ingest.handlePush (integration)', () => {
     assert.equal(getLatestFleetMetric(db, 'h').cpu_pct, 20);
     db.close();
   });
+
+  it('a later versionless push clears the latest snapshot and rendered card to unknown', () => {
+    const db = tmpDb();
+    handlePush(db, {
+      body: { hostname: 'h', cpu_pct: 10, agent_version: 'abc1234' },
+      allowInsecureLoopback: true,
+      now: NOW,
+    });
+    handlePush(db, {
+      body: { hostname: 'h', cpu_pct: 20 },
+      allowInsecureLoopback: true,
+      now: NOW,
+    });
+
+    const latest = getLatestFleetMetric(db, 'h');
+    assert.equal(latest.cpu_pct, 20, 'equal received_at rows must still pick the later id');
+    assert.equal(latest.agent_version, null);
+
+    const host = getFleetHosts(db).find((row) => row.hostname === 'h');
+    assert.equal(host.agent_version, null, 'host snapshot must not retain a stale version');
+
+    const machine = buildMachines(db, NOW + 1000, {}, { baselineVersion: 'abc1234' })
+      .find((row) => row.hostname === 'h');
+    assert.equal(machine.agentVersion, null);
+    assert.equal(machine.agentVersionState, 'unknown');
+    assert.match(
+      machineCard(machine),
+      /machine-agent"><span class="mono">agent unknown<\/span><span class="status-badge is-stale">[\s\S]*?unknown<\/span><\/div>/,
+    );
+    db.close();
+  });
 });
 
 describe('POST /api/fleet/push request bounds', () => {
@@ -313,6 +363,21 @@ describe('fleet render — temp sparkline', () => {
 });
 
 describe('fleet render — agent version drift', () => {
+  it('agentVersionDriftState handles null, unknown, dev, short/full SHAs, and mixed case directly', () => {
+    assert.equal(agentVersionDriftState(null, 'abc1234'), 'unknown');
+    assert.equal(agentVersionDriftState('abc1234', null), 'unknown');
+    assert.equal(agentVersionDriftState('unknown', 'abc1234'), 'unknown');
+    assert.equal(agentVersionDriftState('abc1234', 'unknown'), 'unknown');
+    assert.equal(agentVersionDriftState('dev', 'abc1234'), 'unknown');
+    assert.equal(agentVersionDriftState('abc1234', 'dev'), 'unknown');
+    assert.equal(agentVersionDriftState('AbC1234', 'aBc1234'), 'current');
+    assert.equal(
+      agentVersionDriftState('ABCDEF0123456789ABCDEF0123456789ABCDEF01', 'abcdef0'),
+      'current',
+    );
+    assert.equal(agentVersionDriftState('deadbee', 'ABC1234'), 'drift');
+  });
+
   it('buildMachines exposes current, drift, and unknown against the explicit runtime baseline', () => {
     const db = tmpDb();
     handlePush(db, { body: { hostname: 'current-node', agent_version: 'abc1234' }, allowInsecureLoopback: true, now: NOW });
@@ -331,30 +396,48 @@ describe('fleet render — agent version drift', () => {
     db.close();
   });
 
+  it('exceptionsOnly still surfaces an online host with agent drift', () => {
+    const db = tmpDb();
+    handlePush(db, { body: { hostname: 'current-node', agent_version: 'abc1234' }, allowInsecureLoopback: true, now: NOW });
+    handlePush(db, { body: { hostname: 'drift-node', agent_version: 'deadbee' }, allowInsecureLoopback: true, now: NOW + 1000 });
+
+    const html = fleetGridFragment(db, NOW + 2000, {}, { exceptionsOnly: true, baselineVersion: 'abc1234' });
+    assert.match(html, /drift-node/);
+    assert.match(
+      html,
+      /machine-agent"><span class="mono">agent deadbee<\/span><span class="status-badge is-warn">[\s\S]*?drift<\/span><\/div>/,
+    );
+    assert.doesNotMatch(html, /No fleet exceptions\./);
+    db.close();
+  });
+
   it('machineCard renders the agent version with current, drift, and unknown badges', () => {
     const current = machineCard({
       hostname: 'a', label: 'A', state: 'online',
       agentVersion: 'abc1234', agentVersionState: 'current',
     });
-    assert.match(current, /agent abc1234/);
-    assert.match(current, /status-badge is-ok/);
-    assert.match(current, /current/);
+    assert.match(
+      current,
+      /machine-agent"><span class="mono">agent abc1234<\/span><span class="status-badge is-ok">[\s\S]*?current<\/span><\/div>/,
+    );
 
     const drift = machineCard({
       hostname: 'b', label: 'B', state: 'online',
       agentVersion: 'deadbee', agentVersionState: 'drift',
     });
-    assert.match(drift, /agent deadbee/);
-    assert.match(drift, /status-badge is-warn/);
-    assert.match(drift, /drift/);
+    assert.match(
+      drift,
+      /machine-agent"><span class="mono">agent deadbee<\/span><span class="status-badge is-warn">[\s\S]*?drift<\/span><\/div>/,
+    );
 
     const legacy = machineCard({
       hostname: 'c', label: 'C', state: 'online',
       agentVersion: null, agentVersionState: 'unknown',
     });
-    assert.match(legacy, /agent unknown/);
-    assert.match(legacy, /status-badge is-stale/);
-    assert.match(legacy, /unknown/);
+    assert.match(
+      legacy,
+      /machine-agent"><span class="mono">agent unknown<\/span><span class="status-badge is-stale">[\s\S]*?unknown<\/span><\/div>/,
+    );
   });
 });
 

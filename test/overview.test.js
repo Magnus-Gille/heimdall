@@ -186,6 +186,17 @@ describe('buildOverviewStatus', () => {
     assert.equal(sleeping.fleetOffline, 0);
     assert.equal(sleeping.allHealthy, true);
   });
+
+  it('counts agent version drift as a fleet exception even while the machine is online', () => {
+    const s = buildOverviewStatus({
+      machines: [{ state: 'online', agentVersionState: 'drift' }],
+      snapshots: [],
+      alertCount: 0,
+    });
+    assert.equal(s.fleetOnline, 1);
+    assert.equal(s.fleetDrift, 1);
+    assert.equal(s.allHealthy, false);
+  });
 });
 
 describe('overviewStatusFragment', () => {
@@ -210,6 +221,16 @@ describe('overviewStatusFragment', () => {
     }));
     assert.match(html, /Attention/i);
     assert.match(html, /is-crit/);
+  });
+
+  it('warns on the Machines online KPI when the only fleet exception is agent drift', () => {
+    const html = overviewStatusFragment(buildOverviewStatus({
+      machines: [{ state: 'online', agentVersionState: 'drift' }],
+      snapshots: [],
+      alertCount: 0,
+    }));
+    assert.match(html, /Attention needed/);
+    assert.match(html, /class="kpi-val is-warn">1\/1<\/span><span class="kpi-label">Machines online<\/span>/);
   });
 });
 

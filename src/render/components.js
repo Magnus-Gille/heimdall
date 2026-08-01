@@ -19,7 +19,7 @@ const STATUS = {
 };
 
 function normState(state) {
-  return STATUS[state] ? state : 'stale';
+  return Object.hasOwn(STATUS, state) ? state : 'stale';
 }
 
 /**
@@ -154,7 +154,7 @@ const AGENT_VERSION_STATE = {
  *      tempSpark[], href }
  */
 function machineCard(m) {
-  const view = MACHINE_STATE[m.state] || MACHINE_STATE.sleeping;
+  const view = Object.hasOwn(MACHINE_STATE, m.state) ? MACHINE_STATE[m.state] : MACHINE_STATE.sleeping;
   const tag = (clsTxt) => clsTxt ? `<span class="mono">${esc(clsTxt)}</span>` : '';
   const tempStr = m.temp_cpu_c != null ? `${Number(m.temp_cpu_c).toFixed(0)}°C` : '—';
   const ramStr = (m.ram_used_mb != null && m.ram_total_mb != null)
@@ -166,7 +166,9 @@ function machineCard(m) {
     tag(m.platform),
     m.temp_cpu_c != null ? `<span>${esc(tempStr)}</span>` : '',
   ].filter(Boolean);
-  const agentState = AGENT_VERSION_STATE[m.agentVersionState] || AGENT_VERSION_STATE.unknown;
+  const agentState = Object.hasOwn(AGENT_VERSION_STATE, m.agentVersionState)
+    ? AGENT_VERSION_STATE[m.agentVersionState]
+    : AGENT_VERSION_STATE.unknown;
   const agentLine = `<div class="machine-sub machine-agent"><span class="mono">agent ${esc(m.agentVersion || 'unknown')}</span>${statusBadge(agentState.cls, agentState.label)}</div>`;
   const inner = `
     <div class="machine-head">

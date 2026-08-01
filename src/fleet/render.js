@@ -4,7 +4,7 @@ const { pageShell } = require('../render/shell');
 const { esc } = require('../render/util');
 const { grid, card } = require('../render/cards');
 const { machineCard, aggStrip, emptyState } = require('../render/components');
-const { deriveState, aggregateCounts } = require('./liveness');
+const { deriveState } = require('./liveness');
 const { getFleetHosts, getLatestFleetMetric, getFleetMetricSeries } = require('../db');
 const { shortCommit } = require('../version');
 
@@ -32,6 +32,23 @@ function agentVersionDriftState(agentVersion, baselineVersion) {
   const baseline = comparableAgentVersion(baselineVersion);
   if (!current || !baseline) return 'unknown';
   return current === baseline ? 'current' : 'drift';
+}
+
+function isFleetException(machine) {
+  return machine.state === 'offline'
+    || machine.state === 'stale'
+    || machine.agentVersionState === 'drift';
+}
+
+function aggregateMachineCounts(machines = []) {
+  const counts = { ok: 0, warn: 0, crit: 0, stale: 0 };
+  for (const machine of machines) {
+    if (machine.state === 'offline') counts.crit += 1;
+    else if (machine.state === 'sleeping') counts.stale += 1;
+    else if (machine.state === 'stale' || machine.agentVersionState === 'drift') counts.warn += 1;
+    else counts.ok += 1;
+  }
+  return counts;
 }
 
 /** Build the view-model array (host config + latest metric + derived state). */
@@ -73,9 +90,9 @@ function buildMachines(db, now, thresholds, opts = {}) {
 function fleetGridFragment(db, now, thresholds, opts = {}) {
   const machines = buildMachines(db, now, thresholds, { baselineVersion: opts.baselineVersion });
   const visible = opts.exceptionsOnly
-    ? machines.filter((m) => m.state === 'offline' || m.state === 'stale')
+    ? machines.filter(isFleetException)
     : machines;
-  const counts = aggregateCounts(machines.map((m) => m.state));
+  const counts = aggregateMachineCounts(machines);
   const aggCard = card({
     fullWidth: true,
     body: `<div class="card-head"><span class="card-title">Fleet</span></div>${aggStrip(counts)}`,
@@ -118,5 +135,5 @@ function fleetPage(gitVersion, db, now, thresholds) {
 
 module.exports = {
   buildMachines, fleetGridFragment, fleetPage, STATE_RANK,
-  agentVersionDriftState,
+  agentVersionDriftState, aggregateMachineCounts, isFleetException,
 };
