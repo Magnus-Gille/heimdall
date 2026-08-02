@@ -269,7 +269,7 @@ async function persistObservationSnapshot(rpc, snapshot) {
     key: snapshot.key,
     content: snapshot.content,
     tags: ['self-heal', 'diagnosis-context'],
-    expected_updated_at: null,
+    create_if_absent: true,
   });
   if (!writeResult) throw new Error('snapshot persistence could not be proven');
 

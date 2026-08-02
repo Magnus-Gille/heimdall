@@ -134,10 +134,16 @@ function createMuninStub() {
       if (method === 'memory_write') {
         const entryKey = `${args.namespace}\u0000${args.key}`;
         const existing = entries.get(entryKey);
-        if (Object.prototype.hasOwnProperty.call(args, 'expected_updated_at') && args.expected_updated_at === null) {
+        if (args.create_if_absent === true) {
           if (existing) {
-            if (existing.content !== args.content) return null;
-            return { updated_at: existing.updated_at };
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({
+                error: 'conflict',
+                conflict_reason: 'already_exists',
+                current_updated_at: existing.updated_at,
+              }) }],
+            };
           }
         }
 
@@ -600,7 +606,8 @@ test('self-heal enabled persists immutable snapshots and submits Hugin Context-r
     assert.equal(result.tasksSubmitted, 1);
     const snapshotWrites = writes.filter((entry) => entry.method === 'memory_write' && entry.args.key === 'snapshot');
     assert.equal(snapshotWrites.length, 2);
-    assert.ok(snapshotWrites.every((entry) => entry.args.expected_updated_at === null));
+    assert.ok(snapshotWrites.every((entry) => entry.args.create_if_absent === true));
+    assert.ok(snapshotWrites.every((entry) => !Object.prototype.hasOwnProperty.call(entry.args, 'expected_updated_at')));
     const taskWrite = writes.find((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace));
     assert.ok(taskWrite);
     assert.match(taskWrite.args.content, /diagnosis-only/i);
