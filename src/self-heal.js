@@ -31,6 +31,7 @@ const SNAPSHOT_KEY = 'snapshot';
 const SAFE_ID = /^[a-z][a-z0-9-]{2,62}$/;
 const OPAQUE_REF = /^ref:[a-z][a-z0-9-]{2,120}$/;
 const HUGIN_CONTEXT_REF = /^(?:[a-z0-9][a-z0-9-]*\/)+[a-z0-9][a-z0-9-]*$/;
+const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 const UTC_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const EVIDENCE_IDENTITY = /^ref:(heim-sh-(sv|mt)-r([1-9]\d*)-t(\d{14})-d([a-f0-9]{12}))$/;
 
@@ -72,9 +73,10 @@ function defaultState() {
 function normalizeDiagnosisEntry(value) {
   if (!value || typeof value !== 'object') return null;
   if (!validUtcSecond(value.submittedAt)) return null;
+  if (value.mode !== 'diagnosis-only') return null;
   return {
     submittedAt: value.submittedAt,
-    mode: value.mode === 'diagnosis-only' ? value.mode : 'diagnosis-only',
+    mode: value.mode,
     taskId: typeof value.taskId === 'string' && value.taskId ? value.taskId : null,
   };
 }
@@ -155,6 +157,14 @@ function validUtcSecond(value) {
   return !Number.isNaN(parsed) && new Date(parsed).toISOString().replace('.000Z', 'Z') === value;
 }
 
+function validUtcTimestamp(value) {
+  if (typeof value !== 'string' || !UTC_TIMESTAMP.test(value)) return false;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return false;
+  const iso = new Date(parsed).toISOString();
+  return value === iso || value === iso.replace('.000Z', 'Z');
+}
+
 function taskTimestamp(nowMs) {
   return new Date(nowMs).toISOString().replace(/[-:T]/g, '').slice(0, 14);
 }
@@ -169,7 +179,7 @@ function compactUtcSecond(value) {
 
 function makeEvidenceRef(kind, { rowId, observedAt, digestParts = [] }) {
   if (!['sv', 'mt'].includes(kind)) throw new Error(`opaque evidence kind invalid: ${kind}`);
-  if (!Number.isInteger(rowId) || rowId <= 0 || !validUtcSecond(observedAt)) {
+  if (!Number.isInteger(rowId) || rowId <= 0 || !validUtcTimestamp(observedAt)) {
     throw new Error('opaque evidence identity invalid');
   }
 
@@ -221,6 +231,7 @@ function buildObservationSnapshot(observationType, evidence) {
     snapshot.instance_id = evidence.instanceId;
     snapshot.outcome = evidence.outcome;
   } else if (observationType === 'restart-budget') {
+    snapshot.instance_id = evidence.instanceId;
     snapshot.restart_count_24h = evidence.restartCount24h;
   } else {
     throw new Error(`snapshot type invalid: ${observationType}`);
@@ -263,21 +274,33 @@ function asContextRef(namespace, key) {
   return `${namespace}/${key}`;
 }
 
+async function writeAndProveMuninContent(rpc, writeArgs) {
+  try {
+    await rpc('memory_write', writeArgs);
+  } catch {
+    return false;
+  }
+
+  try {
+    const readResult = decodeMuninRead(await rpc('memory_read', {
+      namespace: writeArgs.namespace,
+      key: writeArgs.key,
+    }));
+    return !!readResult && readResult.found && readResult.content === writeArgs.content;
+  } catch {
+    return false;
+  }
+}
+
 async function persistObservationSnapshot(rpc, snapshot) {
-  const writeResult = await rpc('memory_write', {
+  const ok = await writeAndProveMuninContent(rpc, {
     namespace: snapshot.namespace,
     key: snapshot.key,
     content: snapshot.content,
     tags: ['self-heal', 'diagnosis-context'],
     create_if_absent: true,
   });
-  if (!writeResult) throw new Error('snapshot persistence could not be proven');
-
-  const readResult = decodeMuninRead(await rpc('memory_read', {
-    namespace: snapshot.namespace,
-    key: snapshot.key,
-  }));
-  if (!readResult || !readResult.found || readResult.content !== snapshot.content) {
+  if (!ok) {
     throw new Error('snapshot persistence could not be proven');
   }
 
@@ -350,13 +373,36 @@ function latestServiceVersionRow(db, service) {
 }
 
 function latestRestartMetricRow(db, service) {
+  const metricName = `service_restarts_24h_${service.replace(/[^a-zA-Z0-9_]/g, '_')}`;
   return db.prepare(`
-    SELECT id, timestamp, metric, value
+    SELECT id, timestamp, host, metric, value
     FROM metrics
     WHERE metric = ?
     ORDER BY timestamp DESC, id DESC
     LIMIT 1
-  `).get(`service_restarts_24h_${service.replace(/[^a-zA-Z0-9_]/g, '_')}`);
+  `).get(metricName);
+}
+
+function latestRestartMetricRowForHost(db, service, targetHost, aliases) {
+  const metricName = `service_restarts_24h_${service.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+  const exact = db.prepare(`
+    SELECT id, timestamp, host, metric, value
+    FROM metrics
+    WHERE metric = ?
+      AND host = ?
+    ORDER BY timestamp DESC, id DESC
+    LIMIT 1
+  `).get(metricName, targetHost);
+  if (exact) return exact;
+
+  const rows = db.prepare(`
+    SELECT id, timestamp, host, metric, value
+    FROM metrics
+    WHERE metric = ?
+    ORDER BY timestamp DESC, id DESC
+    LIMIT 64
+  `).all(metricName);
+  return rows.find((row) => canonicalHost(row.host, aliases) === targetHost) || null;
 }
 
 function defaultHealthEvidenceLoader(db, service) {
@@ -376,18 +422,21 @@ function defaultHealthEvidenceLoader(db, service) {
   };
 }
 
-function defaultRestartEvidenceLoader(db, service) {
-  const row = latestRestartMetricRow(db, service);
+function defaultRestartEvidenceLoader(db, service, { targetHost, aliases } = {}) {
+  const row = targetHost
+    ? latestRestartMetricRowForHost(db, service, targetHost, aliases)
+    : latestRestartMetricRow(db, service);
   if (!row) return null;
   return {
     schemaVersion: SUPPORTED_EVIDENCE_SCHEMA_VERSION,
     serviceId: service,
+    instanceId: row.host,
     observedAt: row.timestamp,
     restartCount24h: row.value,
     diagnosticRef: makeEvidenceRef('mt', {
       rowId: row.id,
       observedAt: row.timestamp,
-      digestParts: [service, row.metric],
+      digestParts: [service, row.host, row.metric],
     }),
   };
 }
@@ -406,7 +455,7 @@ function validateHealthEvidence(evidence, expectedService, nowMs) {
   if (version !== SUPPORTED_EVIDENCE_SCHEMA_VERSION) {
     return reject('unsupported-version', 'unknown evidence: unsupported version');
   }
-  if (!SAFE_ID.test(evidence.serviceId) || !SAFE_ID.test(evidence.instanceId) || !validUtcSecond(evidence.observedAt)) {
+  if (!SAFE_ID.test(evidence.serviceId) || !SAFE_ID.test(evidence.instanceId) || !validUtcTimestamp(evidence.observedAt)) {
     return reject('malformed', 'unknown evidence: malformed');
   }
   if (evidence.serviceId !== expectedService) return reject('identity-mismatch', 'unknown evidence: identity mismatch');
@@ -419,7 +468,7 @@ function validateHealthEvidence(evidence, expectedService, nowMs) {
   return accept(evidence);
 }
 
-function validateRestartEvidence(evidence, expectedService, nowMs) {
+function validateRestartEvidence(evidence, expectedService, expectedHost, aliases, nowMs) {
   if (!evidence) {
     return reject('restart-unavailable', 'unknown evidence: restart storm evidence unavailable');
   }
@@ -427,7 +476,14 @@ function validateRestartEvidence(evidence, expectedService, nowMs) {
   if (version !== SUPPORTED_EVIDENCE_SCHEMA_VERSION) {
     return reject('unsupported-version', 'unknown evidence: unsupported version');
   }
-  if (evidence.serviceId !== expectedService || !validUtcSecond(evidence.observedAt) || !OPAQUE_REF.test(evidence.diagnosticRef)) {
+  if (!SAFE_ID.test(evidence.serviceId) || !SAFE_ID.test(evidence.instanceId)
+      || !validUtcTimestamp(evidence.observedAt) || !OPAQUE_REF.test(evidence.diagnosticRef)) {
+    return reject('malformed', 'unknown evidence: malformed');
+  }
+  if (evidence.serviceId !== expectedService) {
+    return reject('identity-mismatch', 'unknown evidence: identity mismatch');
+  }
+  if (canonicalHost(evidence.instanceId, aliases) !== expectedHost) {
     return reject('identity-mismatch', 'unknown evidence: identity mismatch');
   }
   if (!Number.isFinite(evidence.restartCount24h) || evidence.restartCount24h < 0) {
@@ -479,6 +535,15 @@ function pruneRecentDiagnoses(recent, nowMs) {
     .slice(-MAX_RECENT_DIAGNOSES);
 }
 
+function latestRecentDiagnosis(recent, service) {
+  if (!Array.isArray(recent)) return null;
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const entry = recent[index];
+    if (entry && entry.service === service) return entry;
+  }
+  return null;
+}
+
 function ensureReservationTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS self_heal_reservations (
@@ -521,7 +586,28 @@ function reservationDetail(phase) {
     : 'unknown evidence: diagnosis reservation pending';
 }
 
+function readReservationRow(db, service) {
+  return db.prepare(`
+    SELECT service, phase, task_id, reserved_at, expires_at, submitted_at, updated_at
+    FROM self_heal_reservations
+    WHERE service = ?
+  `).get(service);
+}
+
+function runReservationTransaction(db, fn) {
+  const tx = db.transaction(fn);
+  try {
+    return tx.immediate();
+  } catch (err) {
+    if (/SQLITE_BUSY|SQLITE_LOCKED/u.test(String(err && err.message))) {
+      return reject('reservation-pending', reservationDetail('pending'));
+    }
+    throw err;
+  }
+}
+
 function claimDiagnosisReservation(db, service, taskId, nowMs, ttlMs = PENDING_RESERVATION_TTL_MS) {
+  ensureReservationTable(db);
   const nowIso = toUtcSecond(nowMs);
   const expiresAt = toUtcSecond(nowMs + ttlMs);
   const select = db.prepare(`
@@ -548,8 +634,7 @@ function claimDiagnosisReservation(db, service, taskId, nowMs, ttlMs = PENDING_R
       AND updated_at = ?
   `);
 
-  return db.transaction(() => {
-    ensureReservationTable(db);
+  const outcome = runReservationTransaction(db, () => {
     const current = normalizeReservationRow(select.get(service));
     if (!current) {
       const raw = select.get(service);
@@ -588,10 +673,12 @@ function claimDiagnosisReservation(db, service, taskId, nowMs, ttlMs = PENDING_R
       reason: current.phase === 'submitted' ? 'reservation-submitted' : 'reservation-pending',
       detail: reservationDetail(current.phase),
     };
-  })();
+  });
+  return outcome.ok === false && outcome.detail ? outcome : outcome;
 }
 
 function markDiagnosisReservationSubmitted(db, service, taskId, nowMs) {
+  ensureReservationTable(db);
   const nowIso = toUtcSecond(nowMs);
   const update = db.prepare(`
     UPDATE self_heal_reservations
@@ -609,18 +696,42 @@ function markDiagnosisReservationSubmitted(db, service, taskId, nowMs) {
     WHERE service = ?
   `);
 
-  return db.transaction(() => {
-    ensureReservationTable(db);
+  const outcome = runReservationTransaction(db, () => {
     const result = update.run(nowIso, nowIso, service, taskId);
     if (result.changes === 1) return true;
     const current = normalizeReservationRow(select.get(service));
     return !!current && current.phase === 'submitted' && current.taskId === taskId;
-  })();
+  });
+  return outcome === true;
 }
 
 function clearDiagnosisReservation(db, service) {
   ensureReservationTable(db);
   db.prepare('DELETE FROM self_heal_reservations WHERE service = ?').run(service);
+}
+
+function parseResetReservations(optionsResetReservations) {
+  const fromOptions = Array.isArray(optionsResetReservations) ? optionsResetReservations : null;
+  const fromEnv = typeof process.env.HEIMDALL_SELF_HEAL_RESET_RESERVATIONS === 'string'
+    ? process.env.HEIMDALL_SELF_HEAL_RESET_RESERVATIONS.split(',').map((value) => value.trim()).filter(Boolean)
+    : [];
+  return new Set((fromOptions || fromEnv).filter((service) => SAFE_ID.test(service)));
+}
+
+function recoverDiagnosisReservation(db, service, nowMs) {
+  ensureReservationTable(db);
+  const current = normalizeReservationRow(readReservationRow(db, service));
+  if (!current) return false;
+  if (current.phase === 'pending' && current.expiresAt && nowMs >= Date.parse(current.expiresAt)) {
+    clearDiagnosisReservation(db, service);
+    return true;
+  }
+  if (current.phase === 'submitted' && current.submittedAt
+      && nowMs - Date.parse(current.submittedAt) >= COOLDOWN_MS) {
+    clearDiagnosisReservation(db, service);
+    return true;
+  }
+  return false;
 }
 
 function buildDiagnosisTaskContent({ service, host, unit, contextRefs }) {
@@ -677,14 +788,14 @@ async function submitDiagnosisTask(rpc, taskId, service, target, contextRefs, no
   }
   const submittedAt = toUtcSecond(nowMs);
 
-  const result = await rpc('memory_write', {
+  const ok = await writeAndProveMuninContent(rpc, {
     namespace: `tasks/${taskId}`,
     key: 'status',
     content,
     tags: ['pending', 'runtime:claude', 'type:heal', 'mode:diagnosis-only', `service:${service}`],
   });
 
-  return { ok: !!result, taskId, submittedAt, content };
+  return { ok, taskId, submittedAt, content };
 }
 
 async function checkAndHeal(db, options = {}) {
@@ -707,6 +818,7 @@ async function checkAndHeal(db, options = {}) {
   const pendingReservationTtlMs = Number.isFinite(options.pendingReservationTtlMs)
     ? options.pendingReservationTtlMs
     : PENDING_RESERVATION_TTL_MS;
+  const resetReservations = parseResetReservations(options.resetReservations);
 
   ensureReservationTable(db);
 
@@ -719,11 +831,23 @@ async function checkAndHeal(db, options = {}) {
   const decisions = [];
 
   for (const service of services) {
-    const healthEvidenceResult = validateHealthEvidence(
-      healthEvidenceLoader(db, service, { nowMs }),
-      service,
-      nowMs,
-    );
+    if (resetReservations.has(service) && recoverDiagnosisReservation(db, service, nowMs)) {
+      logger.log(`  self-heal: ${service} reservation reset by operator request`);
+    }
+
+    let healthEvidence;
+    let healthEvidenceResult;
+    try {
+      healthEvidenceResult = validateHealthEvidence(
+        healthEvidenceLoader(db, service, { nowMs }),
+        service,
+        nowMs,
+      );
+    } catch (err) {
+      raiseBlockedAlert(db, service, `unknown evidence: ${err.message}`);
+      decisions.push({ service, diagnosis: 'blocked', reason: 'invalid-evidence', actuation: 'blocked' });
+      continue;
+    }
 
     if (!healthEvidenceResult.ok) {
       raiseBlockedAlert(db, service, healthEvidenceResult.detail);
@@ -731,7 +855,7 @@ async function checkAndHeal(db, options = {}) {
       continue;
     }
 
-    const healthEvidence = healthEvidenceResult.value;
+    healthEvidence = healthEvidenceResult.value;
 
     if (healthEvidence.outcome === 'ok') {
       if (state.failures[service]) {
@@ -756,11 +880,25 @@ async function checkAndHeal(db, options = {}) {
       continue;
     }
 
-    const restartEvidenceResult = validateRestartEvidence(
-      restartEvidenceLoader(db, service, { nowMs }),
-      service,
-      nowMs,
-    );
+    let restartEvidenceResult;
+    try {
+      restartEvidenceResult = validateRestartEvidence(
+        restartEvidenceLoader(db, service, {
+          nowMs,
+          targetHost: targetResult.value.host,
+          aliases: registryContext.aliases,
+          healthEvidence,
+        }),
+        service,
+        targetResult.value.host,
+        registryContext.aliases,
+        nowMs,
+      );
+    } catch (err) {
+      raiseBlockedAlert(db, service, `unknown evidence: ${err.message}`);
+      decisions.push({ service, diagnosis: 'blocked', reason: 'invalid-evidence', actuation: 'blocked' });
+      continue;
+    }
     if (!restartEvidenceResult.ok) {
       raiseBlockedAlert(db, service, restartEvidenceResult.detail);
       decisions.push({ service, diagnosis: 'blocked', reason: restartEvidenceResult.reason, actuation: 'blocked' });
@@ -772,14 +910,18 @@ async function checkAndHeal(db, options = {}) {
       continue;
     }
 
-    const lastDiagnosis = state.lastDiagnosis[service];
-    if (lastDiagnosis) {
-      const elapsedMs = nowMs - Date.parse(lastDiagnosis.submittedAt);
+    const cooldownAnchor = latestRecentDiagnosis(state.circuitBreaker.recentDiagnoses, service) || state.lastDiagnosis[service];
+    if (cooldownAnchor) {
+      const elapsedMs = nowMs - Date.parse(cooldownAnchor.submittedAt);
       if (elapsedMs < COOLDOWN_MS) {
         raiseBlockedAlert(db, service, 'unknown evidence: cooldown active');
         decisions.push({ service, diagnosis: 'blocked', reason: 'cooldown', actuation: 'blocked' });
         continue;
       }
+    }
+
+    const lastDiagnosis = state.lastDiagnosis[service];
+    if (lastDiagnosis) {
       if (state.diagnosisOutcomes[service]) {
         raiseBlockedAlert(db, service, 'unknown evidence: repeated failure after prior diagnosis-only run');
         decisions.push({ service, diagnosis: 'blocked', reason: 'repeated-failure', actuation: 'blocked' });
@@ -833,7 +975,6 @@ async function checkAndHeal(db, options = {}) {
     }
 
     if (!submission.ok) {
-      markDiagnosisReservationSubmitted(db, service, taskId, nowMs);
       raiseBlockedAlert(db, service, 'unknown evidence: diagnosis submission could not be confirmed; reservation held');
       decisions.push({ service, diagnosis: 'blocked', reason: 'submission-unconfirmed', actuation: 'blocked' });
       continue;
