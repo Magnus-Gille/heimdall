@@ -241,6 +241,20 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    // Fleet agent version persistence (#4). Keep the raw per-push observation
+    // in `fleet_metrics` and the latest host snapshot in `fleet_hosts`.
+    // Older rows remain NULL so legacy payloads render as unknown, never drift.
+    version: 10,
+    run(db) {
+      if (hasTable(db, 'fleet_metrics') && !hasColumn(db, 'fleet_metrics', 'agent_version')) {
+        db.exec('ALTER TABLE fleet_metrics ADD COLUMN agent_version TEXT');
+      }
+      if (hasTable(db, 'fleet_hosts') && !hasColumn(db, 'fleet_hosts', 'agent_version')) {
+        db.exec('ALTER TABLE fleet_hosts ADD COLUMN agent_version TEXT');
+      }
+    },
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -259,6 +273,18 @@ function openDatabase(dbPath) {
   return db;
 }
 
+function hasTable(db, name) {
+  return !!db.prepare(`
+    SELECT 1
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(name);
+}
+
+function hasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
 function migrate(db) {
   const current = db.pragma('user_version', { simple: true });
   for (const m of MIGRATIONS) {
@@ -267,7 +293,8 @@ function migrate(db) {
       // crash mid-migration rolls back cleanly and the next boot retries from a
       // consistent state (matters for non-idempotent ALTER TABLE migrations).
       db.transaction(() => {
-        db.exec(m.sql);
+        if (typeof m.run === 'function') m.run(db);
+        else db.exec(m.sql);
         db.pragma(`user_version = ${m.version}`);
       })();
     }
@@ -621,9 +648,9 @@ function recordFleetPush(db, p, receivedAt) {
     db.prepare(`
       INSERT INTO fleet_metrics
         (timestamp, hostname, cpu_pct, ram_total_mb, ram_used_mb, ram_used_pct,
-         uptime_s, load_1, load_5, load_15, temp_cpu_c, temp_gpu_c, disk, extra, received_at)
+         uptime_s, load_1, load_5, load_15, temp_cpu_c, temp_gpu_c, disk, extra, received_at, agent_version)
       VALUES (@timestamp,@hostname,@cpu_pct,@ram_total_mb,@ram_used_mb,@ram_used_pct,
-         @uptime_s,@load_1,@load_5,@load_15,@temp_cpu_c,@temp_gpu_c,@disk,@extra,@received_at)
+         @uptime_s,@load_1,@load_5,@load_15,@temp_cpu_c,@temp_gpu_c,@disk,@extra,@received_at,@agent_version)
     `).run({
       timestamp: ts,
       hostname: p.hostname,
@@ -640,15 +667,17 @@ function recordFleetPush(db, p, receivedAt) {
       disk: p.disk ? JSON.stringify(p.disk) : null,
       extra: extra ? JSON.stringify(extra) : null,
       received_at: receivedAt,
+      agent_version: p.agent_version ?? null,
     });
 
     db.prepare(`
-      INSERT INTO fleet_hosts (hostname, label, os, platform, ip, first_seen, last_seen)
-      VALUES (@hostname, @hostname, @os, @platform, @ip, @ts, @ts)
+      INSERT INTO fleet_hosts (hostname, label, os, platform, ip, first_seen, last_seen, agent_version)
+      VALUES (@hostname, @hostname, @os, @platform, @ip, @ts, @ts, @agent_version)
       ON CONFLICT(hostname) DO UPDATE SET
         os = excluded.os,
         platform = excluded.platform,
         ip = COALESCE(excluded.ip, fleet_hosts.ip),
+        agent_version = excluded.agent_version,
         last_seen = excluded.last_seen,
         first_seen = COALESCE(fleet_hosts.first_seen, excluded.first_seen)
     `).run({
@@ -657,6 +686,7 @@ function recordFleetPush(db, p, receivedAt) {
       platform: p.platform ?? null,
       ip: p.ip ?? null,
       ts: receivedAt,
+      agent_version: p.agent_version ?? null,
     });
 
     // Fan scalars into the generic metrics table (for /api/metrics charts).

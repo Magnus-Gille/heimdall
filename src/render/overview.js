@@ -32,6 +32,7 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
   const fleetOnline = fleetCounts.ok;
   const fleetOffline = fleetCounts.crit; // offline (always_on machines) → crit
   const fleetStale = fleetCounts.warn;   // late telemetry — NOT the benign "sleeping" bucket
+  const fleetDrift = machines.filter((m) => m.agentVersionState === 'drift').length;
 
   let svcOk = 0;
   let svcWarn = 0;
@@ -70,12 +71,13 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
 
   const count = Number(alertCount) || 0;
   // "Healthy" = nothing genuinely broken. A sleeping laptop and config-only services
-  // are expected resting states and do NOT trip the banner.
-  const allHealthy = fleetOffline === 0 && fleetStale === 0
+  // are expected resting states and do NOT trip the banner. Agent-version drift is
+  // not an outage, but it is actionable fleet attention and must not be hidden.
+  const allHealthy = fleetOffline === 0 && fleetStale === 0 && fleetDrift === 0
     && svcDown === 0 && svcWarn === 0 && count === 0;
 
   return {
-    fleetOnline, fleetOffline, fleetStale, fleetTotal,
+    fleetOnline, fleetOffline, fleetStale, fleetDrift, fleetTotal,
     svcOk, svcWarn, svcDown, svcTotal, svcDrift,
     // A measurement gap is reported, but it is NOT an outage: it must not colour
     // a KPI or trip the "Attention needed" banner.
@@ -87,12 +89,12 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
 /** The status-hero fragment (full-width card): banner + KPI row. Self-refreshing. */
 function overviewStatusFragment(status) {
   const {
-    fleetOnline, fleetOffline, fleetStale, fleetTotal,
+    fleetOnline, fleetOffline, fleetStale, fleetDrift, fleetTotal,
     svcOk, svcWarn, svcDown, svcTotal, svcDrift, alertCount, allHealthy,
   } = status;
 
-  // Color only on genuine problems — never on the benign sleeping/config-only gap.
-  const fleetState = fleetOffline > 0 ? 'crit' : (fleetStale > 0 ? 'warn' : 'ok');
+  // Color only on actionable fleet problems — never on the benign sleeping/config-only gap.
+  const fleetState = fleetOffline > 0 ? 'crit' : (fleetStale > 0 || fleetDrift > 0 ? 'warn' : 'ok');
   const svcState = svcDown > 0 ? 'crit' : (svcWarn > 0 ? 'warn' : 'ok');
   const alertState = alertCount > 0 ? 'crit' : 'ok';
   const driftState = svcDrift > 0 ? 'warn' : 'ok';
@@ -282,7 +284,7 @@ function sectionHead(title, href, linkLabel) {
  */
 function overviewPage(gitVersion, deps = {}) {
   const { db, now = Date.now(), thresholds, snapshots = [], alertCount = 0, versions = [] } = deps;
-  const machines = buildMachines(db, now, thresholds);
+  const machines = buildMachines(db, now, thresholds, { baselineVersion: gitVersion });
   const status = buildOverviewStatus({ machines, snapshots, alertCount, versions });
   const findings = findingsFromSnapshots(snapshots);
 
@@ -298,7 +300,7 @@ function overviewPage(gitVersion, deps = {}) {
 
     ${sectionHead('Fleet attention', '/fleet', 'View fleet')}
     <div hx-get="/api/fleet/grid?mode=exceptions" hx-trigger="every 30s" hx-swap="innerHTML">
-      ${fleetGridFragment(db, now, thresholds, { exceptionsOnly: true })}
+      ${fleetGridFragment(db, now, thresholds, { exceptionsOnly: true, baselineVersion: gitVersion })}
     </div>
 
     ${sectionHead('Service attention', '/services', 'View services')}
