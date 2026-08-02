@@ -133,7 +133,7 @@ Heimdall is an operator tool, not a hardened multi-user SaaS application.
 - The dashboard has no built-in end-user login. Keep it on loopback or a private network, or put authenticated access control in front of it.
 - A reverse proxy is not treated as a local operator. Sensitive local routes and alert dismissal validate the real socket peer and reject forwarded identity headers.
 - Push endpoints fail closed unless their bearer token is configured. The insecure-loopback flags are only for isolated development.
-- Self-heal is off by default. When enabled, Heimdall only submits a task; the task's actual authority comes from Hugin's runtime, SSH keys, and sudo policy. A cooldown limits repetition but is not an authorization boundary. Review generated tasks and grant only narrowly scoped restart permissions.
+- Self-heal is off by default. When enabled, Heimdall first persists bounded validated observation snapshots to Munin and then submits only a diagnosis-only Hugin task with resolvable `Context-refs:` to those immutable snapshots. The task's actual authority still comes from Hugin's runtime, SSH keys, and sudo policy; typed actuation remains blocked pending a reviewed allowlisted adapter. A cooldown and durable per-service reservation limit repetition but are not authorization boundaries. Review generated tasks and grant only narrowly scoped restart permissions.
 - Remote SSH probes require strict host-key checking and a dedicated known-hosts file. Prefer a restricted account and command allowlist.
 
 See `SECURITY.md` for reporting and deployment guidance.

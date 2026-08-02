@@ -80,9 +80,11 @@ async function runEnabled(db, {
   grimnir = makeRegistry({ serviceName }),
   overlay = makeOverlay({ serviceName }),
   rpcResult = true,
+  rpc,
   state,
   healthEvidenceLoader,
   logger,
+  saveState,
 } = {}) {
   const writes = [];
   let savedState = null;
@@ -93,10 +95,14 @@ async function runEnabled(db, {
     configPath: overlay ? tmpJson(overlay) : '/no/such/heimdall-config.json',
     rpc: async (method, args) => {
       writes.push({ method, args });
+      if (typeof rpc === 'function') return rpc(method, args);
       return rpcResult;
     },
     state,
-    saveState(next) { savedState = JSON.parse(JSON.stringify(next)); },
+    saveState(next) {
+      savedState = JSON.parse(JSON.stringify(next));
+      if (typeof saveState === 'function') return saveState(next);
+    },
     healthEvidenceLoader,
     logger: logger || { log() {}, warn() {}, error() {} },
   }));
@@ -114,10 +120,124 @@ function insertRestartMetric(db, { serviceName = 'hugin', value = 0, timestamp =
   }]);
 }
 
-function extractEvidenceRefs(content) {
-  const match = content.match(/- \*\*Evidence refs:\*\* (.+)/u);
-  assert.ok(match, 'task content must include evidence refs');
-  return match[1].split(/,\s*/u);
+function createMuninStub() {
+  const entries = new Map();
+  const calls = [];
+  let updatedCounter = 0;
+
+  return {
+    entries,
+    calls,
+    async rpc(method, args) {
+      calls.push({ method, args });
+
+      if (method === 'memory_write') {
+        const entryKey = `${args.namespace}\u0000${args.key}`;
+        const existing = entries.get(entryKey);
+        if (Object.prototype.hasOwnProperty.call(args, 'expected_updated_at') && args.expected_updated_at === null) {
+          if (existing) {
+            if (existing.content !== args.content) return null;
+            return { updated_at: existing.updated_at };
+          }
+        }
+
+        const updatedAt = `2026-08-01T12:00:${String(updatedCounter).padStart(2, '0')}Z`;
+        updatedCounter += 1;
+        entries.set(entryKey, {
+          namespace: args.namespace,
+          key: args.key,
+          content: args.content,
+          tags: args.tags || [],
+          updated_at: updatedAt,
+        });
+        return { updated_at: updatedAt };
+      }
+
+      if (method === 'memory_read') {
+        const entry = entries.get(`${args.namespace}\u0000${args.key}`);
+        return {
+          content: [{
+            text: JSON.stringify(entry
+              ? {
+                found: true,
+                namespace: entry.namespace,
+                key: entry.key,
+                content: entry.content,
+                updated_at: entry.updated_at,
+              }
+              : {
+                found: false,
+                namespace: args.namespace,
+                key: args.key,
+              }),
+          }],
+        };
+      }
+
+      return { ok: true };
+    },
+  };
+}
+
+function parseHuginMetadata(content) {
+  const [header] = content.split(/\n\n/u, 1);
+  const fields = new Map();
+  for (const line of header.split('\n')) {
+    const match = line.match(/^([A-Za-z][A-Za-z -]*):\s*(.+)$/u);
+    if (match) fields.set(match[1], match[2]);
+  }
+  return fields;
+}
+
+function extractContextRefs(content) {
+  const fields = parseHuginMetadata(content);
+  const raw = fields.get('Context-refs');
+  assert.ok(raw, 'task content must include Hugin Context-refs');
+  const refs = raw.split(/,\s*/u).filter(Boolean);
+  assert.ok(refs.length > 0, 'task content must include at least one context ref');
+  for (const ref of refs) {
+    assert.match(ref, /^(?:[a-z0-9][a-z0-9-]*\/)+[a-z0-9][a-z0-9-]*$/u);
+  }
+  return refs;
+}
+
+function seedReservation(db, {
+  service = 'hugin',
+  phase = 'pending',
+  taskId = '20260801110000-heal-hugin',
+  reservedAt = '2026-08-01T11:00:00Z',
+  expiresAt = '2026-08-01T11:10:00Z',
+  submittedAt = null,
+  updatedAt = reservedAt,
+} = {}) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS self_heal_reservations (
+      service TEXT PRIMARY KEY,
+      phase TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      reserved_at TEXT NOT NULL,
+      expires_at TEXT,
+      submitted_at TEXT,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  db.prepare(`
+    INSERT INTO self_heal_reservations (
+      service, phase, task_id, reserved_at, expires_at, submitted_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(service, phase, taskId, reservedAt, expiresAt, submittedAt, updatedAt);
+}
+
+function readReservation(db, service = 'hugin') {
+  try {
+    return db.prepare(`
+      SELECT service, phase, task_id, reserved_at, expires_at, submitted_at, updated_at
+      FROM self_heal_reservations
+      WHERE service = ?
+    `).get(service) || null;
+  } catch {
+    return null;
+  }
 }
 
 test('self-heal is disabled by default without touching the database', async () => {
@@ -451,7 +571,7 @@ test('legacy lastHeal migration consumes the diagnosis budget after cooldown', a
   }
 });
 
-test('self-heal enabled submits a diagnosis-only task with no shell snippets', async () => {
+test('self-heal enabled persists immutable snapshots and submits Hugin Context-refs with no shell snippets', async () => {
   const db = tmpDb();
   try {
     insertServiceVersion(
@@ -466,6 +586,7 @@ test('self-heal enabled submits a diagnosis-only task with no shell snippets', a
       null,
     );
     insertRestartMetric(db);
+    const munin = createMuninStub();
     const { result, writes, savedState } = await runEnabled(db, {
       state: {
         schemaVersion: 'v1',
@@ -474,22 +595,285 @@ test('self-heal enabled submits a diagnosis-only task with no shell snippets', a
         diagnosisOutcomes: {},
         circuitBreaker: { recentDiagnoses: [] },
       },
+      rpc: munin.rpc,
     });
     assert.equal(result.tasksSubmitted, 1);
-    const write = writes.find((entry) => entry.method === 'memory_write');
-    assert.ok(write);
-    assert.match(write.args.namespace, /^tasks\//u);
-    assert.match(write.args.content, /diagnosis-only/i);
-    assert.match(write.args.content, /typed actuation blocked/i);
-    assert.match(write.args.content, /grimnir #183/i);
-    const evidenceRefs = extractEvidenceRefs(write.args.content);
-    assert.equal(evidenceRefs.length, 2);
-    assert.match(evidenceRefs[0], /^ref:heim-sh-sv-r\d+-t\d{14}-d[a-f0-9]{12}$/u);
-    assert.match(evidenceRefs[1], /^ref:heim-sh-mt-r\d+-t\d{14}-d[a-f0-9]{12}$/u);
-    assert.doesNotMatch(write.args.content, /\bssh\b|\bsudo\b|systemctl|journalctl|pgrep\b|df -h|free -h/u);
+    const snapshotWrites = writes.filter((entry) => entry.method === 'memory_write' && entry.args.key === 'snapshot');
+    assert.equal(snapshotWrites.length, 2);
+    assert.ok(snapshotWrites.every((entry) => entry.args.expected_updated_at === null));
+    const taskWrite = writes.find((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace));
+    assert.ok(taskWrite);
+    assert.match(taskWrite.args.content, /diagnosis-only/i);
+    assert.match(taskWrite.args.content, /typed actuation blocked/i);
+    assert.match(taskWrite.args.content, /grimnir #183/i);
+    assert.doesNotMatch(taskWrite.args.content, /Evidence refs:/iu);
+    const contextRefs = extractContextRefs(taskWrite.args.content);
+    assert.equal(contextRefs.length, 2);
+    assert.match(contextRefs[0], /^observations\/self-heal\/heim-sh-sv-r\d+-t\d{14}-d[a-f0-9]{12}\/snapshot$/u);
+    assert.match(contextRefs[1], /^observations\/self-heal\/heim-sh-mt-r\d+-t\d{14}-d[a-f0-9]{12}\/snapshot$/u);
+    assert.deepEqual(
+      contextRefs,
+      snapshotWrites.map((entry) => `${entry.args.namespace}/${entry.args.key}`),
+    );
+    for (const entry of snapshotWrites) {
+      const snapshot = JSON.parse(entry.args.content);
+      assert.equal(snapshot.schema_version, 'v1');
+      assert.equal(snapshot.source, 'heimdall-self-heal');
+      assert.ok(snapshot.identity);
+      assert.ok(Number.isInteger(snapshot.identity.row_id));
+      assert.match(snapshot.identity.digest, /^[a-f0-9]{12}$/u);
+      assert.ok(!Object.hasOwn(snapshot, 'prompt'));
+      assert.ok(!Object.hasOwn(snapshot, 'detail'));
+    }
+    assert.doesNotMatch(taskWrite.args.content, /\bssh\b|\bsudo\b|systemctl|journalctl|pgrep\b|df -h|free -h/u);
     assert.ok(savedState);
     assert.equal(savedState.diagnosisOutcomes.hugin.mode, 'diagnosis-only');
     assert.equal(savedState.circuitBreaker.recentDiagnoses.length, 1);
+    assert.deepEqual(readReservation(db), {
+      service: 'hugin',
+      phase: 'submitted',
+      task_id: '20260801120000-heal-hugin',
+      reserved_at: '2026-08-01T12:00:00Z',
+      expires_at: null,
+      submitted_at: '2026-08-01T12:00:00Z',
+      updated_at: '2026-08-01T12:00:00Z',
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test('snapshot persistence must be proven before diagnosis submission', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    const { result, writes } = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      rpc: async (method, args) => {
+        if (method === 'memory_read' && /^observations\/self-heal\//u.test(args.namespace)) {
+          return {
+            content: [{
+              text: JSON.stringify({
+                found: true,
+                namespace: args.namespace,
+                key: args.key,
+                content: JSON.stringify({ schema_version: 'v1', source: 'tampered' }),
+                updated_at: '2026-08-01T12:00:00Z',
+              }),
+            }],
+          };
+        }
+        return munin.rpc(method, args);
+      },
+    });
+    assert.equal(result.tasksSubmitted, 0);
+    assert.equal(
+      writes.filter((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace)).length,
+      0,
+    );
+    assert.match(activeSelfHealAlert(db, 'hugin').detail, /snapshot persistence/i);
+    assert.equal(readReservation(db), null);
+  } finally {
+    db.close();
+  }
+});
+
+test('pending reservation blocks overlapping diagnosis submissions', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    let releaseSnapshotWrite;
+    const snapshotWriteGate = new Promise((resolve) => {
+      releaseSnapshotWrite = resolve;
+    });
+    let snapshotWriteSeen;
+    const snapshotWriteSeenPromise = new Promise((resolve) => {
+      snapshotWriteSeen = resolve;
+    });
+    let blocked = false;
+    const rpc = async (method, args) => {
+      if (!blocked && method === 'memory_write' && args.key === 'snapshot') {
+        blocked = true;
+        snapshotWriteSeen();
+        await snapshotWriteGate;
+      }
+      return munin.rpc(method, args);
+    };
+
+    const firstRun = withEnabledEnv(() => checkAndHeal(db, {
+      nowMs: Date.parse('2026-08-01T12:00:00Z'),
+      services: ['hugin'],
+      grimnirPath: tmpJson(makeRegistry({ serviceName: 'hugin' })),
+      configPath: tmpJson(makeOverlay({ serviceName: 'hugin' })),
+      rpc,
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      saveState() {},
+      logger: { log() {}, warn() {}, error() {} },
+    }));
+
+    await snapshotWriteSeenPromise;
+
+    const second = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      rpc: async () => {
+        throw new Error('overlap must stop before any Munin writes');
+      },
+    });
+
+    assert.equal(second.result.tasksSubmitted, 0);
+    assert.equal(second.writes.length, 0);
+    assert.match(activeSelfHealAlert(db, 'hugin').detail, /reservation pending/i);
+
+    releaseSnapshotWrite();
+    const firstResult = await firstRun;
+    assert.equal(firstResult.tasksSubmitted, 1);
+    assert.equal(
+      munin.calls.filter((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace)).length,
+      1,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('submitted reservation stays fail-closed when state save fails after task submission', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    await assert.rejects(
+      runEnabled(db, {
+        state: {
+          schemaVersion: 'v1',
+          failures: { hugin: 1 },
+          lastDiagnosis: {},
+          diagnosisOutcomes: {},
+          circuitBreaker: { recentDiagnoses: [] },
+        },
+        rpc: munin.rpc,
+        saveState() {
+          throw new Error('disk full');
+        },
+      }),
+      /disk full/u,
+    );
+
+    const reservation = readReservation(db);
+    assert.ok(reservation);
+    assert.equal(reservation.phase, 'submitted');
+    assert.equal(reservation.task_id, '20260801120000-heal-hugin');
+
+    const second = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      rpc: async () => {
+        throw new Error('submitted reservation must block retries before Munin writes');
+      },
+    });
+    assert.equal(second.result.tasksSubmitted, 0);
+    assert.equal(second.writes.length, 0);
+    assert.match(activeSelfHealAlert(db, 'hugin').detail, /reservation submitted/i);
+  } finally {
+    db.close();
+  }
+});
+
+test('stale pending reservation is recovered and replaced with the current task id', async () => {
+  const db = tmpDb();
+  try {
+    seedReservation(db, {
+      taskId: '20260801110000-heal-hugin',
+      reservedAt: '2026-08-01T11:00:00Z',
+      expiresAt: '2026-08-01T11:05:00Z',
+      updatedAt: '2026-08-01T11:00:00Z',
+    });
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    const { result } = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      rpc: munin.rpc,
+    });
+    assert.equal(result.tasksSubmitted, 1);
+    const reservation = readReservation(db);
+    assert.ok(reservation);
+    assert.equal(reservation.phase, 'submitted');
+    assert.equal(reservation.task_id, '20260801120000-heal-hugin');
+    assert.equal(reservation.expires_at, null);
   } finally {
     db.close();
   }
@@ -519,32 +903,33 @@ test('cross-service identity mismatches fail closed', async () => {
   }
 });
 
-test('diagnosis task content rejects unbounded or non-opaque evidence refs', () => {
+test('diagnosis task content rejects unbounded or non-resolvable Hugin Context-refs', () => {
   assert.throws(
     () => buildDiagnosisTaskContent({
       service: 'hugin',
       host: 'control-node',
       unit: 'hugin',
-      evidenceRefs: ['https://heimdall.local/private/path'],
+      contextRefs: ['https://heimdall.local/private/path'],
     }),
-    /opaque evidence ref/i,
+    /context ref/i,
   );
   assert.throws(
     () => buildDiagnosisTaskContent({
       service: 'hugin',
       host: 'control-node',
       unit: 'hugin',
-      evidenceRefs: [`ref:${'a'.repeat(122)}`],
+      contextRefs: Array.from({ length: 9 }, () => 'observations/self-heal/heim-sh-sv-r1-t20260801120000-dabc123def456/snapshot'),
     }),
-    /opaque evidence ref/i,
+    /context ref/i,
   );
 });
 
-test('updated observations produce new opaque evidence refs for the next diagnosis envelope', async () => {
-  const db = tmpDb();
+test('updated observations produce new Context-refs for the next diagnosis envelope', async () => {
+  const firstDb = tmpDb();
+  const secondDb = tmpDb();
   try {
     insertServiceVersion(
-      db,
+      firstDb,
       '2026-08-01T12:00:00Z',
       'hugin',
       'control-node',
@@ -554,8 +939,9 @@ test('updated observations produce new opaque evidence refs for the next diagnos
       'up-to-date',
       null,
     );
-    insertRestartMetric(db, { timestamp: '2026-08-01T12:00:00Z', value: 1 });
-    const first = await runEnabled(db, {
+    insertRestartMetric(firstDb, { timestamp: '2026-08-01T12:00:00Z', value: 1 });
+    const firstMunin = createMuninStub();
+    const first = await runEnabled(firstDb, {
       nowMs: Date.parse('2026-08-01T12:01:00Z'),
       state: {
         schemaVersion: 'v1',
@@ -564,13 +950,14 @@ test('updated observations produce new opaque evidence refs for the next diagnos
         diagnosisOutcomes: {},
         circuitBreaker: { recentDiagnoses: [] },
       },
+      rpc: firstMunin.rpc,
     });
-    const firstWrite = first.writes.find((entry) => entry.method === 'memory_write');
+    const firstWrite = first.writes.find((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace));
     assert.ok(firstWrite);
-    const firstRefs = extractEvidenceRefs(firstWrite.args.content);
+    const firstRefs = extractContextRefs(firstWrite.args.content);
 
     insertServiceVersion(
-      db,
+      secondDb,
       '2026-08-01T12:05:00Z',
       'hugin',
       'control-node',
@@ -580,8 +967,9 @@ test('updated observations produce new opaque evidence refs for the next diagnos
       'up-to-date',
       null,
     );
-    insertRestartMetric(db, { timestamp: '2026-08-01T12:05:00Z', value: 2 });
-    const second = await runEnabled(db, {
+    insertRestartMetric(secondDb, { timestamp: '2026-08-01T12:05:00Z', value: 2 });
+    const secondMunin = createMuninStub();
+    const second = await runEnabled(secondDb, {
       nowMs: Date.parse('2026-08-01T12:06:00Z'),
       state: {
         schemaVersion: 'v1',
@@ -590,14 +978,16 @@ test('updated observations produce new opaque evidence refs for the next diagnos
         diagnosisOutcomes: {},
         circuitBreaker: { recentDiagnoses: [] },
       },
+      rpc: secondMunin.rpc,
     });
-    const secondWrite = second.writes.find((entry) => entry.method === 'memory_write');
+    const secondWrite = second.writes.find((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace));
     assert.ok(secondWrite);
-    const secondRefs = extractEvidenceRefs(secondWrite.args.content);
+    const secondRefs = extractContextRefs(secondWrite.args.content);
 
     assert.notEqual(firstRefs[0], secondRefs[0], 'health evidence ref must bind to one immutable observation');
     assert.notEqual(firstRefs[1], secondRefs[1], 'restart evidence ref must bind to one immutable observation');
   } finally {
-    db.close();
+    firstDb.close();
+    secondDb.close();
   }
 });
