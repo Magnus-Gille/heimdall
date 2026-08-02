@@ -502,7 +502,7 @@ async function run() {
     const restartRows = buildRestartMetricRows({
       timestamp,
       services: registry,
-      getRestartCount,
+      getRestartCount: getServiceRestartCount,
     });
     if (restartRows.length > 0) insertMetrics(db, restartRows);
     console.log(`  Restarts: ${restartRows.length} services checked`);
