@@ -13,7 +13,7 @@ const { canonicalHost, loadHostAliases } = require('./host-identity');
 const { isSafeUnitName } = require('./drift');
 
 const STATE_FILE = path.join(os.homedir(), '.heimdall', 'self-heal-state.json');
-const HEALABLE_SERVICES = ['munin-memory', 'hugin', 'ratatoskr', 'skuld', 'mimir'];
+const DEFAULT_SELF_HEAL_SERVICES = ['munin-memory', 'hugin', 'ratatoskr', 'skuld'];
 const MIN_CONSECUTIVE_FAILURES = 2;
 const COOLDOWN_MS = 60 * 60 * 1000;
 const HEALTH_EVIDENCE_MAX_AGE_MS = 15 * 60 * 1000;
@@ -65,7 +65,6 @@ function defaultState() {
     schemaVersion: STATE_SCHEMA_VERSION,
     failures: {},
     lastDiagnosis: {},
-    diagnosisOutcomes: {},
     circuitBreaker: { recentDiagnoses: [] },
   };
 }
@@ -81,6 +80,14 @@ function normalizeDiagnosisEntry(value) {
   };
 }
 
+function keepLatestDiagnosis(target, service, candidate) {
+  if (!candidate || !SAFE_ID.test(service)) return;
+  const current = target[service];
+  if (!current || Date.parse(candidate.submittedAt) >= Date.parse(current.submittedAt)) {
+    target[service] = candidate;
+  }
+}
+
 function normalizeState(raw) {
   const next = defaultState();
   if (!raw || typeof raw !== 'object') return next;
@@ -94,13 +101,17 @@ function normalizeState(raw) {
   if (raw.lastDiagnosis && typeof raw.lastDiagnosis === 'object') {
     for (const [service, entry] of Object.entries(raw.lastDiagnosis)) {
       const normalized = normalizeDiagnosisEntry(entry);
-      if (SAFE_ID.test(service) && normalized) next.lastDiagnosis[service] = normalized;
+      keepLatestDiagnosis(next.lastDiagnosis, service, normalized);
     }
   } else if (raw.lastHeal && typeof raw.lastHeal === 'object') {
     for (const [service, submittedAtMs] of Object.entries(raw.lastHeal)) {
       const iso = normalizeLegacySubmittedAt(submittedAtMs);
       if (SAFE_ID.test(service) && validUtcSecond(iso)) {
-        next.lastDiagnosis[service] = { submittedAt: iso, mode: 'diagnosis-only', taskId: null };
+        keepLatestDiagnosis(next.lastDiagnosis, service, {
+          submittedAt: iso,
+          mode: 'diagnosis-only',
+          taskId: null,
+        });
       }
     }
   }
@@ -108,12 +119,8 @@ function normalizeState(raw) {
   if (raw.diagnosisOutcomes && typeof raw.diagnosisOutcomes === 'object') {
     for (const [service, entry] of Object.entries(raw.diagnosisOutcomes)) {
       const normalized = normalizeDiagnosisEntry(entry);
-      if (SAFE_ID.test(service) && normalized) next.diagnosisOutcomes[service] = normalized;
+      keepLatestDiagnosis(next.lastDiagnosis, service, normalized);
     }
-  }
-
-  for (const [service, entry] of Object.entries(next.lastDiagnosis)) {
-    if (!next.diagnosisOutcomes[service]) next.diagnosisOutcomes[service] = { ...entry };
   }
 
   const recent = raw.circuitBreaker && Array.isArray(raw.circuitBreaker.recentDiagnoses)
@@ -805,7 +812,7 @@ async function checkAndHeal(db, options = {}) {
   }
 
   const logger = options.logger || console;
-  const services = Array.isArray(options.services) && options.services.length ? options.services : HEALABLE_SERVICES;
+  const services = Array.isArray(options.services) && options.services.length ? options.services : DEFAULT_SELF_HEAL_SERVICES;
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
   const state = normalizeState(options.state || loadState(options.stateFile || STATE_FILE));
   const save = typeof options.saveState === 'function'
@@ -863,7 +870,6 @@ async function checkAndHeal(db, options = {}) {
       }
       delete state.failures[service];
       delete state.lastDiagnosis[service];
-      delete state.diagnosisOutcomes[service];
       clearDiagnosisReservation(db, service);
       resolveBlockedAlert(db, service);
       decisions.push({ service, diagnosis: 'not-needed', actuation: 'blocked' });
@@ -916,15 +922,6 @@ async function checkAndHeal(db, options = {}) {
       if (elapsedMs < COOLDOWN_MS) {
         raiseBlockedAlert(db, service, 'unknown evidence: cooldown active');
         decisions.push({ service, diagnosis: 'blocked', reason: 'cooldown', actuation: 'blocked' });
-        continue;
-      }
-    }
-
-    const lastDiagnosis = state.lastDiagnosis[service];
-    if (lastDiagnosis) {
-      if (state.diagnosisOutcomes[service]) {
-        raiseBlockedAlert(db, service, 'unknown evidence: repeated failure after prior diagnosis-only run');
-        decisions.push({ service, diagnosis: 'blocked', reason: 'repeated-failure', actuation: 'blocked' });
         continue;
       }
     }
@@ -990,11 +987,6 @@ async function checkAndHeal(db, options = {}) {
       mode: 'diagnosis-only',
       taskId: submission.taskId,
     };
-    state.diagnosisOutcomes[service] = {
-      submittedAt: submission.submittedAt,
-      mode: 'diagnosis-only',
-      taskId: submission.taskId,
-    };
     state.circuitBreaker.recentDiagnoses.push({
       service,
       submittedAt: submission.submittedAt,
@@ -1028,6 +1020,7 @@ async function checkAndHeal(db, options = {}) {
 }
 
 module.exports = {
+  DEFAULT_SELF_HEAL_SERVICES,
   checkAndHeal,
   buildDiagnosisTaskContent,
 };

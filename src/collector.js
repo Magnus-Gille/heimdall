@@ -19,6 +19,7 @@ const { syncAlertsToMunin } = require('./munin-sync');
 const { checkAndHeal } = require('./self-heal');
 const { loadServicesWithMeta } = require('./config/services');
 const { assertSafeStartupTargets, storageSshHost } = require('./config/live-config');
+const { buildRestartMetricRows } = require('./restart-evidence');
 
 const NAS_IP = storageSshHost();
 const SSH_KEY = process.env.HEIMDALL_STORAGE_SSH_KEY;
@@ -496,17 +497,13 @@ async function run() {
     const timerSnapshots = await refreshTimerSnapshots(db, registry);
     if (timerSnapshots.length) console.log(`  Timer snapshots: ${timerSnapshots.length} refreshed`);
 
-    const restartRows = [];
-    for (const svc of registry) {
-      if (svc.systemd_unit) {
-        const count = getServiceRestartCount(svc.systemd_unit);
-        restartRows.push({
-          timestamp, host: 'control-node',
-          metric: `service_restarts_24h_${svc.name.replace(/[^a-zA-Z0-9_]/g, '_')}`,
-          value: count, unit: 'count', metadata: null,
-        });
-      }
-    }
+    // Remote services stay excluded here until Heimdall has host-correct
+    // restart evidence for their actual target host.
+    const restartRows = buildRestartMetricRows({
+      timestamp,
+      services: registry,
+      getRestartCount,
+    });
     if (restartRows.length > 0) insertMetrics(db, restartRows);
     console.log(`  Restarts: ${restartRows.length} services checked`);
   } catch (err) {

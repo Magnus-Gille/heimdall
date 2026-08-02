@@ -49,5 +49,7 @@ Issue #47's diagnosis-only self-heal hardening is implemented in the current
 review branch: Heimdall now persists immutable bounded observation snapshots to
 Munin, submits diagnosis tasks with Hugin-resolvable `Context-refs:`, and
 records durable per-service pending/submitted reservations so overlapping
-collector runs stay fail-closed. Typed actuation remains permanently blocked.
-It is not deployed.
+collector runs stay fail-closed. The current autonomous scope is limited to
+local `control-node` services; remote services remain excluded until host-correct
+restart evidence exists. Typed actuation remains permanently blocked. It is not
+deployed.

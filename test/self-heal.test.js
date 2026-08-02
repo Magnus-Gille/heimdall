@@ -12,7 +12,11 @@ const {
   insertServiceVersion,
   getActiveAlerts,
 } = require('../src/db');
-const { checkAndHeal, buildDiagnosisTaskContent } = require('../src/self-heal');
+const {
+  checkAndHeal,
+  buildDiagnosisTaskContent,
+  DEFAULT_SELF_HEAL_SERVICES,
+} = require('../src/self-heal');
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -267,6 +271,10 @@ test('self-heal is disabled by default without touching the database', async () 
   }
 });
 
+test('default autonomous self-heal scope excludes remote services until host-correct restart evidence exists', () => {
+  assert.deepEqual(DEFAULT_SELF_HEAL_SERVICES, ['munin-memory', 'hugin', 'ratatoskr', 'skuld']);
+});
+
 test('missing health evidence becomes alert-only unknown with no task submission', async () => {
   const db = tmpDb();
   try {
@@ -511,7 +519,7 @@ test('cooldown evidence blocks repeat diagnosis submissions', async () => {
   }
 });
 
-test('repeated post-diagnosis failures stay alert-only unknown', async () => {
+test('repeated post-diagnosis failures resubmit after cooldown when no reservation is active', async () => {
   const db = tmpDb();
   try {
     insertServiceVersion(
@@ -526,7 +534,8 @@ test('repeated post-diagnosis failures stay alert-only unknown', async () => {
       null,
     );
     insertRestartMetric(db);
-    const { result, writes } = await runEnabled(db, {
+    const munin = createMuninStub();
+    const { result, writes, savedState } = await runEnabled(db, {
       state: {
         schemaVersion: 'v1',
         failures: { hugin: 1 },
@@ -534,18 +543,21 @@ test('repeated post-diagnosis failures stay alert-only unknown', async () => {
         diagnosisOutcomes: { hugin: { submittedAt: '2026-08-01T10:00:00Z', mode: 'diagnosis-only', taskId: '20260801-heal-hugin' } },
         circuitBreaker: { recentDiagnoses: [{ service: 'hugin', submittedAt: '2026-08-01T10:00:00Z' }] },
       },
+      rpc: munin.rpc,
     });
-    assert.equal(result.tasksSubmitted, 0);
-    assert.equal(writes.length, 0);
-    const alert = activeSelfHealAlert(db, 'hugin');
-    assert.ok(alert);
-    assert.match(alert.detail, /repeated failure/i);
+    assert.equal(result.tasksSubmitted, 1);
+    assert.ok(
+      writes.some((entry) => entry.method === 'memory_write' && /^tasks\//u.test(entry.args.namespace)),
+      'expected a fresh diagnosis task submission',
+    );
+    assert.equal(savedState.lastDiagnosis.hugin.taskId, '20260801120000-heal-hugin');
+    assert.ok(!savedState.diagnosisOutcomes || !savedState.diagnosisOutcomes.hugin);
   } finally {
     db.close();
   }
 });
 
-test('legacy lastHeal migration consumes the diagnosis budget after cooldown', async () => {
+test('legacy lastHeal migration preserves the cooldown window without creating a permanent budget gate', async () => {
   const db = tmpDb();
   try {
     insertServiceVersion(
@@ -564,7 +576,7 @@ test('legacy lastHeal migration consumes the diagnosis budget after cooldown', a
       state: {
         schemaVersion: 'v0',
         failures: { hugin: 1 },
-        lastHeal: { hugin: Date.parse('2026-08-01T10:00:00Z') },
+        lastHeal: { hugin: Date.parse('2026-08-01T11:30:00Z') },
         circuitBreaker: { recentDiagnoses: [] },
       },
     });
@@ -572,13 +584,14 @@ test('legacy lastHeal migration consumes the diagnosis budget after cooldown', a
     assert.equal(writes.length, 0);
     const alert = activeSelfHealAlert(db, 'hugin');
     assert.ok(alert);
-    assert.match(alert.detail, /repeated failure/i);
+    assert.match(alert.detail, /cooldown/i);
     assert.ok(savedState);
-    assert.deepEqual(savedState.diagnosisOutcomes.hugin, {
-      submittedAt: '2026-08-01T10:00:00Z',
+    assert.deepEqual(savedState.lastDiagnosis.hugin, {
+      submittedAt: '2026-08-01T11:30:00Z',
       mode: 'diagnosis-only',
       taskId: null,
     });
+    assert.ok(!savedState.diagnosisOutcomes || !savedState.diagnosisOutcomes.hugin);
   } finally {
     db.close();
   }
@@ -758,7 +771,8 @@ test('self-heal enabled persists immutable snapshots and submits Hugin Context-r
     }
     assert.doesNotMatch(taskWrite.args.content, /\bssh\b|\bsudo\b|systemctl|journalctl|pgrep\b|df -h|free -h/u);
     assert.ok(savedState);
-    assert.equal(savedState.diagnosisOutcomes.hugin.mode, 'diagnosis-only');
+    assert.equal(savedState.lastDiagnosis.hugin.mode, 'diagnosis-only');
+    assert.ok(!savedState.diagnosisOutcomes || !savedState.diagnosisOutcomes.hugin);
     assert.equal(savedState.circuitBreaker.recentDiagnoses.length, 1);
     assert.deepEqual(readReservation(db), {
       service: 'hugin',
@@ -1163,6 +1177,58 @@ test('operator reset can recover a stale submitted reservation after the cooldow
   }
 });
 
+test('operator reset clears a stale submitted reservation coherently with persisted diagnosis state after cooldown', async () => {
+  const db = tmpDb();
+  try {
+    seedReservation(db, {
+      phase: 'submitted',
+      taskId: '20260801100000-heal-hugin',
+      reservedAt: '2026-08-01T10:00:00Z',
+      expiresAt: null,
+      submittedAt: '2026-08-01T10:00:00Z',
+      updatedAt: '2026-08-01T10:00:00Z',
+    });
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      null,
+      'deadbeef',
+      0,
+      'up-to-date',
+      null,
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    const { result, savedState } = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: { hugin: { submittedAt: '2026-08-01T10:00:00Z', mode: 'diagnosis-only', taskId: '20260801100000-heal-hugin' } },
+        diagnosisOutcomes: { hugin: { submittedAt: '2026-08-01T10:00:00Z', mode: 'diagnosis-only', taskId: '20260801100000-heal-hugin' } },
+        circuitBreaker: { recentDiagnoses: [{ service: 'hugin', submittedAt: '2026-08-01T10:00:00Z' }] },
+      },
+      rpc: munin.rpc,
+      resetReservations: ['hugin'],
+    });
+    assert.equal(result.tasksSubmitted, 1);
+    assert.deepEqual(readReservation(db), {
+      service: 'hugin',
+      phase: 'submitted',
+      task_id: '20260801120000-heal-hugin',
+      reserved_at: '2026-08-01T12:00:00Z',
+      expires_at: null,
+      submitted_at: '2026-08-01T12:00:00Z',
+      updated_at: '2026-08-01T12:00:00Z',
+    });
+    assert.equal(savedState.lastDiagnosis.hugin.taskId, '20260801120000-heal-hugin');
+    assert.ok(!savedState.diagnosisOutcomes || !savedState.diagnosisOutcomes.hugin);
+  } finally {
+    db.close();
+  }
+});
+
 test('remote services do not inherit control-node restart metrics', async () => {
   const db = tmpDb();
   try {
@@ -1203,7 +1269,7 @@ test('remote services do not inherit control-node restart metrics', async () => 
     });
     assert.equal(result.tasksSubmitted, 0);
     assert.equal(writes.length, 0);
-    assert.match(activeSelfHealAlert(db, 'mimir').detail, /identity mismatch|unavailable/i);
+    assert.match(activeSelfHealAlert(db, 'mimir').detail, /unavailable/i);
   } finally {
     db.close();
   }
