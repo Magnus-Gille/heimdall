@@ -455,12 +455,23 @@ CREATE TABLE IF NOT EXISTS service_snapshots (
   fetched_at TEXT, reachable INTEGER, schema_version TEXT
 );
 
--- fleet machine config + derived liveness (always_on drives offline vs sleeping)
+-- fleet machine index + derived liveness (always_on drives offline vs sleeping)
 CREATE TABLE IF NOT EXISTS fleet_hosts (
   hostname TEXT PRIMARY KEY, label TEXT, role TEXT,
-  always_on INTEGER DEFAULT 1, last_seen TEXT, state TEXT  -- online|stale|offline|sleeping
+  always_on INTEGER DEFAULT 1, last_seen TEXT,
+  membership_state TEXT DEFAULT 'observed', -- configured|observed|retired
+  alias_of TEXT, retired_at TEXT
 );
 ```
+
+`fleet.hosts` in the Heimdall overlay is the fleet-membership authority. The
+`fleet_hosts` table retains observed identities and raw `fleet_metrics` history,
+but a row absent from the configured list is marked `retired` (an alias points
+to its canonical configured hostname) and is excluded from fleet totals and
+liveness alert authority. Configured rows with no `last_seen` render as
+`never-seen`; observed ages derive `online`/`stale`/`offline`/`sleeping` using
+the configured thresholds. This makes renames and retirement explainable
+without turning historical rows into extra machines.
 
 `alerts` gains `dedup_key TEXT` and `source TEXT` (additive) to back consolidation and service-pushed alerts. **Retention** (reuse `heimdall-maintain` daily prune+vacuum): `fleet_metrics` raw kept 7d → rolled into existing `metrics_rollup` beyond 7d (push 30s data is dense — rollup is essential); `service_snapshots` keeps only latest per service (history not needed); `alerts` resolved >30d pruned.
 

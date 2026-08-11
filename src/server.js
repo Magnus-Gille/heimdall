@@ -33,7 +33,7 @@ const { getState } = require('./nas-state');
 const { computeOverallStatus } = require('./status');
 const { detectCausalityHint } = require('./causality');
 // v2 platform: fleet telemetry (push-agent ingest + fleet view)
-const { upsertFleetHostConfig } = require('./db');
+const { reconcileFleetHostConfig } = require('./db');
 const { handlePush } = require('./fleet/ingest');
 const { checkFleetAuth } = require('./fleet/auth');
 const { fleetPage, fleetGridFragment } = require('./fleet/render');
@@ -87,12 +87,13 @@ app.register(require('@fastify/rate-limit'), {
 
 const db = injectedDb || openDatabase();
 
-// Seed fleet host config (label/role/always_on) from heimdall.config.json so
-// configured machines appear (offline/sleeping) before they ever push.
+// Reconcile fleet membership from heimdall.config.json. Configured hosts are
+// the display/count authority; observed-only rows stay in SQLite as historical
+// telemetry and are marked retired instead of inflating the fleet.
 const fleetConfig = loadFleetConfig();
-for (const h of fleetConfig.hosts) {
-  try { upsertFleetHostConfig(db, h); } catch (e) { console.error('fleet seed failed for', h.hostname, e.message); }
-}
+try {
+  reconcileFleetHostConfig(db, fleetConfig.hosts, fleetConfig.hostAliases);
+} catch (e) { console.error('fleet membership reconcile failed:', e.message); }
 
 // Service discovery: load the service registry and seed Heimdall's own snapshot
 // (dogfoods the contract) so /services is populated before the first poll.
@@ -830,6 +831,8 @@ app.post('/api/fleet/push', { bodyLimit: 64 * 1024 }, async (request, reply) => 
     allowInsecureLoopback: insecureLoopback,
     body: request.body,
     now: Date.now(),
+    configuredHostnames: fleetConfig.hosts.map((host) => host.hostname),
+    aliases: fleetConfig.hostAliases,
   });
   reply.code(result.status).send(result.body);
 });

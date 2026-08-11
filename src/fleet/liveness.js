@@ -46,9 +46,40 @@ function deriveState(host, now, cfg = {}) {
   return alwaysOn ? 'offline' : 'sleeping';
 }
 
-/** Whether a derived state should raise an alert (only offline). */
-function shouldAlert(state) {
-  return state === 'offline';
+/**
+ * Display state for a configured/observed host.
+ *
+ * Keep deriveState's historical four-state API intact for callers that already
+ * treat a missing timestamp as offline/sleeping. The fleet UI needs to explain
+ * that missing evidence separately, so it uses this explicit state machine.
+ */
+function deriveDisplayState(host, now, cfg = {}) {
+  if (host && (
+    host.membership_state === 'retired'
+    || host.membership_state === 'retired-unregistered'
+    || host.membership === 'retired'
+    || host.membership === 'retired-unregistered'
+  )) {
+    return 'retired-unregistered';
+  }
+  if (!host || !host.last_seen || !Number.isFinite(Date.parse(host.last_seen))) {
+    return 'never-seen';
+  }
+  return deriveState(host, now, cfg);
+}
+
+/** Whether a derived state should raise an alert (only configured always-on outages). */
+function shouldAlert(state, host = null) {
+  if (host && (
+    host.membership_state === 'retired'
+    || host.membership_state === 'retired-unregistered'
+    || host.membership === 'retired'
+    || host.membership === 'retired-unregistered'
+  )) return false;
+  if (state === 'offline') return true;
+  return state === 'never-seen'
+    && host != null
+    && (host.always_on === true || host.always_on === 1);
 }
 
 /** Map derived states → aggregate counts for the overview strip. */
@@ -57,10 +88,11 @@ function aggregateCounts(states) {
   for (const s of states) {
     if (s === 'online') counts.ok += 1;
     else if (s === 'stale') counts.warn += 1;
-    else if (s === 'offline') counts.crit += 1;
-    else counts.stale += 1; // sleeping
+    else if (s === 'offline' || s === 'never-seen') counts.crit += 1;
+    else if (s === 'sleeping') counts.stale += 1;
+    // Retired/unregistered rows are historical context, not fleet members.
   }
   return counts;
 }
 
-module.exports = { deriveState, shouldAlert, aggregateCounts, DEFAULTS };
+module.exports = { deriveState, deriveDisplayState, shouldAlert, aggregateCounts, DEFAULTS };

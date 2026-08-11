@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { normAlwaysOn } = require('../db');
+const { loadHostAliases } = require('../host-identity');
 
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'heimdall.config.json');
 
@@ -10,7 +11,7 @@ const DEFAULT_THRESHOLDS = { staleAfterS: 90, offlineAfterS: 600, sleepAfterS: 1
 
 /**
  * Load the `fleet` section of heimdall.config.json:
- *   { hosts: [{hostname, label, role, always_on}], thresholds: {...} }
+ *   { hosts: [{hostname, label, role, always_on}], hostAliases: {...}, thresholds: {...} }
  * Missing file/section → empty host list + default thresholds (never throws).
  */
 function loadFleetConfig(configPath = CONFIG_PATH) {
@@ -38,7 +39,7 @@ function loadFleetConfig(configPath = CONFIG_PATH) {
     sleepAfterS: numOr(fleet.sleep_after_s, DEFAULT_THRESHOLDS.sleepAfterS),
   };
 
-  return { hosts, thresholds };
+  return { hosts, hostAliases: loadHostAliases(raw), thresholds };
 }
 
 function numOr(v, fallback) {

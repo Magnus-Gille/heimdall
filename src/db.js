@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { canonicalHost } = require('./host-identity');
 
 const DEFAULT_DB_PATH = path.join(os.homedir(), '.heimdall', 'heimdall.db');
 
@@ -259,6 +260,11 @@ const MIGRATIONS = [
     // Persist the health-probe outcome separately from deployment identity.
     // A deploy stamp remains useful drift evidence, but must never imply that
     // the service answered its health probe.
+    //
+    // Fleet membership lifecycle (#56). `fleet_hosts` is a telemetry index,
+    // not the membership authority: configured rows are the displayed fleet;
+    // observed-only rows remain for history and can be explained as retired.
+    // Keep these fields additive so existing fleet_metrics history is untouched.
     version: 11,
     run(db) {
       if (hasTable(db, 'service_versions') && !hasColumn(db, 'service_versions', 'health_status')) {
@@ -266,6 +272,18 @@ const MIGRATIONS = [
       }
       if (hasTable(db, 'service_versions') && !hasColumn(db, 'service_versions', 'health_reason')) {
         db.exec('ALTER TABLE service_versions ADD COLUMN health_reason TEXT');
+      }
+      if (hasTable(db, 'fleet_hosts')) {
+        if (!hasColumn(db, 'fleet_hosts', 'membership_state')) {
+          db.exec("ALTER TABLE fleet_hosts ADD COLUMN membership_state TEXT NOT NULL DEFAULT 'observed'");
+        }
+        if (!hasColumn(db, 'fleet_hosts', 'alias_of')) {
+          db.exec('ALTER TABLE fleet_hosts ADD COLUMN alias_of TEXT');
+        }
+        if (!hasColumn(db, 'fleet_hosts', 'retired_at')) {
+          db.exec('ALTER TABLE fleet_hosts ADD COLUMN retired_at TEXT');
+        }
+        db.exec('CREATE INDEX IF NOT EXISTS idx_fleet_hosts_membership ON fleet_hosts(membership_state)');
       }
     },
   },
@@ -648,18 +666,71 @@ function normAlwaysOn(v) {
  */
 function upsertFleetHostConfig(db, { hostname, label, role, always_on }) {
   db.prepare(`
-    INSERT INTO fleet_hosts (hostname, label, role, always_on)
-    VALUES (@hostname, @label, @role, @always_on)
+    INSERT INTO fleet_hosts (hostname, label, role, always_on, membership_state, retired_at, alias_of)
+    VALUES (@hostname, @label, @role, @always_on, 'configured', NULL, NULL)
     ON CONFLICT(hostname) DO UPDATE SET
       label = excluded.label,
       role = excluded.role,
-      always_on = excluded.always_on
+      always_on = excluded.always_on,
+      membership_state = 'configured',
+      retired_at = NULL,
+      alias_of = NULL
   `).run({
     hostname,
     label: label ?? hostname,
     role: role ?? null,
     always_on: normAlwaysOn(always_on),
   });
+}
+
+/**
+ * Reconcile the desired fleet membership from the config overlay.
+ *
+ * The config list is the source of truth for the live fleet. Rows discovered
+ * by telemetry but absent from that list are deliberately retained as
+ * `retired` rows: deleting them would destroy the host's metric history, while
+ * leaving them configured would inflate fleet counts and create false alert
+ * authority. Alias rows point at the canonical configured identity so a rename
+ * remains explainable without rewriting history.
+ */
+function reconcileFleetHostConfig(db, configuredHosts = [], aliases = {}, now = Date.now()) {
+  const desired = new Map();
+  for (const host of Array.isArray(configuredHosts) ? configuredHosts : []) {
+    if (!host || typeof host.hostname !== 'string' || !host.hostname) continue;
+    const hostname = canonicalHost(host.hostname, aliases);
+    if (!desired.has(hostname)) desired.set(hostname, { ...host, hostname });
+  }
+  // A missing/malformed overlay is represented by an empty host list by the
+  // tolerant loader. Never retire the entire known fleet on that transient
+  // read failure; an intentional fleet change can still remove individual
+  // hosts while at least one valid configured host remains.
+  if (!desired.size) return { configured: 0, retired: 0, skipped: true };
+  const nowIso = new Date(now).toISOString();
+
+  return db.transaction(() => {
+    const rows = db.prepare('SELECT hostname, membership_state, alias_of, retired_at FROM fleet_hosts').all();
+    const desiredNames = new Set(desired.keys());
+
+    for (const row of rows) {
+      if (desiredNames.has(row.hostname)) continue;
+      const canonical = canonicalHost(row.hostname, aliases);
+      const aliasOf = desiredNames.has(canonical) ? canonical : null;
+      db.prepare(`
+        UPDATE fleet_hosts
+        SET membership_state = 'retired',
+            retired_at = COALESCE(retired_at, ?),
+            alias_of = COALESCE(?, alias_of)
+        WHERE hostname = ?
+      `).run(nowIso, aliasOf, row.hostname);
+    }
+
+    for (const host of desired.values()) upsertFleetHostConfig(db, host);
+
+    return {
+      configured: desired.size,
+      retired: rows.filter((row) => !desiredNames.has(row.hostname)).length,
+    };
+  })();
 }
 
 const FLEET_SERIES_COLS = new Set(['cpu_pct', 'ram_used_pct', 'temp_cpu_c', 'temp_gpu_c', 'load_1']);
@@ -670,7 +741,7 @@ const FLEET_SERIES_COLS = new Set(['cpu_pct', 'ram_used_pct', 'temp_cpu_c', 'tem
  * the generic `metrics` table so the existing chart endpoint works for fleet
  * hosts too. `p` is a validated/normalized payload; `receivedAt` is ISO.
  */
-function recordFleetPush(db, p, receivedAt) {
+function recordFleetPush(db, p, receivedAt, opts = {}) {
   const ts = p.ts || receivedAt;
   // Capability evidence is a bounded agent observation retained alongside the
   // existing extensible telemetry map. It does not confer topology/workload
@@ -678,6 +749,16 @@ function recordFleetPush(db, p, receivedAt) {
   const extra = p.capability_contract && p.capability_contract.evidence
     ? { ...(p.extra || {}), capability_evidence: p.capability_contract.evidence }
     : p.extra;
+  const managedMembership = Array.isArray(opts.configuredHostnames);
+  const aliases = opts.aliases && typeof opts.aliases === 'object' ? opts.aliases : {};
+  const canonical = canonicalHost(p.hostname, aliases);
+  const configured = managedMembership && opts.configuredHostnames
+    .map((hostname) => canonicalHost(hostname, aliases))
+    .includes(canonical);
+  const membershipState = managedMembership
+    ? (configured && p.hostname === canonical ? 'configured' : 'retired')
+    : null;
+  const aliasOf = managedMembership && configured && p.hostname !== canonical ? canonical : null;
   const tx = db.transaction(() => {
     db.prepare(`
       INSERT INTO fleet_metrics
@@ -723,10 +804,25 @@ function recordFleetPush(db, p, receivedAt) {
       agent_version: p.agent_version ?? null,
     });
 
+    // HTTP ingestion is managed by the running config. A newly observed
+    // hostname outside that config is history immediately, not a new fleet
+    // member. Direct/unit callers without configuredHostnames retain the
+    // legacy `observed` default until they perform an explicit reconciliation.
+    if (managedMembership) {
+      db.prepare(`
+        UPDATE fleet_hosts
+        SET membership_state = ?,
+            alias_of = ?,
+            retired_at = CASE WHEN ? = 'configured' THEN NULL ELSE COALESCE(retired_at, ?) END
+        WHERE hostname = ?
+      `).run(membershipState, aliasOf, membershipState, receivedAt, p.hostname);
+    }
+
     // Fan scalars into the generic metrics table (for /api/metrics charts).
     const rows = [];
+    const metricHost = managedMembership ? canonical : p.hostname;
     const add = (metric, value, unit) => {
-      if (value != null && Number.isFinite(value)) rows.push({ timestamp: ts, host: p.hostname, metric, value, unit });
+      if (value != null && Number.isFinite(value)) rows.push({ timestamp: ts, host: metricHost, metric, value, unit });
     };
     add('cpu_pct', p.cpu_pct, 'percent');
     add('ram_used_pct', p.ram_used_pct, 'percent');
@@ -760,16 +856,24 @@ function getLatestFleetMetric(db, hostname) {
   // Order by server-stamped received_at (not the agent-supplied timestamp) so a
   // clock-skewed agent can't pin the "latest" displayed values; id breaks ties.
   return db.prepare(
-    'SELECT * FROM fleet_metrics WHERE hostname = ? ORDER BY received_at DESC, id DESC LIMIT 1'
-  ).get(hostname);
+    `SELECT fm.*
+     FROM fleet_metrics fm
+     LEFT JOIN fleet_hosts fh ON fh.hostname = fm.hostname
+     WHERE fm.hostname = ? OR fh.alias_of = ?
+     ORDER BY fm.received_at DESC, fm.id DESC LIMIT 1`
+  ).get(hostname, hostname);
 }
 
 /** Recent series of one numeric column, oldest→newest, for sparklines. */
 function getFleetMetricSeries(db, hostname, column, limit = 30) {
   if (!FLEET_SERIES_COLS.has(column)) throw new Error(`invalid fleet series column: ${column}`);
   const rows = db.prepare(
-    `SELECT ${column} AS v FROM fleet_metrics WHERE hostname = ? AND ${column} IS NOT NULL ORDER BY received_at DESC, id DESC LIMIT ?`
-  ).all(hostname, limit);
+    `SELECT fm.${column} AS v
+     FROM fleet_metrics fm
+     LEFT JOIN fleet_hosts fh ON fh.hostname = fm.hostname
+     WHERE (fm.hostname = ? OR fh.alias_of = ?) AND fm.${column} IS NOT NULL
+     ORDER BY fm.received_at DESC, fm.id DESC LIMIT ?`
+  ).all(hostname, hostname, limit);
   return rows.map((r) => r.v).reverse();
 }
 
@@ -1063,6 +1167,7 @@ module.exports = {
   saveProcessSnapshot,
   getProcessSnapshot,
   upsertFleetHostConfig,
+  reconcileFleetHostConfig,
   normAlwaysOn,
   recordFleetPush,
   getFleetHosts,

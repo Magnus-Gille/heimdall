@@ -13,7 +13,7 @@ const { pageShell } = require('./shell');
 const { grid } = require('./cards');
 const { kpi, statusBadge, emptyState } = require('./components');
 const { esc } = require('./util');
-const { buildMachines, fleetGridFragment } = require('../fleet/render');
+const { buildMachines, fleetGridFragment, isActiveMachine } = require('../fleet/render');
 const { aggregateCounts } = require('../fleet/liveness');
 const {
   servicesGridFragment, serviceView, isActionableServiceException,
@@ -28,12 +28,22 @@ const { driftStateFromRow } = require('../drift-compare');
  * database-backed status (including collector completeness/freshness).
  */
 function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, versions = [], overallStatus = null } = {}) {
-  const fleetCounts = aggregateCounts(machines.map((m) => m.state));
-  const fleetTotal = machines.length;
+  // `fleet_hosts` also retains retired/aliased telemetry rows for history. They
+  // are rendered only as explainable historical context and never count as
+  // current fleet membership in the overview KPIs.
+  const activeMachines = machines.filter(isActiveMachine);
+  // Keep the online KPI about liveness, not agent-version hygiene. A drifted
+  // but reporting machine remains online and is counted separately in
+  // `fleetDrift`; non-alertable never-seen laptops are equivalent to sleeping
+  // for the aggregate strip.
+  const fleetCounts = aggregateCounts(activeMachines.map((m) => (
+    m.state === 'never-seen' && m.alertable === false ? 'sleeping' : m.state
+  )));
+  const fleetTotal = activeMachines.length;
   const fleetOnline = fleetCounts.ok;
   const fleetOffline = fleetCounts.crit; // offline (always_on machines) → crit
   const fleetStale = fleetCounts.warn;   // late telemetry — NOT the benign "sleeping" bucket
-  const fleetDrift = machines.filter((m) => m.agentVersionState === 'drift').length;
+  const fleetDrift = activeMachines.filter((m) => m.agentVersionState === 'drift').length;
 
   let svcOk = 0;
   let svcWarn = 0;
