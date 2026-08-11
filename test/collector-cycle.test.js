@@ -146,7 +146,32 @@ describe('probe payload classification', () => {
     assert.equal(classifyRemoteProbePayload(null, payload, NOW).status, 'malformed');
 
     const completeRaw = Array(REMOTE_PROBE_SECTION_COUNT).fill('section').join('---\n');
-    assert.equal(classifyRemoteProbePayload(completeRaw, payload, NOW).status, 'success');
+    const garbage = classifyRemoteProbePayload(completeRaw, payload, NOW);
+    assert.equal(garbage.status, 'malformed');
+    assert.ok(garbage.malformed.some((reason) => reason.includes('thermal-zones')));
+
+    const validSections = [
+      'cpu-thermal\t42.0',
+      'MemTotal:       1024 kB\nMemAvailable:    512 kB',
+      'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mmcblk0p2 100 50 50 50% /',
+      '0.10 0.20 0.30 1/100 123',
+      '123.4 456.7',
+      '1700000000',
+      '123 /mnt/timemachine/backup',
+      'backup-2026-08-11',
+      '4',
+      'backup completed 2026-08-11',
+      '1700000000',
+      '1200000',
+      'throttled=0x0',
+      '0',
+      'Inter-|Receive                                                |\n eth0: 1 2 3 4 5 6 7 8',
+      '1 2 3 4 5 6 7',
+      '1 2 3 4 5 6 7',
+      'cpu 1 2 3 4 5 6',
+      '4',
+    ].join('---\n');
+    assert.equal(classifyRemoteProbePayload(validSections, payload, NOW).status, 'success');
 
     const missingSection = Array(REMOTE_PROBE_SECTION_COUNT).fill('section');
     missingSection[7] = '';

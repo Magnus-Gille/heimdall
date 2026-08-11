@@ -12,14 +12,108 @@ const DEFAULT_MAX_DURATION_MS = COLLECTION_INTERVAL_MS;
 // own health is recorded by the collector, but an unavailable optional service
 // must not make host telemetry look like a successful full cycle.
 const REQUIRED_REMOTE_PROBE_FIELDS = Object.freeze(['mem_used_pct', 'load_1m', 'uptime']);
-const REMOTE_PROBE_SECTION_COUNT = 19;
-const REMOTE_PROBE_SECTIONS = Object.freeze([
-  'thermal-zones', 'memory', 'filesystems', 'load-average', 'uptime',
-  'time-machine-mtime', 'time-machine-size', 'munin-backup-latest',
-  'munin-backup-count', 'mimir-backup-last', 'mimir-sync-latest', 'cpu-frequency',
-  'throttle', 'under-voltage', 'network', 'sd-block-stats', 'nas-block-stats',
-  'cpu-ticks', 'cpu-cores',
+const REMOTE_PROBE_SECTION_CONTRACT = Object.freeze([
+  {
+    name: 'thermal-zones',
+    expected: 'one or more thermal-zone type<TAB>temperature lines',
+    validate: (section) => /^\S+\s+-?\d+(?:\.\d+)?(?:\s*\n\s*\S+\s+-?\d+(?:\.\d+)?)*\s*$/.test(section),
+  },
+  {
+    name: 'memory',
+    expected: 'MemTotal and MemAvailable entries in kB',
+    validate: (section) => /(?:^|\n)MemTotal:\s+\d+\s+kB/.test(section)
+      && /(?:^|\n)MemAvailable:\s+\d+\s+kB/.test(section),
+  },
+  {
+    name: 'filesystems',
+    expected: 'df header and at least one /dev filesystem row',
+    validate: (section) => /(?:^|\n)Filesystem\s/.test(section)
+      && /(?:^|\n)\/dev\/\S+\s+\d+\s+\d+\s+\d+\s+\d+%\s+\S+/.test(section),
+  },
+  {
+    name: 'load-average',
+    expected: 'three numeric /proc/loadavg values',
+    validate: (section) => /^\s*\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?(?:\s|$)/.test(section),
+  },
+  {
+    name: 'uptime',
+    expected: 'numeric uptime and idle seconds',
+    validate: (section) => /^\s*\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s*$/.test(section),
+  },
+  {
+    name: 'time-machine-mtime',
+    expected: 'numeric epoch timestamp',
+    validate: (section) => /^\s*\d+(?:\.\d+)?\s*$/.test(section),
+  },
+  {
+    name: 'time-machine-size',
+    expected: 'numeric byte count and path',
+    validate: (section) => /^\s*\d+\s+\S+\s*$/.test(section),
+  },
+  {
+    name: 'munin-backup-latest',
+    expected: 'latest backup filename',
+    validate: (section) => /^\s*\S.*\S\s*$/.test(section),
+  },
+  {
+    name: 'munin-backup-count',
+    expected: 'numeric backup count',
+    validate: (section) => /^\s*\d+\s*$/.test(section),
+  },
+  {
+    name: 'mimir-backup-last',
+    expected: 'latest backup log line',
+    validate: (section) => /^\s*\S.*\S\s*$/.test(section),
+  },
+  {
+    name: 'mimir-sync-latest',
+    expected: 'numeric epoch timestamp',
+    validate: (section) => /^\s*\d+(?:\.\d+)?\s*$/.test(section),
+  },
+  {
+    name: 'cpu-frequency',
+    expected: 'numeric CPU frequency in kHz',
+    validate: (section) => /^\s*\d+(?:\.\d+)?\s*$/.test(section),
+  },
+  {
+    name: 'throttle',
+    expected: 'vcgencmd throttled=0x... output',
+    validate: (section) => /^\s*throttled=0x[0-9a-f]+\s*$/i.test(section),
+  },
+  {
+    name: 'under-voltage',
+    expected: 'numeric under-voltage flag',
+    validate: (section) => /^\s*[01]\s*$/.test(section),
+  },
+  {
+    name: 'network',
+    expected: '/proc/net/dev header and interface counters',
+    validate: (section) => /Inter-\|Receive/.test(section)
+      && /\S+:\s+\d+(?:\s+\d+){7,}/.test(section),
+  },
+  {
+    name: 'sd-block-stats',
+    expected: 'at least seven numeric block-device counters',
+    validate: (section) => /^\s*(?:\d+\s+){6,}\d+\s*$/.test(section),
+  },
+  {
+    name: 'nas-block-stats',
+    expected: 'at least seven numeric block-device counters',
+    validate: (section) => /^\s*(?:\d+\s+){6,}\d+\s*$/.test(section),
+  },
+  {
+    name: 'cpu-ticks',
+    expected: 'cpu line with numeric tick counters',
+    validate: (section) => /^\s*cpu\s+(?:\d+\s+){4,}\d+\s*$/.test(section),
+  },
+  {
+    name: 'cpu-cores',
+    expected: 'positive CPU core count',
+    validate: (section) => /^\s*[1-9]\d*\s*$/.test(section),
+  },
 ]);
+const REMOTE_PROBE_SECTION_COUNT = REMOTE_PROBE_SECTION_CONTRACT.length;
+const REMOTE_PROBE_SECTIONS = Object.freeze(REMOTE_PROBE_SECTION_CONTRACT.map((section) => section.name));
 
 // This is the required-probe inventory. Collection code records the expected
 // contract, observed timestamp, and deadline for every entry; the validator
@@ -257,9 +351,19 @@ function classifyRemoteProbePayload(rawOutput, payload, observedAt) {
       if (section.trim() === '') result.push(`section ${index} (${REMOTE_PROBE_SECTIONS[index]})`);
       return result;
     }, []);
+    const malformed = sections.reduce((result, section, index) => {
+      const contract = REMOTE_PROBE_SECTION_CONTRACT[index];
+      if (contract && section.trim() !== '' && !contract.validate(section)) {
+        result.push(`section ${index} (${contract.name}): expected ${contract.expected}`);
+      }
+      return result;
+    }, []);
     if (missing.length > 0) {
       evidence.status = 'partial';
       evidence.missing = missing;
+    } else if (malformed.length > 0) {
+      evidence.status = 'malformed';
+      evidence.malformed = malformed;
     }
   }
   return evidence;
@@ -271,6 +375,7 @@ module.exports = {
   DEFAULT_MAX_DURATION_MS,
   REQUIRED_COLLECTOR_PROBES,
   COLLECTOR_PROBE_CONTRACT,
+  REMOTE_PROBE_SECTION_CONTRACT,
   REMOTE_PROBE_SECTIONS,
   REQUIRED_REMOTE_PROBE_FIELDS,
   REMOTE_PROBE_SECTION_COUNT,

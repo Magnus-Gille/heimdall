@@ -17,6 +17,16 @@ function isValidHealthURL(str) {
   return /^https?:\/\/[a-zA-Z0-9._:\-\/]+$/.test(str);
 }
 
+function classifyHealthPayload(health) {
+  if (!health || typeof health !== 'object' || Array.isArray(health)) {
+    return { status: 'malformed', reason: 'health response was not an object' };
+  }
+  if (typeof health.status === 'string' && /^(error|failed|failure|down|unhealthy)$/i.test(health.status)) {
+    return { status: 'unhealthy', reason: `health status=${health.status}` };
+  }
+  return { status: 'healthy', reason: null };
+}
+
 function loadServiceRegistry() {
   // Single source of truth: derive from grimnir services.json + heimdall overlay
   // (#92). Falls back to the committed list if grimnir's file is unreadable.
@@ -221,12 +231,26 @@ async function collectServiceDrift(db) {
     let driftState;
     let driftReason;
     let healthLatencyMs = null;
+    let healthStatus = 'unknown';
+    let healthReason = null;
     let commitMessage = null;
     let timerStatus = null;
 
     // Timer-based services: get status from systemd instead of health endpoint
     if (svc.type === 'timer') {
       timerStatus = getTimerStatus(svc.systemd_unit || svc.name);
+      if (!timerStatus) {
+        healthStatus = 'unreachable';
+        healthReason = 'systemd status probe failed';
+      } else if (!timerStatus.lastRun) {
+        healthStatus = 'unknown';
+        healthReason = 'timer has no completed run';
+      } else if (timerStatus.exitOk) {
+        healthStatus = 'healthy';
+      } else {
+        healthStatus = 'unhealthy';
+        healthReason = `timer result ${timerStatus.lastResult}`;
+      }
       // Get deployed version from local repo HEAD
       const repoName = svc.repo ? svc.repo.split('/')[1] : svc.name;
       deployed = getLocalRepoCommit(repoName);
@@ -243,8 +267,13 @@ async function collectServiceDrift(db) {
         const resp = await fetch(svc.health_url, { signal: controller.signal });
         clearTimeout(timeout);
         healthLatencyMs = Date.now() - healthStart;
+        healthStatus = resp.ok ? 'healthy' : 'unhealthy';
+        healthReason = resp.ok ? null : `HTTP ${resp.status}`;
         deployed = resp.ok ? 'ok' : `http-${resp.status}`;
-      } catch { /* service unreachable */ }
+      } catch {
+        healthStatus = 'unreachable';
+        healthReason = 'health endpoint probe failed';
+      }
     } else {
       // Step 1: Get deployed version from /health endpoint (with latency measurement)
       try {
@@ -276,8 +305,14 @@ async function collectServiceDrift(db) {
           health = await resp.json();
         }
         healthLatencyMs = Date.now() - healthStart;
+        const healthOutcome = classifyHealthPayload(health);
+        healthStatus = healthOutcome.status;
+        healthReason = healthOutcome.reason;
         deployed = health.version || health.commit || health.git_version || 'ok';
-      } catch { /* service unreachable */ }
+      } catch {
+        healthStatus = 'unreachable';
+        healthReason = 'health endpoint probe failed';
+      }
     }
 
     // Prefer the commit stamped into deploy_path by the deploy pipeline — it is
@@ -319,9 +354,11 @@ async function collectServiceDrift(db) {
     // Write to DB
     db.prepare(`
       INSERT INTO service_versions
-        (checked_at, service, host, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(timestamp, svc.name, svc.host, deployed, latest, commitsBehind, driftState, driftReason);
+        (checked_at, service, host, deployed_commit, latest_commit, commits_behind,
+         drift_state, drift_reason, health_status, health_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(timestamp, svc.name, svc.host, deployed, latest, commitsBehind,
+      driftState, driftReason, healthStatus, healthReason);
 
     // Store health latency as a metric
     if (healthLatencyMs != null) {
@@ -369,6 +406,8 @@ async function collectServiceDrift(db) {
       commits_behind: commitsBehind,
       drift_state: driftState,
       drift_reason: driftReason,
+      health_status: healthStatus,
+      health_reason: healthReason,
       health_latency_ms: healthLatencyMs,
       commit_message: commitMessage,
       // Exit codes this job uses to mean "ran fine, found things" rather than

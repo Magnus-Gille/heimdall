@@ -54,6 +54,9 @@ describe('openDatabase', () => {
     assert.ok(names.includes('fleet_hosts'));
     assert.ok(names.includes('fleet_metrics'));
     assert.ok(names.includes('service_snapshots'));
+    const serviceVersionCols = db.prepare('PRAGMA table_info(service_versions)').all();
+    assert.ok(serviceVersionCols.some((c) => c.name === 'health_status'));
+    assert.ok(serviceVersionCols.some((c) => c.name === 'health_reason'));
     db.close();
   });
 
@@ -65,7 +68,7 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 10); // bump when MIGRATIONS grows (v10 fleet agent_version persistence)
+    assert.strictEqual(version, 11); // bump when MIGRATIONS grows (v11 service health outcome)
     db2.close();
   });
 
@@ -118,7 +121,7 @@ describe('openDatabase', () => {
     legacy.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 10);
+    assert.equal(db.pragma('user_version', { simple: true }), 11);
 
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     const metricCols = db.prepare('PRAGMA table_info(fleet_metrics)').all();
@@ -317,13 +320,16 @@ describe('service versions', () => {
   beforeEach(() => { db = tmpDb(); });
 
   it('insertServiceVersion and getLatestServiceVersions', () => {
-    insertServiceVersion(db, '2025-01-01T10:00:00Z', 'heimdall', 'control-node', 'abc123', 'def456', 3);
-    insertServiceVersion(db, '2025-01-01T12:00:00Z', 'heimdall', 'control-node', 'def456', 'def456', 0);
+    insertServiceVersion(db, '2025-01-01T10:00:00Z', 'heimdall', 'control-node', 'abc123', 'def456', 3,
+      null, null, 'unreachable', 'connection refused');
+    insertServiceVersion(db, '2025-01-01T12:00:00Z', 'heimdall', 'control-node', 'def456', 'def456', 0,
+      null, null, 'healthy', null);
 
     const versions = getLatestServiceVersions(db);
     assert.strictEqual(versions.length, 1);
     assert.strictEqual(versions[0].deployed_commit, 'def456');
     assert.strictEqual(versions[0].commits_behind, 0);
+    assert.strictEqual(versions[0].health_status, 'healthy');
     db.close();
   });
 });
