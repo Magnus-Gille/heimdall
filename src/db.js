@@ -260,11 +260,6 @@ const MIGRATIONS = [
     // Persist the health-probe outcome separately from deployment identity.
     // A deploy stamp remains useful drift evidence, but must never imply that
     // the service answered its health probe.
-    //
-    // Fleet membership lifecycle (#56). `fleet_hosts` is a telemetry index,
-    // not the membership authority: configured rows are the displayed fleet;
-    // observed-only rows remain for history and can be explained as retired.
-    // Keep these fields additive so existing fleet_metrics history is untouched.
     version: 11,
     run(db) {
       if (hasTable(db, 'service_versions') && !hasColumn(db, 'service_versions', 'health_status')) {
@@ -273,6 +268,15 @@ const MIGRATIONS = [
       if (hasTable(db, 'service_versions') && !hasColumn(db, 'service_versions', 'health_reason')) {
         db.exec('ALTER TABLE service_versions ADD COLUMN health_reason TEXT');
       }
+    },
+  },
+  {
+    // Fleet membership lifecycle (#56). `fleet_hosts` is a telemetry index,
+    // not the membership authority: configured rows are the displayed fleet;
+    // observed-only rows remain for history and can be explained as retired.
+    // Keep these fields additive so existing fleet_metrics history is untouched.
+    version: 12,
+    run(db) {
       if (hasTable(db, 'fleet_hosts')) {
         if (!hasColumn(db, 'fleet_hosts', 'membership_state')) {
           db.exec("ALTER TABLE fleet_hosts ADD COLUMN membership_state TEXT NOT NULL DEFAULT 'observed'");
