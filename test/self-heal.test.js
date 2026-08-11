@@ -275,6 +275,40 @@ test('default autonomous self-heal scope excludes remote services until host-cor
   assert.deepEqual(DEFAULT_SELF_HEAL_SERVICES, ['munin-memory', 'hugin', 'ratatoskr', 'skuld']);
 });
 
+test('an unreachable health status is not masked by a deployed commit', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      'deployed-commit',
+      'latest-commit',
+      0,
+      'up-to-date',
+      null,
+      'unreachable',
+      'HTTP 503',
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    const { result } = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      rpc: munin.rpc,
+    });
+    assert.equal(result.tasksSubmitted, 1);
+  } finally {
+    db.close();
+  }
+});
+
 test('missing health evidence becomes alert-only unknown with no task submission', async () => {
   const db = tmpDb();
   try {

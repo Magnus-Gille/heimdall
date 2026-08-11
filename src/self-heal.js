@@ -371,7 +371,7 @@ function resolveBlockedAlert(db, service) {
 
 function latestServiceVersionRow(db, service) {
   return db.prepare(`
-    SELECT id, checked_at, service, host, deployed_commit
+    SELECT id, checked_at, service, host, deployed_commit, health_status
     FROM service_versions
     WHERE service = ?
     ORDER BY checked_at DESC, id DESC
@@ -420,7 +420,9 @@ function defaultHealthEvidenceLoader(db, service) {
     serviceId: row.service,
     instanceId: row.host,
     observedAt: row.checked_at,
-    outcome: row.deployed_commit == null ? 'failed' : 'ok',
+    // A deploy stamp only identifies a revision. It is not proof that the
+    // service responded to its health probe in this collector cycle.
+    outcome: row.health_status === 'healthy' ? 'ok' : 'failed',
     diagnosticRef: makeEvidenceRef('sv', {
       rowId: row.id,
       observedAt: row.checked_at,
