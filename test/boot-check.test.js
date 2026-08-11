@@ -229,6 +229,34 @@ async function testCollectorWatchdogAlertsWhenTheCollectorStops() {
   db.close();
 }
 
+async function testCollectorWatchdogRetriesFailedNotification() {
+  const db = makeDb();
+  let attempts = 0;
+  const notify = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('transport unavailable');
+  };
+  await performBootCheck(db, '2026-06-20T00:20:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  let alert = activeAlerts(db).find((row) => row.title === 'Collector stopped or unhealthy');
+  assert.strictEqual(attempts, 1);
+  assert.strictEqual(alert.notification_sent_at, null);
+  assert.ok(alert.notification_next_attempt_at, 'failed watchdog notification remains retryable');
+
+  await performBootCheck(db, '2026-06-20T00:21:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  alert = activeAlerts(db).find((row) => row.title === 'Collector stopped or unhealthy');
+  assert.strictEqual(attempts, 2, 'independent boot check retries a due watchdog alert');
+  assert.ok(alert.notification_sent_at, 'retry records durable notification delivery');
+  db.close();
+}
+
 async function testPerformSomeDown() {
   const db = makeDb();
   const calls = [];
@@ -389,6 +417,7 @@ async function main() {
   await testProbeRetryStaysDown();
   await testPerformAllUp();
   await testCollectorWatchdogAlertsWhenTheCollectorStops();
+  await testCollectorWatchdogRetriesFailedNotification();
   await testPerformSomeDown();
   await testPerformResolvesOnRecovery();
   await testPerformResolvesWhenOnlyDownServiceIsRemovedFromRegistry();
