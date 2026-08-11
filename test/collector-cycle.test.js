@@ -153,7 +153,7 @@ describe('probe payload classification', () => {
     const validSections = [
       'cpu-thermal\t42.0',
       'MemTotal:       1024 kB\nMemAvailable:    512 kB',
-      'Filesystem 1K-blocks Used Available Use%\n/dev/mmcblk0p2 100 50 50 50%',
+      'Filesystem 1K-blocks Used Available Use%\n/dev/mmcblk0p2 100 50 50 50%\n/dev/sda1 200 100 100 50%',
       '0.10 0.20 0.30 1/100 123',
       '123.4 456.7',
       '1700000000',
@@ -172,6 +172,10 @@ describe('probe payload classification', () => {
       '4',
     ].join('---\n');
     assert.equal(classifyRemoteProbePayload(validSections, payload, NOW).status, 'success');
+    const missingSda = validSections.replace('\n/dev/sda1 200 100 100 50%', '');
+    assert.equal(classifyRemoteProbePayload(missingSda, payload, NOW).status, 'malformed');
+    const missingMmc = validSections.replace('/dev/mmcblk0p2 100 50 50 50%\n', '');
+    assert.equal(classifyRemoteProbePayload(missingMmc, payload, NOW).status, 'malformed');
 
     const missingSection = Array(REMOTE_PROBE_SECTION_COUNT).fill('section');
     missingSection[7] = '';

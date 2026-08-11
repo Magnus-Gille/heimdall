@@ -12,6 +12,7 @@ const DEFAULT_MAX_DURATION_MS = COLLECTION_INTERVAL_MS;
 // own health is recorded by the collector, but an unavailable optional service
 // must not make host telemetry look like a successful full cycle.
 const REQUIRED_REMOTE_PROBE_FIELDS = Object.freeze(['mem_used_pct', 'load_1m', 'uptime']);
+const REQUIRED_NAS_FILESYSTEMS = Object.freeze(['/dev/mmcblk0p2', '/dev/sda1']);
 const REMOTE_PROBE_SECTION_CONTRACT = Object.freeze([
   {
     name: 'thermal-zones',
@@ -32,15 +33,21 @@ const REMOTE_PROBE_SECTION_CONTRACT = Object.freeze([
       if (lines.length < 2) return false;
       const header = lines[0].split(/\s+/);
       if (header.length !== 5 || header[0] !== 'Filesystem' || header[4] !== 'Use%') return false;
-      return lines.slice(1).every((line) => {
+      const devices = new Set();
+      const validRows = lines.slice(1).every((line) => {
         const fields = line.split(/\s+/);
-        return fields.length === 5
+        if (!(fields.length === 5
           && /^\/dev\/\S+$/.test(fields[0])
           && /^\d+$/.test(fields[1])
           && /^\d+$/.test(fields[2])
           && /^\d+$/.test(fields[3])
-          && /^\d+%$/.test(fields[4]);
+          && /^\d+%$/.test(fields[4]))) return false;
+        devices.add(fields[0]);
+        return true;
       });
+      return validRows
+        && devices.size === REQUIRED_NAS_FILESYSTEMS.length
+        && REQUIRED_NAS_FILESYSTEMS.every((device) => devices.has(device));
     },
   },
   {
@@ -391,6 +398,7 @@ module.exports = {
   REMOTE_PROBE_SECTION_CONTRACT,
   REMOTE_PROBE_SECTIONS,
   REQUIRED_REMOTE_PROBE_FIELDS,
+  REQUIRED_NAS_FILESYSTEMS,
   REMOTE_PROBE_SECTION_COUNT,
   asTimestamp,
   classifyProbePayload,
