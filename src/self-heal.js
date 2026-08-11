@@ -371,7 +371,7 @@ function resolveBlockedAlert(db, service) {
 
 function latestServiceVersionRow(db, service) {
   return db.prepare(`
-    SELECT id, checked_at, service, host, deployed_commit
+    SELECT id, checked_at, service, host, deployed_commit, health_status
     FROM service_versions
     WHERE service = ?
     ORDER BY checked_at DESC, id DESC
@@ -412,6 +412,12 @@ function latestRestartMetricRowForHost(db, service, targetHost, aliases) {
   return rows.find((row) => canonicalHost(row.host, aliases) === targetHost) || null;
 }
 
+function healthEvidenceOutcome(healthStatus) {
+  if (healthStatus === 'healthy') return 'ok';
+  if (healthStatus === 'unhealthy' || healthStatus === 'unreachable') return 'failed';
+  return 'unknown';
+}
+
 function defaultHealthEvidenceLoader(db, service) {
   const row = latestServiceVersionRow(db, service);
   if (!row) return null;
@@ -420,7 +426,9 @@ function defaultHealthEvidenceLoader(db, service) {
     serviceId: row.service,
     instanceId: row.host,
     observedAt: row.checked_at,
-    outcome: row.deployed_commit == null ? 'failed' : 'ok',
+    // A deploy stamp only identifies a revision. It is not proof that the
+    // service responded to its health probe in this collector cycle.
+    outcome: healthEvidenceOutcome(row.health_status),
     diagnosticRef: makeEvidenceRef('sv', {
       rowId: row.id,
       observedAt: row.checked_at,
@@ -466,6 +474,9 @@ function validateHealthEvidence(evidence, expectedService, nowMs) {
     return reject('malformed', 'unknown evidence: malformed');
   }
   if (evidence.serviceId !== expectedService) return reject('identity-mismatch', 'unknown evidence: identity mismatch');
+  if (evidence.outcome === 'unknown') {
+    return reject('unknown-status', 'unknown evidence: health status is unknown');
+  }
   if (!['ok', 'failed'].includes(evidence.outcome) || !OPAQUE_REF.test(evidence.diagnosticRef)) {
     return reject('malformed', 'unknown evidence: malformed');
   }

@@ -71,6 +71,16 @@ describe('buildOverviewStatus', () => {
     assert.equal(s.allHealthy, false);
   });
 
+  it('does not show nominal when the authoritative status reports collector failure', () => {
+    const s = buildOverviewStatus({
+      machines: [{ state: 'online' }],
+      snapshots: [snap('a', 'pass')],
+      alertCount: 0,
+      overallStatus: { state: 'attention', reasons: ['Collector health unavailable'] },
+    });
+    assert.equal(s.allHealthy, false);
+  });
+
   it('counts services behind on deploy (drift)', () => {
     const s = buildOverviewStatus({
       machines: [],

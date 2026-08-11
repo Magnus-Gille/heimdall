@@ -17,6 +17,41 @@ function isValidHealthURL(str) {
   return /^https?:\/\/[a-zA-Z0-9._:\-\/]+$/.test(str);
 }
 
+const EXPLICIT_UNHEALTHY_HEALTH_STATUSES = new Set([
+  'error', 'failed', 'failure', 'down', 'unhealthy', 'fail', 'warn', 'degraded',
+]);
+
+function classifyHealthPayload(health) {
+  if (!health || typeof health !== 'object' || Array.isArray(health)) {
+    return { status: 'malformed', reason: 'health response was not an object' };
+  }
+  if (typeof health.status !== 'string' || health.status.trim() === '') {
+    return { status: 'malformed', reason: 'health status was missing or malformed' };
+  }
+
+  const status = health.status.trim().toLowerCase();
+  if (status === 'ok') return { status: 'healthy', reason: null };
+  if (EXPLICIT_UNHEALTHY_HEALTH_STATUSES.has(status)) {
+    return { status: 'unhealthy', reason: `health status=${health.status}` };
+  }
+
+  return { status: 'unknown', reason: `unknown health status=${health.status}` };
+}
+
+// The remote probe appends curl's HTTP status after the JSON body. Keep the
+// body intact for JSON.parse while requiring a well-formed status trailer.
+function parseRemoteHealthResponse(raw) {
+  if (typeof raw !== 'string') throw new Error('remote health response was not text');
+  const statusMatch = /(?:^|\r?\n)(\d{3})[ \t]*$/.exec(raw);
+  if (!statusMatch) throw new Error('remote health response was missing HTTP status');
+  const body = raw.slice(0, statusMatch.index).trim();
+  if (!body) throw new Error('remote health response was missing JSON');
+  return {
+    health: JSON.parse(body),
+    status: Number(statusMatch[1]),
+  };
+}
+
 function loadServiceRegistry() {
   // Single source of truth: derive from grimnir services.json + heimdall overlay
   // (#92). Falls back to the committed list if grimnir's file is unreadable.
@@ -208,8 +243,10 @@ function countCommitGap(svc, deployed, latest) {
   }
 }
 
-async function collectServiceDrift(db) {
-  const services = loadServiceRegistry();
+async function collectServiceDrift(db, options = {}) {
+  const services = Array.isArray(options.services) ? options.services : loadServiceRegistry();
+  const fetchImpl = typeof options.fetch === 'function' ? options.fetch : fetch;
+  const execSyncImpl = typeof options.execSync === 'function' ? options.execSync : execSync;
   const timestamp = new Date().toISOString();
   const results = [];
 
@@ -221,12 +258,26 @@ async function collectServiceDrift(db) {
     let driftState;
     let driftReason;
     let healthLatencyMs = null;
+    let healthStatus = 'unknown';
+    let healthReason = null;
     let commitMessage = null;
     let timerStatus = null;
 
     // Timer-based services: get status from systemd instead of health endpoint
     if (svc.type === 'timer') {
       timerStatus = getTimerStatus(svc.systemd_unit || svc.name);
+      if (!timerStatus) {
+        healthStatus = 'unreachable';
+        healthReason = 'systemd status probe failed';
+      } else if (!timerStatus.lastRun) {
+        healthStatus = 'unknown';
+        healthReason = 'timer has no completed run';
+      } else if (timerStatus.exitOk) {
+        healthStatus = 'healthy';
+      } else {
+        healthStatus = 'unhealthy';
+        healthReason = `timer result ${timerStatus.lastResult}`;
+      }
       // Get deployed version from local repo HEAD
       const repoName = svc.repo ? svc.repo.split('/')[1] : svc.name;
       deployed = getLocalRepoCommit(repoName);
@@ -240,15 +291,22 @@ async function collectServiceDrift(db) {
         const healthStart = Date.now();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
-        const resp = await fetch(svc.health_url, { signal: controller.signal });
+        const resp = await fetchImpl(svc.health_url, { signal: controller.signal });
         clearTimeout(timeout);
         healthLatencyMs = Date.now() - healthStart;
+        healthStatus = resp.ok ? 'healthy' : 'unhealthy';
+        healthReason = resp.ok ? null : `HTTP ${resp.status}`;
         deployed = resp.ok ? 'ok' : `http-${resp.status}`;
-      } catch { /* service unreachable */ }
+      } catch {
+        healthStatus = 'unreachable';
+        healthReason = 'health endpoint probe failed';
+      }
     } else {
       // Step 1: Get deployed version from /health endpoint (with latency measurement)
       try {
         let health;
+        let healthResponseOk = false;
+        let healthResponseStatus = null;
         const healthStart = Date.now();
         if (svc.ssh_host) {
           // Validate config values before shell interpolation
@@ -263,21 +321,34 @@ async function collectServiceDrift(db) {
           // Remote service: health check via SSH
           const sshUser = process.env.HEIMDALL_STORAGE_SSH_USER || 'heimdall';
           if (!/^[a-zA-Z0-9._-]+$/.test(sshUser)) throw new Error('invalid SSH user');
-          const raw = execSync(
-            `ssh -i ~/.ssh/id_ed25519 -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${os.homedir()}/.heimdall/known_hosts ${sshUser}@${svc.ssh_host} "curl -s -m 5 ${svc.health_url}"`,
+          const raw = execSyncImpl(
+            `ssh -i ~/.ssh/id_ed25519 -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${os.homedir()}/.heimdall/known_hosts ${sshUser}@${svc.ssh_host} "curl -s -m 5 -w '\\n%{http_code}' -- ${svc.health_url}"`,
             { encoding: 'utf8', timeout: 15000 }
-          ).trim();
-          health = JSON.parse(raw);
+          );
+          const remoteResponse = parseRemoteHealthResponse(raw);
+          healthResponseStatus = remoteResponse.status;
+          healthResponseOk = remoteResponse.status >= 200 && remoteResponse.status < 300;
+          health = remoteResponse.health;
         } else {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 5000);
-          const resp = await fetch(svc.health_url, { signal: controller.signal });
+          const resp = await fetchImpl(svc.health_url, { signal: controller.signal });
           clearTimeout(timeout);
+          healthResponseOk = resp.ok;
+          healthResponseStatus = resp.status;
           health = await resp.json();
         }
         healthLatencyMs = Date.now() - healthStart;
+        const healthOutcome = healthResponseOk
+          ? classifyHealthPayload(health)
+          : { status: 'unhealthy', reason: `HTTP ${healthResponseStatus}` };
+        healthStatus = healthOutcome.status;
+        healthReason = healthOutcome.reason;
         deployed = health.version || health.commit || health.git_version || 'ok';
-      } catch { /* service unreachable */ }
+      } catch {
+        healthStatus = 'unreachable';
+        healthReason = 'health endpoint probe failed';
+      }
     }
 
     // Prefer the commit stamped into deploy_path by the deploy pipeline — it is
@@ -319,9 +390,11 @@ async function collectServiceDrift(db) {
     // Write to DB
     db.prepare(`
       INSERT INTO service_versions
-        (checked_at, service, host, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(timestamp, svc.name, svc.host, deployed, latest, commitsBehind, driftState, driftReason);
+        (checked_at, service, host, deployed_commit, latest_commit, commits_behind,
+         drift_state, drift_reason, health_status, health_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(timestamp, svc.name, svc.host, deployed, latest, commitsBehind,
+      driftState, driftReason, healthStatus, healthReason);
 
     // Store health latency as a metric
     if (healthLatencyMs != null) {
@@ -369,6 +442,8 @@ async function collectServiceDrift(db) {
       commits_behind: commitsBehind,
       drift_state: driftState,
       drift_reason: driftReason,
+      health_status: healthStatus,
+      health_reason: healthReason,
       health_latency_ms: healthLatencyMs,
       commit_message: commitMessage,
       // Exit codes this job uses to mean "ran fine, found things" rather than
@@ -428,4 +503,15 @@ function getLastDeployTime(db, serviceName) {
   }
 }
 
-module.exports = { loadServiceRegistry, collectServiceDrift, countCommitGap, getServiceRestartCount, getLastDeployTime, getTimerStatus, getDeployedCommitStamp, parseSystemdTimestamp, isSafeUnitName };
+module.exports = {
+  loadServiceRegistry,
+  collectServiceDrift,
+  classifyHealthPayload,
+  countCommitGap,
+  getServiceRestartCount,
+  getLastDeployTime,
+  getTimerStatus,
+  getDeployedCommitStamp,
+  parseSystemdTimestamp,
+  isSafeUnitName,
+};

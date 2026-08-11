@@ -6,7 +6,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 
-const { openDatabase, createAlert, acknowledgeAlert, getActiveAlerts, getUnacknowledgedAlerts } = require('../src/db');
+const { openDatabase, createAlert, acknowledgeAlert, getActiveAlerts, getUnacknowledgedAlerts, insertMetric } = require('../src/db');
 const { computeOverallStatus } = require('../src/status');
 
 function tmpDb() {
@@ -43,5 +43,30 @@ describe('acknowledgement vs overall status', () => {
     acknowledgeAlert(db, id);
     const { reasons } = computeOverallStatus(db);
     assert.ok(reasons.some((r) => r.includes('warning alert')), 'warning-alert reason persists after ack');
+  });
+
+  it('does not treat absent collector health evidence as healthy', () => {
+    const result = computeOverallStatus(db);
+    assert.notEqual(result.state, 'healthy');
+  });
+
+  it('rejects collector health assembled from different cycles', () => {
+    const old = new Date(Date.now() - 60_000).toISOString();
+    const current = new Date().toISOString();
+    insertMetric(db, old, 'control-node', 'collector_success', 1, 'boolean', null);
+    insertMetric(db, old, 'control-node', 'collector_last_run', Math.floor(Date.now() / 1000) - 60, 'epoch', null);
+    // A sibling/current run marker cannot borrow an older success flag.
+    insertMetric(db, current, 'control-node', 'collector_last_run', Math.floor(Date.now() / 1000), 'epoch', null);
+    const result = computeOverallStatus(db);
+    assert.ok(result.reasons.some((r) => r.includes('Collector health evidence incomplete')));
+  });
+
+  it('rejects future collector run evidence', () => {
+    const current = new Date().toISOString();
+    insertMetric(db, current, 'control-node', 'collector_success', 1, 'boolean', null);
+    insertMetric(db, current, 'control-node', 'collector_last_run', Math.floor(Date.now() / 1000) + 60, 'epoch', null);
+    const result = computeOverallStatus(db);
+    assert.notEqual(result.state, 'healthy');
+    assert.ok(result.reasons.some((r) => r.includes('Collector run evidence invalid')));
   });
 });

@@ -51,6 +51,12 @@ function makeDb() {
       last_observed_at TEXT
     );
   `);
+  const collectorTimestamp = '2026-06-20T00:00:00Z';
+  const collectorRun = Math.floor(Date.parse(collectorTimestamp) / 1000);
+  db.prepare('INSERT INTO metrics (timestamp, host, metric, value, unit) VALUES (?, ?, ?, ?, ?)')
+    .run(collectorTimestamp, 'control-node', 'collector_success', 1, 'boolean');
+  db.prepare('INSERT INTO metrics (timestamp, host, metric, value, unit) VALUES (?, ?, ?, ?, ?)')
+    .run(collectorTimestamp, 'control-node', 'collector_last_run', collectorRun, 'epoch');
   return db;
 }
 
@@ -167,11 +173,87 @@ async function testPerformAllUp() {
   assert.strictEqual(summary.checked, 4);
   assert.strictEqual(summary.down.length, 0);
   assert.strictEqual(summary.alerted, false);
+  assert.strictEqual(summary.collectorHealthy, true);
   assert.strictEqual(calls.length, 0, 'no Telegram when all healthy');
   assert.strictEqual(activeAlerts(db).length, 0, 'no alert when all healthy');
   assert.strictEqual(metricVal(db, 'boot_check_healthy').value, 1);
   assert.strictEqual(metricVal(db, 'boot_check_down_count').value, 0);
   console.log('  PASS: performBootCheck — all healthy → no alert, no Telegram');
+  db.close();
+}
+
+async function testCollectorWatchdogAlertsWhenTheCollectorStops() {
+  const db = makeDb();
+  const calls = [];
+  const notify = async (text) => { calls.push(text); };
+  const summary = await performBootCheck(db, '2026-06-20T00:20:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  assert.strictEqual(summary.collectorHealthy, false);
+  assert.match(summary.collectorReason, /last ran/);
+  const alerts = activeAlerts(db);
+  assert.strictEqual(alerts.length, 1);
+  assert.strictEqual(alerts[0].title, 'Collector stopped or unhealthy');
+  assert.strictEqual(alerts[0].dedup_key, 'heimdall:collector-watchdog');
+  assert.strictEqual(calls.length, 1, 'independent boot check notifies while collector is stopped');
+  assert.match(calls[0], /Collector stopped or unhealthy/);
+
+  await performBootCheck(db, '2026-06-20T00:21:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  assert.strictEqual(calls.length, 1, 'active watchdog alert remains deduplicated');
+
+  db.prepare('UPDATE metrics SET timestamp = ?, value = ? WHERE metric = ?')
+    .run('2026-06-20T00:22:00Z', 1, 'collector_success');
+  db.prepare('UPDATE metrics SET timestamp = ?, value = ? WHERE metric = ?')
+    .run('2026-06-20T00:22:00Z', Math.floor(Date.parse('2026-06-20T00:22:00Z') / 1000), 'collector_last_run');
+  const recovered = await performBootCheck(db, '2026-06-20T00:23:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  assert.strictEqual(recovered.collectorHealthy, true);
+  assert.strictEqual(activeAlerts(db).length, 0);
+
+  const refired = await performBootCheck(db, '2026-06-20T00:40:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  assert.strictEqual(refired.collectorHealthy, false);
+  assert.strictEqual(calls.length, 2, 'resolved watchdog notifies again when it re-fires');
+  db.close();
+}
+
+async function testCollectorWatchdogRetriesFailedNotification() {
+  const db = makeDb();
+  let attempts = 0;
+  const notify = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('transport unavailable');
+  };
+  await performBootCheck(db, '2026-06-20T00:20:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  let alert = activeAlerts(db).find((row) => row.title === 'Collector stopped or unhealthy');
+  assert.strictEqual(attempts, 1);
+  assert.strictEqual(alert.notification_sent_at, null);
+  assert.ok(alert.notification_next_attempt_at, 'failed watchdog notification remains retryable');
+
+  await performBootCheck(db, '2026-06-20T00:21:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  alert = activeAlerts(db).find((row) => row.title === 'Collector stopped or unhealthy');
+  assert.strictEqual(attempts, 2, 'independent boot check retries a due watchdog alert');
+  assert.ok(alert.notification_sent_at, 'retry records durable notification delivery');
   db.close();
 }
 
@@ -334,6 +416,8 @@ async function main() {
   await testProbeRetryRecovers();
   await testProbeRetryStaysDown();
   await testPerformAllUp();
+  await testCollectorWatchdogAlertsWhenTheCollectorStops();
+  await testCollectorWatchdogRetriesFailedNotification();
   await testPerformSomeDown();
   await testPerformResolvesOnRecovery();
   await testPerformResolvesWhenOnlyDownServiceIsRemovedFromRegistry();

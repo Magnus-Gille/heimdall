@@ -429,6 +429,7 @@ app.get('/', async (request, reply) => {
     snapshots: snapshotsWithPushedOnly(),
     alertCount: getActiveAlerts(db).length,
     versions: getLatestServiceVersions(db),
+    overallStatus: computeOverallStatus(db),
   }));
 });
 
@@ -439,6 +440,7 @@ app.get('/api/overview/status', async (request, reply) => {
     snapshots: snapshotsWithPushedOnly(),
     alertCount: getActiveAlerts(db).length,
     versions: getLatestServiceVersions(db),
+    overallStatus: computeOverallStatus(db),
   });
   reply.header('Content-Type', 'text/html; charset=utf-8').send(overviewStatusSection(status));
 });

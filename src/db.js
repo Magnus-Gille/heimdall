@@ -255,6 +255,20 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // Persist the health-probe outcome separately from deployment identity.
+    // A deploy stamp remains useful drift evidence, but must never imply that
+    // the service answered its health probe.
+    version: 11,
+    run(db) {
+      if (hasTable(db, 'service_versions') && !hasColumn(db, 'service_versions', 'health_status')) {
+        db.exec('ALTER TABLE service_versions ADD COLUMN health_status TEXT');
+      }
+      if (hasTable(db, 'service_versions') && !hasColumn(db, 'service_versions', 'health_reason')) {
+        db.exec('ALTER TABLE service_versions ADD COLUMN health_reason TEXT');
+      }
+    },
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -539,13 +553,17 @@ function markCriticalAlertNotificationFailed(db, id, errorClass, nextAttemptAt) 
   `).run(errorClass, nextAttemptAt, id);
 }
 
-function insertServiceVersion(db, checkedAt, service, host, deployedCommit, latestCommit, commitsBehind, driftState, driftReason) {
+function insertServiceVersion(
+  db, checkedAt, service, host, deployedCommit, latestCommit, commitsBehind,
+  driftState, driftReason, healthStatus, healthReason
+) {
   db.prepare(`
     INSERT INTO service_versions
-      (checked_at, service, host, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (checked_at, service, host, deployed_commit, latest_commit, commits_behind,
+       drift_state, drift_reason, health_status, health_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(checkedAt, service, host, deployedCommit, latestCommit, commitsBehind,
-    driftState || null, driftReason || null);
+    driftState || null, driftReason || null, healthStatus || null, healthReason || null);
 }
 
 function getLatestServiceVersions(db) {
@@ -562,7 +580,8 @@ function getLatestServiceVersions(db) {
 
 function getDriftHistory(db, limitPerService = 24) {
   return db.prepare(`
-    SELECT service, host, checked_at, deployed_commit, latest_commit, commits_behind, drift_state, drift_reason
+    SELECT service, host, checked_at, deployed_commit, latest_commit, commits_behind,
+           drift_state, drift_reason, health_status, health_reason
     FROM (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY service ORDER BY checked_at DESC) as rn
       FROM service_versions
@@ -573,9 +592,24 @@ function getDriftHistory(db, limitPerService = 24) {
 }
 
 function getLastCollectionTime(db, host) {
+  // A sibling metric can be written by a partial/frozen probe and must not
+  // make a host look freshly collected. Only a cycle-health row, joined to a
+  // successful full collector cycle, is authoritative here.
+  const healthMetric = host === 'control-node'
+    ? 'collector_last_run'
+    : host === 'nas' ? 'collector_probe_nas' : null;
+  if (!healthMetric) return null;
   const row = db.prepare(`
-    SELECT MAX(timestamp) as last FROM metrics WHERE host = ?
-  `).get(host);
+    SELECT MAX(health.timestamp) as last
+    FROM metrics health
+    INNER JOIN metrics cycle
+      ON cycle.host = 'control-node'
+     AND cycle.metric = 'collector_success'
+     AND cycle.timestamp = health.timestamp
+     AND cycle.value = 1
+    WHERE health.host = ? AND health.metric = ?
+      AND (? = 'control-node' OR health.value = 1)
+  `).get(host, healthMetric, host);
   return row ? row.last : null;
 }
 
