@@ -2,6 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -320,9 +321,48 @@ describe('always_on normalization', () => {
     assert.equal(cfg.hosts.find((h) => h.hostname === 'lap').always_on, false);
     assert.equal(cfg.hosts.find((h) => h.hostname === 'pi').always_on, true);
   });
+
+  it('loadFleetConfig uses the HEIMDALL_CONFIG_PATH overlay by default', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-private-cfg-'));
+    const configPath = path.join(dir, 'private.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      fleet: { hosts: [{ hostname: 'private-node' }] },
+    }));
+    const modulePath = path.resolve(__dirname, '../src/fleet/config.js');
+    const output = execFileSync(process.execPath, ['-e', [
+      `const { loadFleetConfig } = require(${JSON.stringify(modulePath)});`,
+      'process.stdout.write(JSON.stringify(loadFleetConfig()));',
+    ].join('\n')], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, HEIMDALL_CONFIG_PATH: configPath },
+      encoding: 'utf8',
+    });
+    const cfg = JSON.parse(output);
+    assert.deepEqual(cfg.hosts.map((h) => h.hostname), ['private-node']);
+    assert.equal(cfg.authority.status, 'loaded');
+  });
 });
 
 describe('fleet render — temp sparkline', () => {
+  it('canonical metric history includes samples written under a pre-rename alias', () => {
+    const db = tmpDb();
+    handlePush(db, {
+      body: { hostname: 'old-control', temp_cpu_c: 41 },
+      allowInsecureLoopback: true,
+      now: NOW,
+    });
+    const history = getMetricHistory(
+      db,
+      'control-node',
+      'temp_cpu_c',
+      '2000-01-01',
+      '2100-01-01',
+      { 'old-control': 'control-node' },
+    );
+    assert.deepEqual(history.map((row) => row.value), [41]);
+    db.close();
+  });
+
   it('buildMachines includes a tempSpark series oldest→newest from temp_cpu_c pushes', () => {
     const db = tmpDb();
     handlePush(db, { body: { hostname: 'm5', temp_cpu_c: 40 }, allowInsecureLoopback: true, now: NOW });

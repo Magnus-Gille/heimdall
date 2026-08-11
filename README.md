@@ -110,7 +110,10 @@ visible even before their first push (`never seen`), while telemetry-only rows
 are retained for history and marked `retired / unregistered` when the config
 reconciles. They do not contribute to fleet totals or liveness alerts. This
 keeps a rename from deleting evidence or counting a stale historical identity
-as another machine.
+as another machine. A successfully loaded overlay with `fleet.hosts: []` is an
+intentional empty fleet and retires retained rows; an unavailable, malformed, or
+fleet-less overlay is not treated as authority, so existing lifecycle state is
+preserved until a valid overlay is available.
 
 Two settings live in the JSON overlay rather than the environment:
 

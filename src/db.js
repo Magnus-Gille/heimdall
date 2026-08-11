@@ -367,35 +367,58 @@ function getLatestMetrics(db, host) {
   `).all(host);
 }
 
-function getMetricHistory(db, host, metric, fromTime, toTime) {
-  return db.prepare(`
-    SELECT timestamp, value FROM metrics
-    WHERE host = ? AND metric = ? AND timestamp >= ? AND timestamp <= ?
-    ORDER BY timestamp ASC
-  `).all(host, metric, fromTime, toTime);
+/** Return the stored host ids that belong to a canonical chart identity. */
+function metricHostNames(host, aliases = {}) {
+  const canonical = canonicalHost(host, aliases);
+  const names = new Set([host, canonical]);
+  if (aliases && typeof aliases === 'object') {
+    for (const alias of Object.keys(aliases)) {
+      if (canonicalHost(alias, aliases) === canonical) names.add(alias);
+    }
+  }
+  return [...names].filter((name) => typeof name === 'string' && name.length > 0);
 }
 
-function getMetricHistoryWithRollup(db, host, metric, fromTime, toTime) {
+function metricHostClause(host, aliases = {}) {
+  const hosts = metricHostNames(host, aliases);
+  return {
+    sql: hosts.map(() => '?').join(', '),
+    params: hosts,
+  };
+}
+
+function getMetricHistory(db, host, metric, fromTime, toTime, aliases = {}) {
+  const hostClause = metricHostClause(host, aliases);
+  return db.prepare(`
+    SELECT timestamp, value FROM metrics
+    WHERE host IN (${hostClause.sql}) AND metric = ? AND timestamp >= ? AND timestamp <= ?
+    ORDER BY timestamp ASC
+  `).all(...hostClause.params, metric, fromTime, toTime);
+}
+
+function getMetricHistoryWithRollup(db, host, metric, fromTime, toTime, aliases = {}) {
   // Use raw data for recent queries, rollups for older data
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
 
   if (fromTime >= sevenDaysAgo) {
-    return getMetricHistory(db, host, metric, fromTime, toTime);
+    return getMetricHistory(db, host, metric, fromTime, toTime, aliases);
   }
+
+  const hostClause = metricHostClause(host, aliases);
 
   // For older data, use rollups
   const rollups = db.prepare(`
     SELECT bucket as timestamp, avg_value as value FROM metrics_rollup
-    WHERE host = ? AND metric = ? AND bucket >= ? AND bucket <= ?
+    WHERE host IN (${hostClause.sql}) AND metric = ? AND bucket >= ? AND bucket <= ?
     ORDER BY bucket ASC
-  `).all(host, metric, fromTime, toTime);
+  `).all(...hostClause.params, metric, fromTime, toTime);
 
   // Combine with raw data for the recent portion
   const raw = db.prepare(`
     SELECT timestamp, value FROM metrics
-    WHERE host = ? AND metric = ? AND timestamp >= ? AND timestamp <= ?
+    WHERE host IN (${hostClause.sql}) AND metric = ? AND timestamp >= ? AND timestamp <= ?
     ORDER BY timestamp ASC
-  `).all(host, metric, sevenDaysAgo, toTime);
+  `).all(...hostClause.params, metric, sevenDaysAgo, toTime);
 
   return [...rollups.filter(r => r.timestamp < sevenDaysAgo), ...raw];
 }
@@ -700,11 +723,6 @@ function reconcileFleetHostConfig(db, configuredHosts = [], aliases = {}, now = 
     const hostname = canonicalHost(host.hostname, aliases);
     if (!desired.has(hostname)) desired.set(hostname, { ...host, hostname });
   }
-  // A missing/malformed overlay is represented by an empty host list by the
-  // tolerant loader. Never retire the entire known fleet on that transient
-  // read failure; an intentional fleet change can still remove individual
-  // hosts while at least one valid configured host remains.
-  if (!desired.size) return { configured: 0, retired: 0, skipped: true };
   const nowIso = new Date(now).toISOString();
 
   return db.transaction(() => {

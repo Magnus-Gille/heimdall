@@ -131,8 +131,15 @@ function fleetGridFragment(db, now, thresholds, opts = {}) {
     body: `<div class="card-head"><span class="card-title">Fleet</span></div>${aggStrip(counts)}`,
   });
   if (!activeMachines.length) {
+    if (machines.length && !opts.exceptionsOnly) {
+      return grid([
+        aggCard,
+        card({ fullWidth: true, body: emptyState('No active fleet members. Retained historical rows are shown below.', '🛰') }),
+        ...machines.map(machineCard),
+      ]);
+    }
     const message = machines.length
-      ? 'No configured or currently observed machines. Historical rows are retained below only on the full fleet view.'
+      ? 'No active fleet members.'
       : 'No machines are configured or have reported yet — start the agent on a host.';
     return grid([aggCard, card({ fullWidth: true, body: emptyState(message, '🛰') })]);
   }

@@ -13,11 +13,12 @@ const {
   reconcileFleetHostConfig,
 } = require('../src/db');
 const { handlePush } = require('../src/fleet/ingest');
+const { loadFleetConfig } = require('../src/fleet/config');
 const {
   deriveDisplayState,
   shouldAlert,
 } = require('../src/fleet/liveness');
-const { buildMachines, aggregateMachineCounts } = require('../src/fleet/render');
+const { buildMachines, fleetGridFragment, aggregateMachineCounts } = require('../src/fleet/render');
 const { buildOverviewStatus } = require('../src/render/overview');
 
 const NOW = Date.parse('2026-06-23T12:00:00Z');
@@ -72,6 +73,65 @@ describe('fleet membership lifecycle (#56)', () => {
     const ghost = getFleetHosts(db).find((row) => row.hostname === 'ghost');
     assert.equal(ghost.membership_state, 'retired');
     assert.equal(buildOverviewStatus({ machines: buildMachines(db, NOW, {}) }).fleetTotal, 0);
+    db.close();
+  });
+
+  it('does not retire pushes while fleet authority is unavailable, malformed, or fleet-less', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-authority-'));
+    const missing = path.join(dir, 'missing.json');
+    const malformed = path.join(dir, 'malformed.json');
+    const fleetLess = path.join(dir, 'fleet-less.json');
+    fs.writeFileSync(malformed, '{not-json');
+    fs.writeFileSync(fleetLess, JSON.stringify({ services: [] }));
+
+    const cases = [
+      [missing, 'unavailable'],
+      [malformed, 'malformed'],
+      [fleetLess, 'fleet-less'],
+    ];
+    const db = tmpDb();
+    for (const [configPath, status] of cases) {
+      const cfg = loadFleetConfig(configPath);
+      assert.equal(cfg.authority.status, status);
+      const hostname = `authority-${status.replace('-', '')}`;
+      const result = handlePush(db, {
+        body: { hostname, cpu_pct: 10 },
+        allowInsecureLoopback: true,
+        now: NOW,
+        // Failed authority states deliberately omit configuredHostnames. An
+        // empty array would mean an intentionally empty, valid fleet.
+      });
+      assert.equal(result.status, 200);
+      assert.equal(getFleetHosts(db).find((row) => row.hostname === hostname).membership_state, 'observed');
+    }
+    db.close();
+  });
+
+  it('treats a successfully loaded empty fleet as intentionally authoritative', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-empty-fleet-'));
+    const configPath = path.join(dir, 'empty.json');
+    fs.writeFileSync(configPath, JSON.stringify({ fleet: { hosts: [] } }));
+    const cfg = loadFleetConfig(configPath);
+    assert.equal(cfg.authority.status, 'loaded');
+    assert.equal(cfg.authority.intentionallyEmpty, true);
+
+    const db = tmpDb();
+    handlePush(db, { body: { hostname: 'retained' }, allowInsecureLoopback: true, now: NOW });
+    reconcileFleetHostConfig(db, cfg.hosts, cfg.hostAliases, NOW + 1000);
+    assert.equal(getFleetHosts(db).find((row) => row.hostname === 'retained').membership_state, 'retired');
+    handlePush(db, {
+      body: { hostname: 'new-host' },
+      configuredHostnames: [],
+      aliases: {},
+      allowInsecureLoopback: true,
+      now: NOW + 2000,
+    });
+    assert.equal(getFleetHosts(db).find((row) => row.hostname === 'new-host').membership_state, 'retired');
+
+    const html = fleetGridFragment(db, NOW + 2000, {});
+    assert.match(html, /retained/);
+    assert.match(html, /new-host/);
+    assert.match(html, /Retained historical rows are shown below/);
     db.close();
   });
 

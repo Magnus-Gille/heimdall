@@ -89,11 +89,17 @@ const db = injectedDb || openDatabase();
 
 // Reconcile fleet membership from heimdall.config.json. Configured hosts are
 // the display/count authority; observed-only rows stay in SQLite as historical
-// telemetry and are marked retired instead of inflating the fleet.
+// telemetry and are marked retired instead of inflating the fleet. A failed or
+// fleet-less authority must not be mistaken for an intentionally empty fleet:
+// preserve the existing lifecycle state until a valid overlay is available.
 const fleetConfig = loadFleetConfig();
-try {
-  reconcileFleetHostConfig(db, fleetConfig.hosts, fleetConfig.hostAliases);
-} catch (e) { console.error('fleet membership reconcile failed:', e.message); }
+if (fleetConfig.authority.status === 'loaded') {
+  try {
+    reconcileFleetHostConfig(db, fleetConfig.hosts, fleetConfig.hostAliases);
+  } catch (e) { console.error('fleet membership reconcile failed:', e.message); }
+} else {
+  console.error(`fleet membership authority ${fleetConfig.authority.status}; preserving existing lifecycle state`);
+}
 
 // Service discovery: load the service registry and seed Heimdall's own snapshot
 // (dogfoods the contract) so /services is populated before the first poll.
@@ -347,7 +353,7 @@ app.get('/api/summary', async (request, reply) => {
       ['NAS', 'nas', 'disk_used_pct_nas', 'disk_total_nas'],
     ]) {
       const thirtyDaysAgoStr = new Date(Date.now() - 30 * 24 * 3600000).toISOString();
-      const dHistory = getMetricHistoryWithRollup(db, host, diskMetric, thirtyDaysAgoStr, new Date().toISOString());
+      const dHistory = getMetricHistoryWithRollup(db, host, diskMetric, thirtyDaysAgoStr, new Date().toISOString(), fleetConfig.hostAliases);
       if (dHistory.length >= 10) {
         const t0 = new Date(dHistory[0].timestamp).getTime();
         const pts = dHistory.map(d => ({ x: (new Date(d.timestamp).getTime() - t0) / 86400000, y: d.value }));
@@ -379,7 +385,7 @@ app.get('/api/summary', async (request, reply) => {
       }
     }
     // Memory trend
-    const memH = getMetricHistoryWithRollup(db, 'control-node', 'mem_used_pct', new Date(Date.now() - 7 * 24 * 3600000).toISOString(), new Date().toISOString());
+    const memH = getMetricHistoryWithRollup(db, 'control-node', 'mem_used_pct', new Date(Date.now() - 7 * 24 * 3600000).toISOString(), new Date().toISOString(), fleetConfig.hostAliases);
     if (memH.length >= 10) {
       const t0m = new Date(memH[0].timestamp).getTime();
       const memPts = memH.map(d => ({ x: (new Date(d.timestamp).getTime() - t0m) / 86400000, y: d.value }));
@@ -645,7 +651,7 @@ app.get('/api/metrics/:host/:metric', async (request, reply) => {
     default: fromTime = new Date(now - 24 * 3600000).toISOString();
   }
 
-  const raw = getMetricHistoryWithRollup(db, host, metric, fromTime, now.toISOString());
+  const raw = getMetricHistoryWithRollup(db, host, metric, fromTime, now.toISOString(), fleetConfig.hostAliases);
   return prepareChartData(raw, 200);
 });
 
@@ -831,7 +837,12 @@ app.post('/api/fleet/push', { bodyLimit: 64 * 1024 }, async (request, reply) => 
     allowInsecureLoopback: insecureLoopback,
     body: request.body,
     now: Date.now(),
-    configuredHostnames: fleetConfig.hosts.map((host) => host.hostname),
+    // Only a successfully loaded overlay can authorize lifecycle transitions.
+    // An intentionally empty `fleet.hosts` array is still passed as [] and is
+    // therefore deliberately authoritative.
+    configuredHostnames: fleetConfig.authority.status === 'loaded'
+      ? fleetConfig.hosts.map((host) => host.hostname)
+      : undefined,
     aliases: fleetConfig.hostAliases,
   });
   reply.code(result.status).send(result.body);
