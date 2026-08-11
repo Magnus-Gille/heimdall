@@ -32,7 +32,7 @@ const {
 
 const NAS_IP = storageSshHost();
 const SSH_KEY = process.env.HEIMDALL_STORAGE_SSH_KEY;
-const COLLECTOR_ALERT_TITLE = 'Collector cycle incomplete';
+const COLLECTOR_ALERT_TITLE = 'Collector stopped or unhealthy';
 
 function configuredDuration(name, fallback) {
   const value = Number(process.env[name]);
@@ -295,7 +295,7 @@ async function run() {
 
         if (rows.length > 0) insertMetrics(db, rows);
 
-        if (failures === 0 && total > 0) {
+        if (nasEvidence.status === 'success' && failures === 0 && total > 0) {
           // Log recovery event if transitioning from broken state
           const prevState = getState(db);
           if (prevState.state === STATES.SSH_BROKEN || prevState.state === STATES.UNREACHABLE) {
@@ -702,7 +702,7 @@ async function run() {
     try {
       logEvent(db, 'control-node', 'system', 'error', 'Collector cycle incomplete', reason, 'collector');
       createAlert(db, 'control-node', 'system', 'critical', COLLECTOR_ALERT_TITLE, reason, {
-        dedup_key: 'heimdall:collector-cycle',
+        dedup_key: 'heimdall:collector-watchdog',
         source: 'collector',
       });
     } catch (err) {

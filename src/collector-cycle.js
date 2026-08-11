@@ -107,7 +107,8 @@ function validateCollectorCycle(evidence, options = {}) {
   const maxAgeMs = options.maxAgeMs ?? options.freshnessWindowMs ?? DEFAULT_MAX_AGE_MS;
   const maxDurationMs = options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
 
-  if (!required || required.some((name) => typeof name !== 'string' || name.trim() === '')) {
+  if (!required || required.length === 0
+    || required.some((name) => typeof name !== 'string' || name.trim() === '')) {
     reasons.push('collector cycle required probes are malformed');
   }
   if (!Number.isFinite(now)) reasons.push('collector cycle clock is malformed');

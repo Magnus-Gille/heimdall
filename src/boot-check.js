@@ -34,6 +34,9 @@ const COLLECTOR_WATCHDOG_MAX_AGE_MS = 15 * 60 * 1000;
  * alert instead of treating an old success row as current.
  */
 function collectorHealthEvidence(db, checkedAt, maxAgeMs = COLLECTOR_WATCHDOG_MAX_AGE_MS) {
+  if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
+    return { healthy: false, reason: 'collector watchdog freshness window is malformed' };
+  }
   const rows = db.prepare(`
     SELECT metric, value, timestamp
     FROM metrics

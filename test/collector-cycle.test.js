@@ -56,6 +56,12 @@ describe('collector cycle evidence', () => {
     assert.ok(result.reasons.includes('required probe "nas" missing'));
   });
 
+  it('fails closed when the required-probe inventory is empty', () => {
+    const result = validateCollectorCycle(cycle(), validOptions({ requiredProbeNames: [] }));
+    assert.equal(result.valid, false);
+    assert.ok(result.reasons.includes('collector cycle required probes are malformed'));
+  });
+
   for (const status of ['frozen', 'malformed', 'partial', 'failure', 'stale', 'late']) {
     it(`fails closed for a ${status} required probe`, () => {
       const result = validateCollectorCycle(cycle([probe('local'), probe('nas', { status })]), validOptions());
