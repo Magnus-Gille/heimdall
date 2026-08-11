@@ -20,9 +20,22 @@ const { checkAndHeal } = require('./self-heal');
 const { loadServicesWithMeta } = require('./config/services');
 const { assertSafeStartupTargets, storageSshHost } = require('./config/live-config');
 const { buildRestartMetricRows } = require('./restart-evidence');
+const {
+  REQUIRED_COLLECTOR_PROBES,
+  DEFAULT_MAX_AGE_MS,
+  DEFAULT_MAX_DURATION_MS,
+  classifyProbePayload,
+  classifyRemoteProbePayload,
+  validateCollectorCycle,
+} = require('./collector-cycle');
 
 const NAS_IP = storageSshHost();
 const SSH_KEY = process.env.HEIMDALL_STORAGE_SSH_KEY;
+
+function configuredDuration(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
 
 // Derive a cpu_busy_pct metric row from this cycle's CPU ticks vs. the previous
 // cycle's stored ticks. Returns null if either snapshot is incomplete (e.g. the
@@ -61,7 +74,25 @@ async function run() {
   const backupDefinitions = loadBackupDefinitions();
   const timestamp = new Date().toISOString();
   const cycleStartMs = Date.now();
-  let collectorSuccess = 1;
+  // Collection health is fail-closed. A cycle is successful only after the
+  // required local and NAS probes have both supplied fresh, complete evidence.
+  const cycleProbes = new Map();
+  const recordProbe = (name, evidence) => {
+    cycleProbes.set(name, { name, ...evidence, observedAt: evidence.observedAt ?? Date.now() });
+  };
+  // The collector is a systemd oneshot, so frozen-evidence detection must
+  // survive process restarts. Read only the prior cycle's probe stamps before
+  // publishing this cycle's health rows below.
+  const previousProbeEvidence = new Map();
+  for (const name of REQUIRED_COLLECTOR_PROBES) {
+    const row = db.prepare(
+      'SELECT metadata FROM metrics WHERE host = ? AND metric = ? ORDER BY timestamp DESC LIMIT 1'
+    ).get('control-node', `collector_probe_${name}`);
+    if (row?.metadata) {
+      try { previousProbeEvidence.set(name, JSON.parse(row.metadata)); } catch { /* ignore malformed history */ }
+    }
+  }
+  let collectorSuccess; // assigned only after cycle evidence validation
   let collectorLastError = null;
 
   console.log(`[${timestamp}] Starting collection cycle`);
@@ -99,6 +130,15 @@ async function run() {
   let localMetrics;
   try {
     localMetrics = collectLocalMetrics();
+    const localEvidence = classifyProbePayload(
+      localMetrics?.metrics,
+      ['mem_used_pct', 'load_1m', 'uptime'],
+      localMetrics?.timestamp
+    );
+    recordProbe('local', localEvidence);
+    if (localEvidence.status !== 'success') {
+      collectorLastError = `local: ${localEvidence.status}${localEvidence.missing ? ` (${localEvidence.missing.join(', ')})` : ''}`;
+    }
     const rows = [];
     for (const [metric, data] of Object.entries(localMetrics.metrics)) {
       if (data.value != null) {
@@ -160,8 +200,8 @@ async function run() {
   } catch (err) {
     console.error('  Local collection failed:', err.message);
     logEvent(db, 'control-node', 'system', 'error', 'Local collection failed', err.message, 'collector');
-    collectorSuccess = 0;
     collectorLastError = `local: ${err.message}`;
+    recordProbe('local', { status: 'failure', observedAt: Date.now() });
   }
 
   // 1b. Collect top processes
@@ -193,6 +233,8 @@ async function run() {
     const pingOk = ping(NAS_IP, 3);
 
     if (!pingOk) {
+      recordProbe('nas', { status: 'failure', observedAt: Date.now() });
+      collectorLastError = 'nas: ping failed';
       recordState(db, STATES.UNREACHABLE);
       logEvent(db, 'nas', 'system', 'critical', 'NAS host unreachable (ping failed)', null, 'collector');
       console.log('  NAS: unreachable (ping failed)');
@@ -200,7 +242,7 @@ async function run() {
       try {
         const sshOutput = collectRemoteViaSSH(SSH_KEY, NAS_IP);
         const parsed = parseSSHOutput(sshOutput);
-
+        const nasEvidence = classifyRemoteProbePayload(sshOutput, parsed, Date.now());
         const rows = [];
         let failures = 0;
         let total = 0;
@@ -218,6 +260,18 @@ async function run() {
           } else if (data.unit !== 'text') {
             failures++;
           }
+        }
+
+        // A syntactically complete response with one or more failed probes is
+        // still partial evidence. Keep the existing NAS state detail, but also
+        // make the cycle health fail closed.
+        if (nasEvidence.status === 'success' && failures > 0) {
+          nasEvidence.status = failures >= total ? 'failure' : 'partial';
+          nasEvidence.missing = [`remote probes (${failures} failed)`];
+        }
+        recordProbe('nas', nasEvidence);
+        if (nasEvidence.status !== 'success') {
+          collectorLastError = `nas: ${nasEvidence.status}${nasEvidence.missing ? ` (${nasEvidence.missing.join(', ')})` : ''}`;
         }
 
         // Derive CPU-busy % from this cycle's ticks vs. the previous cycle (before insert)
@@ -316,6 +370,8 @@ async function run() {
           }
         }
       } catch (sshErr) {
+        recordProbe('nas', { status: 'failure', observedAt: Date.now() });
+        collectorLastError = `nas: ${sshErr.message}`;
         recordState(db, STATES.SSH_BROKEN, sshErr.message);
         logEvent(db, 'nas', 'system', 'error',
           'NAS reachable but SSH collection failed', sshErr.message, 'collector');
@@ -323,9 +379,9 @@ async function run() {
       }
     }
   } catch (err) {
+    recordProbe('nas', { status: 'failure', observedAt: Date.now() });
     console.error('  NAS collection error:', err.message);
     logEvent(db, 'nas', 'system', 'error', 'NAS collection error', err.message, 'collector');
-    collectorSuccess = 0;
     collectorLastError = `nas: ${err.message}`;
   }
 
@@ -607,15 +663,57 @@ async function run() {
     }
   } catch { /* ok */ }
 
+  // Validate the cycle itself immediately before publishing collector health.
+  // No previous successful row is consulted here: recovery can only come from
+  // this cycle's new full evidence, never from replayed or stale data.
+  const cycleEndMs = Date.now();
+  const cycleValidation = validateCollectorCycle(
+    {
+      startedAt: cycleStartMs,
+      completedAt: cycleEndMs,
+      probes: [...cycleProbes.values()],
+    },
+    {
+      requiredProbeNames: REQUIRED_COLLECTOR_PROBES,
+      maxAgeMs: configuredDuration('HEIMDALL_COLLECTOR_MAX_AGE_MS', DEFAULT_MAX_AGE_MS),
+      maxDurationMs: configuredDuration('HEIMDALL_COLLECTOR_MAX_DURATION_MS', DEFAULT_MAX_DURATION_MS),
+      now: cycleEndMs,
+      previousProbes: previousProbeEvidence,
+    }
+  );
+  collectorSuccess = cycleValidation.valid ? 1 : 0;
+  if (!cycleValidation.valid) {
+    const reason = cycleValidation.reasons.join('; ');
+    collectorLastError = collectorLastError ? `${collectorLastError}; cycle: ${reason}` : `cycle: ${reason}`;
+    try {
+      logEvent(db, 'control-node', 'system', 'error', 'Collector cycle incomplete', reason, 'collector');
+    } catch (err) {
+      console.error('  Collector cycle error event failed:', err.message);
+    }
+  }
+
   // 9. Write collector health metrics
   try {
-    const cycleDurationMs = Date.now() - cycleStartMs;
-    const endTimestamp = new Date().toISOString();
+    const cycleDurationMs = cycleEndMs - cycleStartMs;
+    const endTimestamp = new Date(cycleEndMs).toISOString();
+    const probeHealthRows = [...cycleProbes.values()].map((probe) => ({
+      timestamp: endTimestamp,
+      host: 'control-node',
+      metric: `collector_probe_${probe.name}`,
+      value: probe.status === 'success' ? 1 : 0,
+      unit: 'boolean',
+      metadata: {
+        status: probe.status,
+        observed_at: probe.observedAt,
+        ...(probe.fingerprint ? { fingerprint: probe.fingerprint } : {}),
+      },
+    }));
     insertMetrics(db, [
-      { timestamp: endTimestamp, host: 'control-node', metric: 'collector_last_run', value: Math.floor(Date.now() / 1000), unit: 'epoch', metadata: null },
+      { timestamp: endTimestamp, host: 'control-node', metric: 'collector_last_run', value: Math.floor(cycleEndMs / 1000), unit: 'epoch', metadata: null },
       { timestamp: endTimestamp, host: 'control-node', metric: 'collector_run_duration_ms', value: cycleDurationMs, unit: 'ms', metadata: null },
       { timestamp: endTimestamp, host: 'control-node', metric: 'collector_success', value: collectorSuccess, unit: 'boolean', metadata: null },
       { timestamp: endTimestamp, host: 'control-node', metric: 'collector_last_error', value: null, unit: 'text', metadata: collectorLastError ? { error: collectorLastError } : null },
+      ...probeHealthRows,
     ]);
     console.log(`  Collector health: duration=${cycleDurationMs}ms success=${collectorSuccess}`);
   } catch (err) {
