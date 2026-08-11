@@ -38,6 +38,20 @@ function classifyHealthPayload(health) {
   return { status: 'unknown', reason: `unknown health status=${health.status}` };
 }
 
+// The remote probe appends curl's HTTP status after the JSON body. Keep the
+// body intact for JSON.parse while requiring a well-formed status trailer.
+function parseRemoteHealthResponse(raw) {
+  if (typeof raw !== 'string') throw new Error('remote health response was not text');
+  const statusMatch = /(?:^|\r?\n)(\d{3})[ \t]*$/.exec(raw);
+  if (!statusMatch) throw new Error('remote health response was missing HTTP status');
+  const body = raw.slice(0, statusMatch.index).trim();
+  if (!body) throw new Error('remote health response was missing JSON');
+  return {
+    health: JSON.parse(body),
+    status: Number(statusMatch[1]),
+  };
+}
+
 function loadServiceRegistry() {
   // Single source of truth: derive from grimnir services.json + heimdall overlay
   // (#92). Falls back to the committed list if grimnir's file is unreadable.
@@ -232,6 +246,7 @@ function countCommitGap(svc, deployed, latest) {
 async function collectServiceDrift(db, options = {}) {
   const services = Array.isArray(options.services) ? options.services : loadServiceRegistry();
   const fetchImpl = typeof options.fetch === 'function' ? options.fetch : fetch;
+  const execSyncImpl = typeof options.execSync === 'function' ? options.execSync : execSync;
   const timestamp = new Date().toISOString();
   const results = [];
 
@@ -290,7 +305,7 @@ async function collectServiceDrift(db, options = {}) {
       // Step 1: Get deployed version from /health endpoint (with latency measurement)
       try {
         let health;
-        let healthResponseOk = true;
+        let healthResponseOk = false;
         let healthResponseStatus = null;
         const healthStart = Date.now();
         if (svc.ssh_host) {
@@ -306,11 +321,14 @@ async function collectServiceDrift(db, options = {}) {
           // Remote service: health check via SSH
           const sshUser = process.env.HEIMDALL_STORAGE_SSH_USER || 'heimdall';
           if (!/^[a-zA-Z0-9._-]+$/.test(sshUser)) throw new Error('invalid SSH user');
-          const raw = execSync(
-            `ssh -i ~/.ssh/id_ed25519 -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${os.homedir()}/.heimdall/known_hosts ${sshUser}@${svc.ssh_host} "curl -s -m 5 ${svc.health_url}"`,
+          const raw = execSyncImpl(
+            `ssh -i ~/.ssh/id_ed25519 -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${os.homedir()}/.heimdall/known_hosts ${sshUser}@${svc.ssh_host} "curl -s -m 5 -w '\\n%{http_code}' -- ${svc.health_url}"`,
             { encoding: 'utf8', timeout: 15000 }
-          ).trim();
-          health = JSON.parse(raw);
+          );
+          const remoteResponse = parseRemoteHealthResponse(raw);
+          healthResponseStatus = remoteResponse.status;
+          healthResponseOk = remoteResponse.status >= 200 && remoteResponse.status < 300;
+          health = remoteResponse.health;
         } else {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 5000);
