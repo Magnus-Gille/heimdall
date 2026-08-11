@@ -187,6 +187,28 @@ async function performBootCheck(db, timestamp, opts = {}) {
 
   const selected = selectBootServices(services);
   const collectorHealth = reconcileCollectorWatchdog(db, timestamp, opts.collectorMaxAgeMs);
+  // The collector normally drains the durable critical-alert outbox, but that
+  // cannot notify when the collector is precisely the failed component.  The
+  // independent boot-check timer therefore drains it while a watchdog alert is
+  // active. In tests, `notify` is an injected function; production only wires
+  // it after the configured private destination has been validated in run().
+  let collectorNotified = false;
+  if (notify && !collectorHealth.healthy) {
+    try {
+      const { sendCriticalAlertNotifications } = require('./notify');
+      const result = await sendCriticalAlertNotifications(db, {
+        now: () => new Date(timestamp),
+        // sendTelegram's chat-id argument is intentionally ignored by the
+        // injected adapter; run() has already bound notify to the private
+        // configured destination.
+        chatId: 1,
+        sendTelegram: async (_chatId, text) => notify(text),
+      });
+      collectorNotified = result.sent > 0;
+    } catch (err) {
+      console.error('  Boot check: collector watchdog notification failed:', safeDeliveryError(err));
+    }
+  }
   if (selected.length === 0) {
     // An empty selection usually means the config failed to load — don't false-alarm.
     console.warn('  Boot check: no local HTTP services to probe (config load issue?)');
@@ -210,7 +232,7 @@ async function performBootCheck(db, timestamp, opts = {}) {
     { timestamp, host: HOST, metric: 'boot_check_down_count', value: down.length, unit: 'count', metadata: down.length ? { down: down.map((d) => d.name) } : null },
   ]);
 
-  let notified = false;
+  let notified = collectorNotified;
   if (down.length > 0) {
     const message = buildAlertMessage(down, selected.length);
     const alreadyActive = !!db.prepare(

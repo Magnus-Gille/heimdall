@@ -184,9 +184,12 @@ async function testPerformAllUp() {
 
 async function testCollectorWatchdogAlertsWhenTheCollectorStops() {
   const db = makeDb();
+  const calls = [];
+  const notify = async (text) => { calls.push(text); };
   const summary = await performBootCheck(db, '2026-06-20T00:20:00Z', {
     services: SAMPLE_SERVICES,
     probe: mockProbe({}),
+    notify,
   });
   assert.strictEqual(summary.collectorHealthy, false);
   assert.match(summary.collectorReason, /last ran/);
@@ -194,17 +197,35 @@ async function testCollectorWatchdogAlertsWhenTheCollectorStops() {
   assert.strictEqual(alerts.length, 1);
   assert.strictEqual(alerts[0].title, 'Collector stopped or unhealthy');
   assert.strictEqual(alerts[0].dedup_key, 'heimdall:collector-watchdog');
+  assert.strictEqual(calls.length, 1, 'independent boot check notifies while collector is stopped');
+  assert.match(calls[0], /Collector stopped or unhealthy/);
 
-  db.prepare('UPDATE metrics SET timestamp = ?, value = ? WHERE metric = ?')
-    .run('2026-06-20T00:21:00Z', 1, 'collector_success');
-  db.prepare('UPDATE metrics SET timestamp = ?, value = ? WHERE metric = ?')
-    .run('2026-06-20T00:21:00Z', Math.floor(Date.parse('2026-06-20T00:21:00Z') / 1000), 'collector_last_run');
-  const recovered = await performBootCheck(db, '2026-06-20T00:22:00Z', {
+  await performBootCheck(db, '2026-06-20T00:21:00Z', {
     services: SAMPLE_SERVICES,
     probe: mockProbe({}),
+    notify,
+  });
+  assert.strictEqual(calls.length, 1, 'active watchdog alert remains deduplicated');
+
+  db.prepare('UPDATE metrics SET timestamp = ?, value = ? WHERE metric = ?')
+    .run('2026-06-20T00:22:00Z', 1, 'collector_success');
+  db.prepare('UPDATE metrics SET timestamp = ?, value = ? WHERE metric = ?')
+    .run('2026-06-20T00:22:00Z', Math.floor(Date.parse('2026-06-20T00:22:00Z') / 1000), 'collector_last_run');
+  const recovered = await performBootCheck(db, '2026-06-20T00:23:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
   });
   assert.strictEqual(recovered.collectorHealthy, true);
   assert.strictEqual(activeAlerts(db).length, 0);
+
+  const refired = await performBootCheck(db, '2026-06-20T00:40:00Z', {
+    services: SAMPLE_SERVICES,
+    probe: mockProbe({}),
+    notify,
+  });
+  assert.strictEqual(refired.collectorHealthy, false);
+  assert.strictEqual(calls.length, 2, 'resolved watchdog notifies again when it re-fires');
   db.close();
 }
 
