@@ -11,9 +11,38 @@ const DEFAULT_MAX_DURATION_MS = COLLECTION_INTERVAL_MS;
 // meaningful. Service-specific integrations are intentionally optional: their
 // own health is recorded by the collector, but an unavailable optional service
 // must not make host telemetry look like a successful full cycle.
-const REQUIRED_COLLECTOR_PROBES = Object.freeze(['local', 'nas']);
 const REQUIRED_REMOTE_PROBE_FIELDS = Object.freeze(['mem_used_pct', 'load_1m', 'uptime']);
 const REMOTE_PROBE_SECTION_COUNT = 19;
+const REMOTE_PROBE_SECTIONS = Object.freeze([
+  'thermal-zones', 'memory', 'filesystems', 'load-average', 'uptime',
+  'time-machine-mtime', 'time-machine-size', 'munin-backup-latest',
+  'munin-backup-count', 'mimir-backup-last', 'mimir-sync-latest', 'cpu-frequency',
+  'throttle', 'under-voltage', 'network', 'sd-block-stats', 'nas-block-stats',
+  'cpu-ticks', 'cpu-cores',
+]);
+
+// This is the required-probe inventory. Collection code records the expected
+// contract, observed timestamp, and deadline for every entry; the validator
+// never has to infer mandatory sources from whichever metrics happened to be
+// written by a partial cycle.
+const COLLECTOR_PROBE_CONTRACT = Object.freeze([
+  {
+    name: 'local',
+    required: true,
+    expected: Object.freeze(['mem_used_pct', 'load_1m', 'uptime']),
+    deadlineMs: DEFAULT_MAX_DURATION_MS,
+  },
+  {
+    name: 'nas',
+    required: true,
+    expected: Object.freeze([...REQUIRED_REMOTE_PROBE_FIELDS]),
+    expectedSections: REMOTE_PROBE_SECTIONS,
+    deadlineMs: DEFAULT_MAX_DURATION_MS,
+  },
+]);
+const REQUIRED_COLLECTOR_PROBES = Object.freeze(
+  COLLECTOR_PROBE_CONTRACT.filter((contract) => contract.required !== false).map((contract) => contract.name)
+);
 const VALID_STATUSES = new Set([
   'success', 'failure', 'missing', 'frozen', 'malformed', 'partial', 'stale', 'late',
 ]);
@@ -40,7 +69,10 @@ function probeField(probe, ...names) {
 }
 
 function listRequired(options) {
-  const configured = options.requiredProbeNames || options.requiredProbes || REQUIRED_COLLECTOR_PROBES;
+  const configured = options.requiredProbeNames || options.requiredProbes
+    || (Array.isArray(options.probeContract)
+      ? options.probeContract.filter((p) => p && p.required !== false).map((p) => p.name)
+      : REQUIRED_COLLECTOR_PROBES);
   if (!Array.isArray(configured)) return null;
   return [...new Set(configured)];
 }
@@ -51,6 +83,11 @@ function previousProbe(previousProbes, name) {
   if (Array.isArray(previousProbes)) return previousProbes.find((p) => p?.name === name) || null;
   if (typeof previousProbes === 'object') return previousProbes[name] || null;
   return null;
+}
+
+function probeContract(contracts, name) {
+  if (!Array.isArray(contracts)) return null;
+  return contracts.find((contract) => contract && contract.name === name) || null;
 }
 
 /**
@@ -113,6 +150,27 @@ function validateCollectorCycle(evidence, options = {}) {
     if (!probe) {
       reasons.push(`required probe "${name}" missing`);
       continue;
+    }
+
+    const contract = probeContract(options.probeContract, name);
+    if (options.probeContract && !contract) {
+      reasons.push(`required probe "${name}" has no contract`);
+    } else if (contract) {
+      if (!Array.isArray(contract.expected) || contract.expected.length === 0) {
+        reasons.push(`required probe "${name}" contract is malformed`);
+      }
+      if (!Array.isArray(probe.expected)
+        || JSON.stringify(probe.expected) !== JSON.stringify(contract.expected)) {
+        reasons.push(`probe "${name}" expected evidence is incomplete`);
+      }
+      if (contract.expectedSections
+        && (!Array.isArray(probe.expectedSections)
+          || JSON.stringify(probe.expectedSections) !== JSON.stringify(contract.expectedSections))) {
+        reasons.push(`probe "${name}" expected sections are incomplete`);
+      }
+      const deadlineAt = asTimestamp(probe.deadlineAt);
+      if (deadlineAt == null) reasons.push(`probe "${name}" deadline is malformed`);
+      else if (now != null && deadlineAt < now) reasons.push(`probe "${name}" deadline expired`);
     }
 
     const status = probeField(probe, 'status', 'state');
@@ -192,6 +250,16 @@ function classifyRemoteProbePayload(rawOutput, payload, observedAt) {
       evidence.status = structuralStatus;
     }
     evidence.missing = [`remote sections (${sectionCount}/${REMOTE_PROBE_SECTION_COUNT})`];
+  } else {
+    const sections = rawOutput.split('---\n');
+    const missing = sections.reduce((result, section, index) => {
+      if (section.trim() === '') result.push(`section ${index} (${REMOTE_PROBE_SECTIONS[index]})`);
+      return result;
+    }, []);
+    if (missing.length > 0) {
+      evidence.status = 'partial';
+      evidence.missing = missing;
+    }
   }
   return evidence;
 }
@@ -201,6 +269,8 @@ module.exports = {
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MAX_DURATION_MS,
   REQUIRED_COLLECTOR_PROBES,
+  COLLECTOR_PROBE_CONTRACT,
+  REMOTE_PROBE_SECTIONS,
   REQUIRED_REMOTE_PROBE_FIELDS,
   REMOTE_PROBE_SECTION_COUNT,
   asTimestamp,

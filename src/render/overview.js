@@ -24,9 +24,10 @@ const { driftStateFromRow } = require('../drift-compare');
  * Pure: roll fleet + services + alerts into the overview KPI view-model.
  * `machines` are already-derived fleet view-models (have `.state`); `snapshots`
  * are service snapshot rows (run through serviceView); `alertCount` is the number
- * of unresolved alerts.
+ * of unresolved alerts. When supplied, `overallStatus` is the authoritative
+ * database-backed status (including collector completeness/freshness).
  */
-function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, versions = [] } = {}) {
+function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, versions = [], overallStatus = null } = {}) {
   const fleetCounts = aggregateCounts(machines.map((m) => m.state));
   const fleetTotal = machines.length;
   const fleetOnline = fleetCounts.ok;
@@ -74,7 +75,8 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
   // are expected resting states and do NOT trip the banner. Agent-version drift is
   // not an outage, but it is actionable fleet attention and must not be hidden.
   const allHealthy = fleetOffline === 0 && fleetStale === 0 && fleetDrift === 0
-    && svcDown === 0 && svcWarn === 0 && count === 0;
+    && svcDown === 0 && svcWarn === 0 && count === 0
+    && (!overallStatus || overallStatus.state === 'healthy');
 
   return {
     fleetOnline, fleetOffline, fleetStale, fleetDrift, fleetTotal,
@@ -278,14 +280,16 @@ function sectionHead(title, href, linkLabel) {
 }
 
 /**
- * Full Overview page. deps: { db, now, thresholds, snapshots, alertCount }.
+ * Full Overview page. deps: { db, now, thresholds, snapshots, alertCount, overallStatus }.
  * The hero, fleet grid and services grid each refresh independently via their
  * own HTMX endpoints (the fleet/services endpoints already exist).
  */
 function overviewPage(gitVersion, deps = {}) {
-  const { db, now = Date.now(), thresholds, snapshots = [], alertCount = 0, versions = [] } = deps;
+  const {
+    db, now = Date.now(), thresholds, snapshots = [], alertCount = 0, versions = [], overallStatus = null,
+  } = deps;
   const machines = buildMachines(db, now, thresholds, { baselineVersion: gitVersion });
-  const status = buildOverviewStatus({ machines, snapshots, alertCount, versions });
+  const status = buildOverviewStatus({ machines, snapshots, alertCount, versions, overallStatus });
   const findings = findingsFromSnapshots(snapshots);
 
   const content = `

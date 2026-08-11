@@ -59,15 +59,29 @@ function computeOverallStatus(db) {
   const metricsMap = {};
   for (const r of huginMetrics) metricsMap[r.metric] = r;
 
-  if (metricsMap.collector_success && metricsMap.collector_success.value === 0) {
+  const collectorSuccess = metricsMap.collector_success;
+  if (!collectorSuccess) {
+    hasWarning = true;
+    if (reasons.length < 3) reasons.push('Collector health unavailable');
+  } else if (collectorSuccess.value !== 1) {
     hasWarning = true;
     if (reasons.length < 3) reasons.push('Last collector run failed');
   }
 
   const lastRun = metricsMap.collector_last_run;
-  if (lastRun) {
+  if (!lastRun || !Number.isFinite(Number(lastRun.value)) || Number(lastRun.value) <= 0) {
+    hasWarning = true;
+    if (reasons.length < 3) reasons.push('Collector run evidence unavailable');
+  } else if (!collectorSuccess || collectorSuccess.timestamp !== lastRun.timestamp) {
+    // A success flag from one cycle cannot validate a run marker from another.
+    hasWarning = true;
+    if (reasons.length < 3) reasons.push('Collector health evidence incomplete');
+  } else {
     const runAgeMin = (now - lastRun.value * 1000) / 60000;
-    if (runAgeMin > 12) {
+    if (!Number.isFinite(runAgeMin) || runAgeMin < 0) {
+      hasWarning = true;
+      if (reasons.length < 3) reasons.push('Collector run evidence invalid');
+    } else if (runAgeMin > 12) {
       hasWarning = true;
       if (reasons.length < 3) reasons.push(`Collector not run for ${Math.round(runAgeMin)}min`);
     }

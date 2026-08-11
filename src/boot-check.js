@@ -24,6 +24,62 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_ATTEMPTS = 4;
 const DEFAULT_RETRY_DELAY_MS = 5000;
 const ALERT_TITLE = 'Service(s) down after boot';
+const COLLECTOR_WATCHDOG_ALERT_TITLE = 'Collector stopped or unhealthy';
+const COLLECTOR_WATCHDOG_MAX_AGE_MS = 15 * 60 * 1000;
+
+/**
+ * Validate the collector's durable health contract from an independent timer.
+ * This is deliberately separate from collector.js: if the collector process or
+ * timer stops, this process can still turn the last known evidence into an
+ * alert instead of treating an old success row as current.
+ */
+function collectorHealthEvidence(db, checkedAt, maxAgeMs = COLLECTOR_WATCHDOG_MAX_AGE_MS) {
+  const rows = db.prepare(`
+    SELECT metric, value, timestamp
+    FROM metrics
+    WHERE host = 'control-node' AND metric IN ('collector_success', 'collector_last_run')
+    ORDER BY timestamp DESC
+  `).all();
+  const latest = {};
+  for (const row of rows) {
+    if (!latest[row.metric]) latest[row.metric] = row;
+  }
+  const success = latest.collector_success;
+  const lastRun = latest.collector_last_run;
+  if (!success || !lastRun) return { healthy: false, reason: 'collector health evidence is missing' };
+  if (success.timestamp !== lastRun.timestamp) {
+    return { healthy: false, reason: 'collector health evidence belongs to different cycles' };
+  }
+  if (success.value !== 1) return { healthy: false, reason: 'last collector cycle failed' };
+  if (!Number.isFinite(Number(lastRun.value)) || Number(lastRun.value) <= 0) {
+    return { healthy: false, reason: 'collector run timestamp is malformed' };
+  }
+  const checkedMs = Date.parse(checkedAt);
+  const runMs = Number(lastRun.value) * 1000;
+  if (!Number.isFinite(checkedMs) || !Number.isFinite(runMs)) {
+    return { healthy: false, reason: 'collector watchdog clock is malformed' };
+  }
+  const ageMs = checkedMs - runMs;
+  if (ageMs < 0 || ageMs > maxAgeMs) {
+    return { healthy: false, reason: `collector last ran ${Math.round(ageMs / 60000)}min ago` };
+  }
+  return { healthy: true, reason: null };
+}
+
+/** Persist the watchdog state so a stopped collector remains visible. */
+function reconcileCollectorWatchdog(db, checkedAt, maxAgeMs = COLLECTOR_WATCHDOG_MAX_AGE_MS) {
+  const evidence = collectorHealthEvidence(db, checkedAt, maxAgeMs);
+  const { createAlert, resolveAlert } = require('./alerts');
+  if (evidence.healthy) {
+    resolveAlert(db, 'control-node', COLLECTOR_WATCHDOG_ALERT_TITLE);
+  } else {
+    createAlert(db, 'control-node', 'system', 'critical', COLLECTOR_WATCHDOG_ALERT_TITLE, evidence.reason, {
+      dedup_key: 'heimdall:collector-watchdog',
+      source: 'boot-check',
+    });
+  }
+  return evidence;
+}
 
 /**
  * Pure: pick the services a boot check on control-node should probe over HTTP.
@@ -127,6 +183,7 @@ async function performBootCheck(db, timestamp, opts = {}) {
   } = opts;
 
   const selected = selectBootServices(services);
+  const collectorHealth = reconcileCollectorWatchdog(db, timestamp, opts.collectorMaxAgeMs);
   if (selected.length === 0) {
     // An empty selection usually means the config failed to load — don't false-alarm.
     console.warn('  Boot check: no local HTTP services to probe (config load issue?)');
@@ -183,6 +240,8 @@ async function performBootCheck(db, timestamp, opts = {}) {
     down,
     alerted: down.length > 0,
     notified,
+    collectorHealthy: collectorHealth.healthy,
+    collectorReason: collectorHealth.reason,
   };
 }
 
@@ -236,6 +295,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  COLLECTOR_WATCHDOG_ALERT_TITLE,
+  COLLECTOR_WATCHDOG_MAX_AGE_MS,
+  collectorHealthEvidence,
+  reconcileCollectorWatchdog,
   selectBootServices,
   buildAlertMessage,
   probeUrl,

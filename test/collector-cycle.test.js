@@ -6,6 +6,8 @@ const {
   REQUIRED_COLLECTOR_PROBES,
   classifyProbePayload,
   classifyRemoteProbePayload,
+  COLLECTOR_PROBE_CONTRACT,
+  REMOTE_PROBE_SECTIONS,
   REMOTE_PROBE_SECTION_COUNT,
   validateCollectorCycle,
 } = require('../src/collector-cycle');
@@ -139,5 +141,41 @@ describe('probe payload classification', () => {
 
     const completeRaw = Array(REMOTE_PROBE_SECTION_COUNT).fill('section').join('---\n');
     assert.equal(classifyRemoteProbePayload(completeRaw, payload, NOW).status, 'success');
+
+    const missingSection = Array(REMOTE_PROBE_SECTION_COUNT).fill('section');
+    missingSection[7] = '';
+    const missing = classifyRemoteProbePayload(missingSection.join('---\n'), payload, NOW);
+    assert.equal(missing.status, 'partial');
+    assert.deepEqual(missing.missing, [`section 7 (${REMOTE_PROBE_SECTIONS[7]})`]);
+  });
+
+  it('requires the declared probe contract and deadline diagnostics', () => {
+    const result = validateCollectorCycle(
+      cycle([
+        probe('local', {
+          expected: COLLECTOR_PROBE_CONTRACT[0].expected,
+          deadlineAt: NOW + 1_000,
+        }),
+        probe('nas', {
+          expected: COLLECTOR_PROBE_CONTRACT[1].expected,
+          expectedSections: COLLECTOR_PROBE_CONTRACT[1].expectedSections,
+          deadlineAt: NOW + 1_000,
+        }),
+      ]),
+      validOptions({ probeContract: COLLECTOR_PROBE_CONTRACT })
+    );
+    assert.equal(result.valid, true);
+
+    const incomplete = validateCollectorCycle(
+      cycle([
+        probe('local', { expected: COLLECTOR_PROBE_CONTRACT[0].expected, deadlineAt: NOW + 1_000 }),
+        probe('nas', { expected: ['mem_used_pct'], expectedSections: [], deadlineAt: NOW - 1 }),
+      ]),
+      validOptions({ probeContract: COLLECTOR_PROBE_CONTRACT })
+    );
+    assert.equal(incomplete.valid, false);
+    assert.ok(incomplete.reasons.includes('probe "nas" expected evidence is incomplete'));
+    assert.ok(incomplete.reasons.includes('probe "nas" expected sections are incomplete'));
+    assert.ok(incomplete.reasons.includes('probe "nas" deadline expired'));
   });
 });

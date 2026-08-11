@@ -189,11 +189,24 @@ describe('metrics', () => {
     db.close();
   });
 
-  it('getLastCollectionTime returns most recent timestamp', () => {
-    insertMetric(db, '2025-01-01T10:00:00Z', 'control-node', 'cpu_temp', 40, '°C', null);
-    insertMetric(db, '2025-01-01T12:00:00Z', 'control-node', 'load_1m', 1, '', null);
+  it('getLastCollectionTime returns only the latest successful cycle timestamp', () => {
+    insertMetric(db, '2025-01-01T10:00:00Z', 'control-node', 'collector_success', 1, 'boolean', null);
+    insertMetric(db, '2025-01-01T10:00:00Z', 'control-node', 'collector_last_run', 1735725600, 'epoch', null);
+    insertMetric(db, '2025-01-01T12:00:00Z', 'control-node', 'cpu_temp', 40, '°C', null);
     const last = getLastCollectionTime(db, 'control-node');
-    assert.strictEqual(last, '2025-01-01T12:00:00Z');
+    assert.strictEqual(last, '2025-01-01T10:00:00Z');
+    db.close();
+  });
+
+  it('ignores sibling metrics and failed cycles when calculating freshness', () => {
+    insertMetric(db, '2025-01-01T10:00:00Z', 'control-node', 'collector_success', 0, 'boolean', null);
+    insertMetric(db, '2025-01-01T10:00:00Z', 'control-node', 'collector_last_run', 1735725600, 'epoch', null);
+    insertMetric(db, '2025-01-01T12:00:00Z', 'control-node', 'cpu_temp', 40, '°C', null);
+    assert.equal(getLastCollectionTime(db, 'control-node'), null);
+
+    insertMetric(db, '2025-01-01T12:00:00Z', 'control-node', 'collector_success', 1, 'boolean', null);
+    insertMetric(db, '2025-01-01T12:00:00Z', 'control-node', 'collector_last_run', 1735732800, 'epoch', null);
+    assert.equal(getLastCollectionTime(db, 'control-node'), '2025-01-01T12:00:00Z');
     db.close();
   });
 

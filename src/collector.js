@@ -10,7 +10,7 @@ const { readHuginTasks, detectTaskChanges, readHuginHeartbeat, getTimeoutCalibra
 const { collectServiceDrift } = require('./drift');
 const { refreshTimerSnapshots } = require('./timer-snapshots');
 const { logEvent, detectSSHLogins, detectServiceRestarts, checkThresholds, checkTempRateOfChange, detectReboot } = require('./events');
-const { checkBackupStaleness } = require('./alerts');
+const { checkBackupStaleness, createAlert, resolveAlert } = require('./alerts');
 const { loadBackupDefinitions } = require('./backup-config');
 const { collectMicrosoftMcpHealth } = require('./microsoft-mcp');
 const { collectMcpHealth } = require('./mcp-probe');
@@ -24,6 +24,7 @@ const {
   REQUIRED_COLLECTOR_PROBES,
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MAX_DURATION_MS,
+  COLLECTOR_PROBE_CONTRACT,
   classifyProbePayload,
   classifyRemoteProbePayload,
   validateCollectorCycle,
@@ -31,6 +32,7 @@ const {
 
 const NAS_IP = storageSshHost();
 const SSH_KEY = process.env.HEIMDALL_STORAGE_SSH_KEY;
+const COLLECTOR_ALERT_TITLE = 'Collector cycle incomplete';
 
 function configuredDuration(name, fallback) {
   const value = Number(process.env[name]);
@@ -77,17 +79,28 @@ async function run() {
   // Collection health is fail-closed. A cycle is successful only after the
   // required local and NAS probes have both supplied fresh, complete evidence.
   const cycleProbes = new Map();
+  const probeContracts = new Map(COLLECTOR_PROBE_CONTRACT.map((contract) => [contract.name, contract]));
   const recordProbe = (name, evidence) => {
-    cycleProbes.set(name, { name, ...evidence, observedAt: evidence.observedAt ?? Date.now() });
+    const contract = probeContracts.get(name);
+    const observedAt = evidence.observedAt ?? Date.now();
+    cycleProbes.set(name, {
+      name,
+      expected: contract?.expected,
+      expectedSections: contract?.expectedSections,
+      deadlineAt: contract ? cycleStartMs + contract.deadlineMs : undefined,
+      ...evidence,
+      observedAt,
+    });
   };
   // The collector is a systemd oneshot, so frozen-evidence detection must
   // survive process restarts. Read only the prior cycle's probe stamps before
   // publishing this cycle's health rows below.
   const previousProbeEvidence = new Map();
   for (const name of REQUIRED_COLLECTOR_PROBES) {
+    const probeHost = name === 'nas' ? 'nas' : 'control-node';
     const row = db.prepare(
       'SELECT metadata FROM metrics WHERE host = ? AND metric = ? ORDER BY timestamp DESC LIMIT 1'
-    ).get('control-node', `collector_probe_${name}`);
+    ).get(probeHost, `collector_probe_${name}`);
     if (row?.metadata) {
       try { previousProbeEvidence.set(name, JSON.parse(row.metadata)); } catch { /* ignore malformed history */ }
     }
@@ -132,7 +145,7 @@ async function run() {
     localMetrics = collectLocalMetrics();
     const localEvidence = classifyProbePayload(
       localMetrics?.metrics,
-      ['mem_used_pct', 'load_1m', 'uptime'],
+      probeContracts.get('local').expected,
       localMetrics?.timestamp
     );
     recordProbe('local', localEvidence);
@@ -675,6 +688,7 @@ async function run() {
     },
     {
       requiredProbeNames: REQUIRED_COLLECTOR_PROBES,
+      probeContract: COLLECTOR_PROBE_CONTRACT,
       maxAgeMs: configuredDuration('HEIMDALL_COLLECTOR_MAX_AGE_MS', DEFAULT_MAX_AGE_MS),
       maxDurationMs: configuredDuration('HEIMDALL_COLLECTOR_MAX_DURATION_MS', DEFAULT_MAX_DURATION_MS),
       now: cycleEndMs,
@@ -687,8 +701,16 @@ async function run() {
     collectorLastError = collectorLastError ? `${collectorLastError}; cycle: ${reason}` : `cycle: ${reason}`;
     try {
       logEvent(db, 'control-node', 'system', 'error', 'Collector cycle incomplete', reason, 'collector');
+      createAlert(db, 'control-node', 'system', 'critical', COLLECTOR_ALERT_TITLE, reason, {
+        dedup_key: 'heimdall:collector-cycle',
+        source: 'collector',
+      });
     } catch (err) {
-      console.error('  Collector cycle error event failed:', err.message);
+      console.error('  Collector cycle failure alert failed:', err.message);
+    }
+  } else {
+    try { resolveAlert(db, 'control-node', COLLECTOR_ALERT_TITLE); } catch (err) {
+      console.error('  Collector cycle recovery alert failed:', err.message);
     }
   }
 
@@ -698,13 +720,16 @@ async function run() {
     const endTimestamp = new Date(cycleEndMs).toISOString();
     const probeHealthRows = [...cycleProbes.values()].map((probe) => ({
       timestamp: endTimestamp,
-      host: 'control-node',
+      host: probe.name === 'nas' ? 'nas' : 'control-node',
       metric: `collector_probe_${probe.name}`,
       value: probe.status === 'success' ? 1 : 0,
       unit: 'boolean',
       metadata: {
         status: probe.status,
+        expected: probe.expected || null,
+        expected_sections: probe.expectedSections || null,
         observed_at: probe.observedAt,
+        deadline_at: probe.deadlineAt || null,
         ...(probe.fingerprint ? { fingerprint: probe.fingerprint } : {}),
       },
     }));

@@ -573,9 +573,24 @@ function getDriftHistory(db, limitPerService = 24) {
 }
 
 function getLastCollectionTime(db, host) {
+  // A sibling metric can be written by a partial/frozen probe and must not
+  // make a host look freshly collected. Only a cycle-health row, joined to a
+  // successful full collector cycle, is authoritative here.
+  const healthMetric = host === 'control-node'
+    ? 'collector_last_run'
+    : host === 'nas' ? 'collector_probe_nas' : null;
+  if (!healthMetric) return null;
   const row = db.prepare(`
-    SELECT MAX(timestamp) as last FROM metrics WHERE host = ?
-  `).get(host);
+    SELECT MAX(health.timestamp) as last
+    FROM metrics health
+    INNER JOIN metrics cycle
+      ON cycle.host = 'control-node'
+     AND cycle.metric = 'collector_success'
+     AND cycle.timestamp = health.timestamp
+     AND cycle.value = 1
+    WHERE health.host = ? AND health.metric = ?
+      AND (? = 'control-node' OR health.value = 1)
+  `).get(host, healthMetric, host);
   return row ? row.last : null;
 }
 
