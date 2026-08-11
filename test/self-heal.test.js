@@ -309,6 +309,85 @@ test('an unreachable health status is not masked by a deployed commit', async ()
   }
 });
 
+test('an explicit unhealthy health status becomes failed evidence', async () => {
+  const db = tmpDb();
+  try {
+    insertServiceVersion(
+      db,
+      '2026-08-01T12:00:00Z',
+      'hugin',
+      'control-node',
+      'deployed-commit',
+      'latest-commit',
+      0,
+      'up-to-date',
+      null,
+      'unhealthy',
+      'health status=fail',
+    );
+    insertRestartMetric(db);
+    const munin = createMuninStub();
+    const { result } = await runEnabled(db, {
+      state: {
+        schemaVersion: 'v1',
+        failures: { hugin: 1 },
+        lastDiagnosis: {},
+        diagnosisOutcomes: {},
+        circuitBreaker: { recentDiagnoses: [] },
+      },
+      rpc: munin.rpc,
+    });
+    assert.equal(result.tasksSubmitted, 1);
+  } finally {
+    db.close();
+  }
+});
+
+test('null, unknown, and malformed persisted health statuses stay alert-only', async () => {
+  for (const healthStatus of [null, 'unknown', 'malformed']) {
+    const db = tmpDb();
+    try {
+      insertServiceVersion(
+        db,
+        '2026-08-01T12:00:00Z',
+        'hugin',
+        'control-node',
+        'deployed-commit',
+        'latest-commit',
+        0,
+        'up-to-date',
+        null,
+        healthStatus,
+        `persisted health status=${healthStatus}`,
+      );
+      insertRestartMetric(db);
+      const { result, writes, savedState } = await runEnabled(db, {
+        state: {
+          schemaVersion: 'v1',
+          failures: { hugin: 2 },
+          lastDiagnosis: {},
+          diagnosisOutcomes: {},
+          circuitBreaker: { recentDiagnoses: [] },
+        },
+      });
+      assert.equal(result.tasksSubmitted, 0, `status=${healthStatus}`);
+      assert.equal(writes.length, 0, `status=${healthStatus}`);
+      assert.deepEqual(result.decisions, [{
+        service: 'hugin',
+        diagnosis: 'blocked',
+        reason: 'unknown-status',
+        actuation: 'blocked',
+      }]);
+      assert.equal(savedState.failures.hugin, 2, `status=${healthStatus}`);
+      const alert = activeSelfHealAlert(db, 'hugin');
+      assert.ok(alert, `status=${healthStatus}`);
+      assert.match(alert.detail, /health status is unknown/i, `status=${healthStatus}`);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 test('missing health evidence becomes alert-only unknown with no task submission', async () => {
   const db = tmpDb();
   try {
@@ -338,6 +417,8 @@ test('stale health evidence becomes alert-only unknown with no task submission',
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const { result, writes } = await runEnabled(db);
@@ -412,6 +493,8 @@ test('missing validated registry configuration fails closed', async () => {
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const { result, writes } = await runEnabled(db, {
@@ -440,6 +523,8 @@ test('placeholder runtime identities fail closed before diagnosis submission', a
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertMetrics(db, [{
       timestamp: '2026-08-01T12:00:00Z',
@@ -481,6 +566,8 @@ test('restart storm evidence is fail-closed when unavailable', async () => {
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     const { result, writes } = await runEnabled(db);
     assert.equal(result.tasksSubmitted, 0);
@@ -506,6 +593,8 @@ test('restart storm exhaustion becomes alert-only unknown with no task submissio
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db, { value: 9 });
     const { result, writes } = await runEnabled(db);
@@ -532,6 +621,8 @@ test('cooldown evidence blocks repeat diagnosis submissions', async () => {
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const { result, writes } = await runEnabled(db, {
@@ -566,6 +657,8 @@ test('repeated post-diagnosis failures resubmit after cooldown when no reservati
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -604,6 +697,8 @@ test('legacy lastHeal migration preserves the cooldown window without creating a
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const { result, writes, savedState } = await runEnabled(db, {
@@ -644,6 +739,8 @@ test('millisecond evidence rows are accepted and remain canonical with persisted
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db, { timestamp: '2026-08-01T12:00:00.456Z' });
     const munin = createMuninStub();
@@ -685,6 +782,8 @@ test('recent diagnoses keep the one-per-hour cooldown across recovery flapping',
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const { result, writes } = await runEnabled(db, {
@@ -721,6 +820,8 @@ test('invalid persisted diagnosis mode is rejected instead of being coerced into
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -755,6 +856,8 @@ test('self-heal enabled persists immutable snapshots and submits Hugin Context-r
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -835,6 +938,8 @@ test('snapshot persistence must be proven before diagnosis submission', async ()
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -888,6 +993,8 @@ test('task submission requires durable read-back proof when Munin reports isErro
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -949,6 +1056,8 @@ test('task submission accepts an idempotent isError response only when read-back
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -996,6 +1105,8 @@ test('pending reservation blocks overlapping diagnosis submissions', async () =>
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -1078,6 +1189,8 @@ test('submitted reservation stays fail-closed when state save fails after task s
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -1142,6 +1255,8 @@ test('stale pending reservation is recovered and replaced with the current task 
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -1187,6 +1302,8 @@ test('operator reset can recover a stale submitted reservation after the cooldow
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -1232,6 +1349,8 @@ test('operator reset clears a stale submitted reservation coherently with persis
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(db);
     const munin = createMuninStub();
@@ -1276,6 +1395,8 @@ test('remote services do not inherit control-node restart metrics', async () => 
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertMetrics(db, [{
       timestamp: '2026-08-01T12:00:00Z',
@@ -1368,6 +1489,8 @@ test('updated observations produce new Context-refs for the next diagnosis envel
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(firstDb, { timestamp: '2026-08-01T12:00:00Z', value: 1 });
     const firstMunin = createMuninStub();
@@ -1396,6 +1519,8 @@ test('updated observations produce new Context-refs for the next diagnosis envel
       0,
       'up-to-date',
       null,
+      'unhealthy',
+      'health probe fixture',
     );
     insertRestartMetric(secondDb, { timestamp: '2026-08-01T12:05:00Z', value: 2 });
     const secondMunin = createMuninStub();

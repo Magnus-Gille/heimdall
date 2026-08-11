@@ -412,6 +412,12 @@ function latestRestartMetricRowForHost(db, service, targetHost, aliases) {
   return rows.find((row) => canonicalHost(row.host, aliases) === targetHost) || null;
 }
 
+function healthEvidenceOutcome(healthStatus) {
+  if (healthStatus === 'healthy') return 'ok';
+  if (healthStatus === 'unhealthy' || healthStatus === 'unreachable') return 'failed';
+  return 'unknown';
+}
+
 function defaultHealthEvidenceLoader(db, service) {
   const row = latestServiceVersionRow(db, service);
   if (!row) return null;
@@ -422,7 +428,7 @@ function defaultHealthEvidenceLoader(db, service) {
     observedAt: row.checked_at,
     // A deploy stamp only identifies a revision. It is not proof that the
     // service responded to its health probe in this collector cycle.
-    outcome: row.health_status === 'healthy' ? 'ok' : 'failed',
+    outcome: healthEvidenceOutcome(row.health_status),
     diagnosticRef: makeEvidenceRef('sv', {
       rowId: row.id,
       observedAt: row.checked_at,
@@ -468,6 +474,9 @@ function validateHealthEvidence(evidence, expectedService, nowMs) {
     return reject('malformed', 'unknown evidence: malformed');
   }
   if (evidence.serviceId !== expectedService) return reject('identity-mismatch', 'unknown evidence: identity mismatch');
+  if (evidence.outcome === 'unknown') {
+    return reject('unknown-status', 'unknown evidence: health status is unknown');
+  }
   if (!['ok', 'failed'].includes(evidence.outcome) || !OPAQUE_REF.test(evidence.diagnosticRef)) {
     return reject('malformed', 'unknown evidence: malformed');
   }

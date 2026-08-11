@@ -17,14 +17,25 @@ function isValidHealthURL(str) {
   return /^https?:\/\/[a-zA-Z0-9._:\-\/]+$/.test(str);
 }
 
+const EXPLICIT_UNHEALTHY_HEALTH_STATUSES = new Set([
+  'error', 'failed', 'failure', 'down', 'unhealthy', 'fail', 'warn', 'degraded',
+]);
+
 function classifyHealthPayload(health) {
   if (!health || typeof health !== 'object' || Array.isArray(health)) {
     return { status: 'malformed', reason: 'health response was not an object' };
   }
-  if (typeof health.status === 'string' && /^(error|failed|failure|down|unhealthy)$/i.test(health.status)) {
+  if (typeof health.status !== 'string' || health.status.trim() === '') {
+    return { status: 'malformed', reason: 'health status was missing or malformed' };
+  }
+
+  const status = health.status.trim().toLowerCase();
+  if (status === 'ok') return { status: 'healthy', reason: null };
+  if (EXPLICIT_UNHEALTHY_HEALTH_STATUSES.has(status)) {
     return { status: 'unhealthy', reason: `health status=${health.status}` };
   }
-  return { status: 'healthy', reason: null };
+
+  return { status: 'unknown', reason: `unknown health status=${health.status}` };
 }
 
 function loadServiceRegistry() {
