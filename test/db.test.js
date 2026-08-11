@@ -57,6 +57,10 @@ describe('openDatabase', () => {
     const serviceVersionCols = db.prepare('PRAGMA table_info(service_versions)').all();
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_status'));
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_reason'));
+    const fleetHostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
+    assert.ok(fleetHostCols.some((c) => c.name === 'membership_state'));
+    assert.ok(fleetHostCols.some((c) => c.name === 'alias_of'));
+    assert.ok(fleetHostCols.some((c) => c.name === 'retired_at'));
     db.close();
   });
 
@@ -68,7 +72,7 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 11); // bump when MIGRATIONS grows (v11 service health outcome)
+    assert.strictEqual(version, 12); // bump when MIGRATIONS grows (v12 fleet membership)
     db2.close();
   });
 
@@ -121,17 +125,64 @@ describe('openDatabase', () => {
     legacy.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 11);
+    assert.equal(db.pragma('user_version', { simple: true }), 12);
 
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     const metricCols = db.prepare('PRAGMA table_info(fleet_metrics)').all();
     assert.ok(hostCols.some((c) => c.name === 'agent_version'));
+    assert.ok(hostCols.some((c) => c.name === 'membership_state'));
+    assert.ok(hostCols.some((c) => c.name === 'alias_of'));
+    assert.ok(hostCols.some((c) => c.name === 'retired_at'));
     assert.ok(metricCols.some((c) => c.name === 'agent_version'));
 
     const host = db.prepare('SELECT hostname, agent_version FROM fleet_hosts WHERE hostname = ?').get('legacy-node');
     const metric = db.prepare('SELECT hostname, agent_version FROM fleet_metrics WHERE hostname = ?').get('legacy-node');
     assert.equal(host.agent_version, null);
     assert.equal(metric.agent_version, null);
+    db.close();
+  });
+
+  it('upgrades a v11 health schema with the v12 fleet membership migration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
+    const dbPath = path.join(dir, 'test.db');
+
+    const v11 = new Database(dbPath);
+    v11.exec(`
+      CREATE TABLE service_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        checked_at TEXT NOT NULL,
+        service TEXT NOT NULL,
+        host TEXT NOT NULL,
+        deployed_commit TEXT,
+        latest_commit TEXT,
+        commits_behind INTEGER,
+        health_status TEXT,
+        health_reason TEXT
+      );
+      CREATE TABLE fleet_hosts (
+        hostname TEXT PRIMARY KEY,
+        always_on INTEGER NOT NULL DEFAULT 1,
+        agent_version TEXT
+      );
+    `);
+    v11.pragma('user_version = 11');
+    v11.close();
+
+    const db = openDatabase(dbPath);
+    assert.equal(db.pragma('user_version', { simple: true }), 12);
+    const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
+    assert.ok(hostCols.some((c) => c.name === 'agent_version'));
+    assert.ok(hostCols.some((c) => c.name === 'membership_state'));
+    assert.ok(hostCols.some((c) => c.name === 'alias_of'));
+    assert.ok(hostCols.some((c) => c.name === 'retired_at'));
+    const serviceVersionCols = db.prepare('PRAGMA table_info(service_versions)').all();
+    assert.ok(serviceVersionCols.some((c) => c.name === 'health_status'));
+    assert.ok(serviceVersionCols.some((c) => c.name === 'health_reason'));
+    const membershipIndex = db.prepare(`
+      SELECT 1 FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_fleet_hosts_membership'
+    `).get();
+    assert.ok(membershipIndex);
     db.close();
   });
 });

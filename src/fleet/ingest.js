@@ -16,6 +16,7 @@ function handlePush(db, opts) {
   const {
     authHeader = '', sourceIp = null, token = '', bindHost = '127.0.0.1',
     allowInsecureLoopback = false, body, now = Date.now(),
+    configuredHostnames, aliases = {},
   } = opts;
 
   const auth = checkFleetAuth(authHeader, token, bindHost, allowInsecureLoopback);
@@ -44,7 +45,7 @@ function handlePush(db, opts) {
 
   const receivedAt = new Date(now).toISOString();
   try {
-    recordFleetPush(db, payload, receivedAt);
+    recordFleetPush(db, payload, receivedAt, { configuredHostnames, aliases });
   } catch (err) {
     return { status: 500, body: { error: 'persist failed', detail: String(err && err.message || err) } };
   }

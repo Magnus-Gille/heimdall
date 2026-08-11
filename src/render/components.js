@@ -140,6 +140,8 @@ const MACHINE_STATE = {
   stale:    { cls: 'warn',  glyph: '▲', label: 'Stale' },
   offline:  { cls: 'crit',  glyph: '●', label: 'Offline' },
   sleeping: { cls: 'stale', glyph: '?', label: 'Sleeping' },
+  'never-seen': { cls: 'stale', glyph: '?', label: 'Never seen' },
+  'retired-unregistered': { cls: 'stale', glyph: '—', label: 'Retired / unregistered' },
 };
 const AGENT_VERSION_STATE = {
   current: { cls: 'ok', label: 'current' },
@@ -160,7 +162,7 @@ function machineCard(m) {
   const ramStr = (m.ram_used_mb != null && m.ram_total_mb != null)
     ? `${formatBytes(m.ram_used_mb * 1024 * 1024)} / ${formatBytes(m.ram_total_mb * 1024 * 1024)}`
     : (m.ram_used_pct != null ? `${Number(m.ram_used_pct).toFixed(0)}%` : '—');
-  const offline = m.state === 'offline' || m.state === 'sleeping';
+  const offline = ['offline', 'sleeping', 'never-seen', 'retired-unregistered'].includes(m.state);
   const subBits = [
     tag(m.ip),
     tag(m.platform),
@@ -184,8 +186,10 @@ function machineCard(m) {
     ${m.spark && m.spark.length >= 2 ? `<div class="machine-spark"><span class="spark-cap">CPU</span>${sparklineSvg(m.spark)}</div>` : ''}
     ${m.tempSpark && m.tempSpark.length >= 2 ? `<div class="machine-spark is-temp"><span class="spark-cap">Temp</span>${sparklineSvg(m.tempSpark)}</div>` : ''}
     <div class="machine-foot">
-      <span>${offline ? 'offline' : `up ${esc(formatUptime(m.uptime_s))}`}</span>
-      <span>${m.lastSeen ? `seen ${esc(formatAge(m.lastSeen))}` : ''}</span>
+      <span>${offline
+        ? (m.state === 'never-seen' ? 'never seen' : (m.state === 'retired-unregistered' ? 'historical' : 'offline'))
+        : `up ${esc(formatUptime(m.uptime_s))}`}</span>
+      <span>${m.lastSeen ? `seen ${esc(formatAge(m.lastSeen))}` : (m.state === 'never-seen' ? 'no telemetry yet' : '')}</span>
     </div>`;
   if (m.href) return `<a class="card machine-card" href="${esc(m.href)}">${inner}</a>`;
   return `<div class="card machine-card">${inner}</div>`;
