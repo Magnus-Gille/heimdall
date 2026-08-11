@@ -218,8 +218,9 @@ function countCommitGap(svc, deployed, latest) {
   }
 }
 
-async function collectServiceDrift(db) {
-  const services = loadServiceRegistry();
+async function collectServiceDrift(db, options = {}) {
+  const services = Array.isArray(options.services) ? options.services : loadServiceRegistry();
+  const fetchImpl = typeof options.fetch === 'function' ? options.fetch : fetch;
   const timestamp = new Date().toISOString();
   const results = [];
 
@@ -264,7 +265,7 @@ async function collectServiceDrift(db) {
         const healthStart = Date.now();
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
-        const resp = await fetch(svc.health_url, { signal: controller.signal });
+        const resp = await fetchImpl(svc.health_url, { signal: controller.signal });
         clearTimeout(timeout);
         healthLatencyMs = Date.now() - healthStart;
         healthStatus = resp.ok ? 'healthy' : 'unhealthy';
@@ -278,6 +279,8 @@ async function collectServiceDrift(db) {
       // Step 1: Get deployed version from /health endpoint (with latency measurement)
       try {
         let health;
+        let healthResponseOk = true;
+        let healthResponseStatus = null;
         const healthStart = Date.now();
         if (svc.ssh_host) {
           // Validate config values before shell interpolation
@@ -300,12 +303,16 @@ async function collectServiceDrift(db) {
         } else {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 5000);
-          const resp = await fetch(svc.health_url, { signal: controller.signal });
+          const resp = await fetchImpl(svc.health_url, { signal: controller.signal });
           clearTimeout(timeout);
+          healthResponseOk = resp.ok;
+          healthResponseStatus = resp.status;
           health = await resp.json();
         }
         healthLatencyMs = Date.now() - healthStart;
-        const healthOutcome = classifyHealthPayload(health);
+        const healthOutcome = healthResponseOk
+          ? classifyHealthPayload(health)
+          : { status: 'unhealthy', reason: `HTTP ${healthResponseStatus}` };
         healthStatus = healthOutcome.status;
         healthReason = healthOutcome.reason;
         deployed = health.version || health.commit || health.git_version || 'ok';
@@ -467,4 +474,15 @@ function getLastDeployTime(db, serviceName) {
   }
 }
 
-module.exports = { loadServiceRegistry, collectServiceDrift, countCommitGap, getServiceRestartCount, getLastDeployTime, getTimerStatus, getDeployedCommitStamp, parseSystemdTimestamp, isSafeUnitName };
+module.exports = {
+  loadServiceRegistry,
+  collectServiceDrift,
+  classifyHealthPayload,
+  countCommitGap,
+  getServiceRestartCount,
+  getLastDeployTime,
+  getTimerStatus,
+  getDeployedCommitStamp,
+  parseSystemdTimestamp,
+  isSafeUnitName,
+};

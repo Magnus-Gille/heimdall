@@ -153,7 +153,7 @@ describe('probe payload classification', () => {
     const validSections = [
       'cpu-thermal\t42.0',
       'MemTotal:       1024 kB\nMemAvailable:    512 kB',
-      'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mmcblk0p2 100 50 50 50% /',
+      'Filesystem 1K-blocks Used Available Use%\n/dev/mmcblk0p2 100 50 50 50%',
       '0.10 0.20 0.30 1/100 123',
       '123.4 456.7',
       '1700000000',

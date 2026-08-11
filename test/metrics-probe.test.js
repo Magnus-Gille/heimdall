@@ -40,6 +40,12 @@ describe('buildNASProbeCommand — probe paths track real infra', () => {
     assert.equal(separators, 18);
   });
 
+  it('uses the exact five-field df output contract consumed by the parser', () => {
+    assert.ok(cmd.split('\n').includes(
+      'df --output=source,size,used,avail,pcent /dev/mmcblk0p2 /dev/sda1 2>/dev/null || true',
+    ));
+  });
+
   it('honours injected paths (pure builder, no hidden globals)', () => {
     const custom = buildNASProbeCommand({
       muninBackupDir: '/x/munin/',

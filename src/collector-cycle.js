@@ -26,9 +26,22 @@ const REMOTE_PROBE_SECTION_CONTRACT = Object.freeze([
   },
   {
     name: 'filesystems',
-    expected: 'df header and at least one /dev filesystem row',
-    validate: (section) => /(?:^|\n)Filesystem\s/.test(section)
-      && /(?:^|\n)\/dev\/\S+\s+\d+\s+\d+\s+\d+\s+\d+%\s+\S+/.test(section),
+    expected: 'df --output=source,size,used,avail,pcent header and five-field /dev rows',
+    validate: (section) => {
+      const lines = section.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (lines.length < 2) return false;
+      const header = lines[0].split(/\s+/);
+      if (header.length !== 5 || header[0] !== 'Filesystem' || header[4] !== 'Use%') return false;
+      return lines.slice(1).every((line) => {
+        const fields = line.split(/\s+/);
+        return fields.length === 5
+          && /^\/dev\/\S+$/.test(fields[0])
+          && /^\d+$/.test(fields[1])
+          && /^\d+$/.test(fields[2])
+          && /^\d+$/.test(fields[3])
+          && /^\d+%$/.test(fields[4]);
+      });
+    },
   },
   {
     name: 'load-average',
