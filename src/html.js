@@ -316,6 +316,16 @@ function m5OverviewCard({ health, usage, error }) {
     ? `${usage.activeRequests} request${usage.activeRequests === 1 ? '' : 's'} running`
     : 'Idle now';
   const lastUsed = usage.lastUsedAt ? m5RelativeTime(usage.lastUsedAt, usage.generatedAt) : 'No recorded use';
+  const byTier = usage.last24HoursByTier;
+  const comparedRequests = byTier.owner.requests + byTier.guest.requests + byTier.other.requests;
+  const requestShare = (requests) => comparedRequests > 0
+    ? Math.round((requests / comparedRequests) * 100)
+    : 0;
+  const audienceItem = (label, window) => `<div class="m5-audience-item">
+      <span>${esc(label)}</span><strong>${esc(String(window.requests))} request${window.requests === 1 ? '' : 's'}</strong>
+      <small>${window.requestTimeMs > 0 ? `${esc(m5Duration(window.requestTimeMs))} request time` : 'No request time'}</small>
+    </div>`;
+  const otherItem = byTier.other.requests > 0 ? audienceItem('Other', byTier.other) : '';
   const days = [...usage.daily].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 7);
   const maxRequests = Math.max(1, ...days.map((day) => day.requests));
   const rows = days.map((day) => {
@@ -337,6 +347,19 @@ function m5OverviewCard({ health, usage, error }) {
       <div><div class="m5-essential-value">${esc(String(usage.last24Hours.requests))}</div><div class="m5-essential-label">Requests · last 24 hours</div></div>
       <div><div class="m5-essential-value">${esc(m5Duration(usage.last24Hours.requestTimeMs))}</div><div class="m5-essential-label">M5 request time · last 24 hours</div></div>
       <div><div class="m5-essential-value">${esc(lastUsed)}</div><div class="m5-essential-label">Last used</div></div>
+    </div>
+    <div class="m5-audience">
+      <div class="m5-audience-head"><h4>You vs guests</h4><span>Last 24 hours · share of requests</span></div>
+      <div class="m5-audience-track" role="img" aria-label="You ${requestShare(byTier.owner.requests)}%, guests ${requestShare(byTier.guest.requests)}%${byTier.other.requests > 0 ? `, other ${requestShare(byTier.other.requests)}%` : ''}">
+        <span class="is-owner" style="width:${requestShare(byTier.owner.requests)}%"></span>
+        <span class="is-guest" style="width:${requestShare(byTier.guest.requests)}%"></span>
+        ${byTier.other.requests > 0 ? `<span class="is-other" style="width:${requestShare(byTier.other.requests)}%"></span>` : ''}
+      </div>
+      <div class="m5-audience-items">
+        ${audienceItem('You', byTier.owner)}
+        ${audienceItem('Guests', byTier.guest)}
+        ${otherItem}
+      </div>
     </div>
     <div class="m5-activity"><div class="m5-activity-head"><h4>Last 7 days</h4><span>Requests · request time</span></div>${rows}</div>
     <div class="m5-usage-foot">Admitted inference requests recorded by the gateway · request time is wall-clock, not GPU load · newest day first</div>`;
