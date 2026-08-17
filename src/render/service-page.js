@@ -347,8 +347,13 @@ function servicesIndexPage(gitVersion, snapshots) {
 
 /** Per-service detail page (generic, archetype-aware). */
 function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memAttention = null, maintenanceEvidence = null) {
-  const pushedSummary = pushedStatusSummary(pushedPanels);
-  const v = serviceView(withPushedStatus(snap, pushedPanels));
+  const baseView = serviceView(snap);
+  const focusedM5 = baseView.name === 'm5-gateway' && baseView.kind === 'inference';
+  // Legacy producers can continue posting their old M5 panels while they are retired.
+  // They must not re-grow this deliberately small, live-data page.
+  const visiblePushedPanels = focusedM5 ? [] : pushedPanels;
+  const pushedSummary = pushedStatusSummary(visiblePushedPanels);
+  const v = focusedM5 ? baseView : serviceView(withPushedStatus(snap, visiblePushedPanels));
 
   // munin-memory's badge reflects memory health (§3.5), not just process-up.
   const badgeState = (v.name === 'munin-memory' && memHealth)
@@ -463,7 +468,7 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
   });
 
   // Pushed typed-panels (POST /api/panels) render alongside descriptor panels.
-  const pushedRows = Array.isArray(pushedPanels) ? pushedPanels : [];
+  const pushedRows = Array.isArray(visiblePushedPanels) ? visiblePushedPanels : [];
   const pushedStatusCards = pushedRows
     .filter((row) => row && row.kind === 'status')
     .map((row) => renderTypedPanel(pushedPanelToView(row)))
@@ -494,11 +499,17 @@ function servicePage(gitVersion, snap, pushedPanels = [], memHealth = null, memA
     ? card({ title: 'Dashboards', body: `<div class="svc-meta"><a href="/services/munin-memory/consolidation">Consolidation →</a></div>` })
     : '';
 
-  const content = `
-    <div class="page-head">
-      <a href="/services" class="page-sub">← Services</a>
-    </div>
-    ${grid([header, memHealthPanel, deployCard, timerCard, metricsCard, panelWarningsCard, maintenanceEvidence, ...panelCards, ...pushedStatusCards, pushedSupporting, subViewsCard, linksCard, alertsCard].filter(Boolean))}`;
+  const pageHead = focusedM5
+    ? `<div class="page-head">
+        <a href="/services" class="page-sub">← Services</a>
+        <h1 class="page-title">M5 inference</h1>
+        <p class="page-sub">Is it online, is it being used, and what can it run?</p>
+      </div>`
+    : `<div class="page-head"><a href="/services" class="page-sub">← Services</a></div>`;
+  const cards = focusedM5
+    ? panelCards
+    : [header, memHealthPanel, deployCard, timerCard, metricsCard, panelWarningsCard, maintenanceEvidence, ...panelCards, ...pushedStatusCards, pushedSupporting, subViewsCard, linksCard, alertsCard].filter(Boolean);
+  const content = `${pageHead}${grid(cards)}`;
 
   // Inject each active plugin's stylesheet once (panels render their own markup).
   const pluginCss = [...new Set(v.panels.map((p) => p.plugin).filter(Boolean))]

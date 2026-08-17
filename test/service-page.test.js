@@ -83,8 +83,8 @@ describe('service-page plugin panels', () => {
       service: { name: 'm5-gateway', label: 'M5 Inference' }, kind: 'inference', status: 'pass',
       metrics: [],
       panels: [
+        { id: 'm5-overview', plugin: 'inference', view: 'overview', label: 'M5 usage', refresh: 60, fullWidth: true },
         { id: 'm5-models', plugin: 'inference', view: 'models', label: 'Models on the M5', refresh: 60, fullWidth: false },
-        { id: 'm5-usage', plugin: 'inference', view: 'usage', label: 'Usage Metrics', refresh: 60, fullWidth: true },
       ],
       links: {},
     },
@@ -101,6 +101,20 @@ describe('service-page plugin panels', () => {
     const html = servicePage('test', inferenceSnap);
     const matches = html.match(/\/css\/inference\.css/g) || [];
     assert.equal(matches.length, 1, 'inference.css linked exactly once for two inference panels');
+  });
+
+  it('gives M5 a focused page and hides legacy pushed telemetry', () => {
+    const oldPanels = [{
+      service: 'm5-inference', panel: 'm5-utilization-models', kind: 'table',
+      label: 'Legacy model usage table', updated_at: Date.now(), data: { rows: [{ model: 'mellum' }] },
+    }];
+    const html = servicePage('test', inferenceSnap, oldPanels);
+    assert.ok(html.includes('<h1 class="page-title">M5 inference</h1>'));
+    assert.ok(html.includes('Is it online, is it being used, and what can it run?'));
+    assert.ok(!html.includes('Supporting telemetry'));
+    assert.ok(!html.includes('Legacy model usage table'));
+    assert.ok(!html.includes('Deployment'));
+    assert.ok(!html.includes('Links'));
   });
 
   it('falls back to a placeholder for an unknown plugin', () => {

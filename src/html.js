@@ -268,6 +268,80 @@ function m5ModelsCard(summary, error) {
   `;
 }
 
+function m5SimpleModelsCard(summary, error) {
+  if (error) return `<h3>Models</h3><div class="m5-note">Model list unavailable — ${esc(error)}.</div>`;
+  if (!summary || summary.counts.downloaded === 0) {
+    return '<h3>Models</h3><div class="m5-note">No models reported.</div>';
+  }
+  const name = (model) => esc(model && (model.displayName || model.key) || '(unknown)');
+  const loaded = summary.loaded.map((model) => `<span class="m5-model-chip is-loaded">${name(model)}</span>`).join('');
+  const ready = summary.downloaded.filter((model) => !model || model.loaded !== true)
+    .map((model) => `<span class="m5-model-chip">${name(model)}</span>`).join('');
+  return `<h3>Models</h3>
+    <div class="m5-model-section"><div class="m5-model-section-label">Loaded now</div><div class="m5-model-chips">${loaded || '<span class="m5-muted">None</span>'}</div></div>
+    <div class="m5-model-section"><div class="m5-model-section-label">Ready to load</div><div class="m5-model-chips">${ready || '<span class="m5-muted">None</span>'}</div></div>`;
+}
+
+function m5Duration(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60) return `${minutes}m${remainder ? ` ${remainder}s` : ''}`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h${remainingMinutes ? ` ${remainingMinutes}m` : ''}`;
+}
+
+function m5RelativeTime(then, now) {
+  const elapsed = new Date(now).getTime() - new Date(then).getTime();
+  if (!Number.isFinite(elapsed) || elapsed < 0) return 'Unknown';
+  if (elapsed < 60000) return 'Just now';
+  if (elapsed < 3600000) return `${Math.floor(elapsed / 60000)}m ago`;
+  if (elapsed < 86400000) return `${Math.floor(elapsed / 3600000)}h ago`;
+  return `${Math.floor(elapsed / 86400000)}d ago`;
+}
+
+function m5OverviewCard({ health, usage, error }) {
+  const online = health && health.ok === true;
+  const healthLabel = online ? 'Online' : 'Unavailable';
+  const healthDetail = online ? 'Ready for inference' : 'The live health check did not answer';
+  if (!usage) {
+    return `<div class="m5-overview-head"><div><h3>M5 right now</h3><div class="m5-live-state"><span class="m5-live-dot ${online ? 'is-online' : 'is-offline'}"></span>${healthLabel}</div><div class="m5-live-detail">${healthDetail}</div></div></div>
+      <div class="m5-note m5-usage-unavailable"><strong>Usage data unavailable</strong>${error ? ` — ${esc(error)}` : ''}. Live health and usage history are checked separately.</div>`;
+  }
+
+  const active = usage.activeRequests > 0
+    ? `${usage.activeRequests} request${usage.activeRequests === 1 ? '' : 's'} running`
+    : 'Idle now';
+  const lastUsed = usage.lastUsedAt ? m5RelativeTime(usage.lastUsedAt, usage.generatedAt) : 'No recorded use';
+  const days = [...usage.daily].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 7);
+  const maxRequests = Math.max(1, ...days.map((day) => day.requests));
+  const rows = days.map((day) => {
+    const label = new Date(`${day.date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const width = Math.round((day.requests / maxRequests) * 100);
+    return `<div class="m5-activity-row">
+      <time class="m5-activity-date" datetime="${esc(day.date)}">${esc(label)}</time>
+      <span class="m5-activity-track"><span class="m5-activity-bar" style="width:${width}%"></span></span>
+      <span class="m5-activity-count">${day.requests === 0 ? 'No activity' : `${esc(String(day.requests))} request${day.requests === 1 ? '' : 's'}`}</span>
+      <span class="m5-activity-time">${day.requestTimeMs === 0 ? '—' : esc(m5Duration(day.requestTimeMs))}</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="m5-overview-head">
+      <div><h3>M5 right now</h3><div class="m5-live-state"><span class="m5-live-dot ${online ? 'is-online' : 'is-offline'}"></span>${healthLabel}</div><div class="m5-live-detail">${healthDetail}</div></div>
+      <div class="m5-now">${esc(active)}</div>
+    </div>
+    <div class="m5-essentials">
+      <div><div class="m5-essential-value">${esc(String(usage.last24Hours.requests))}</div><div class="m5-essential-label">Requests · last 24 hours</div></div>
+      <div><div class="m5-essential-value">${esc(m5Duration(usage.last24Hours.requestTimeMs))}</div><div class="m5-essential-label">M5 request time · last 24 hours</div></div>
+      <div><div class="m5-essential-value">${esc(lastUsed)}</div><div class="m5-essential-label">Last used</div></div>
+    </div>
+    <div class="m5-activity"><div class="m5-activity-head"><h4>Last 7 days</h4><span>Requests · request time</span></div>${rows}</div>
+    <div class="m5-usage-foot">Admitted inference requests recorded by the gateway · request time is wall-clock, not GPU load · newest day first</div>`;
+}
+
 // usage: summarizeUsageMetrics() output | null; error: optional string.
 // Renders aggregate totals + a per-model usage table + admission/rate-limit/outcome breakdowns.
 // CONTENT-BLIND: every value comes from the gateway's aggregate /metrics (no per-user/content).
@@ -1058,6 +1132,8 @@ module.exports = {
   m5FindingsCard,
   m5RoutingCard,
   m5ModelsCard,
+  m5SimpleModelsCard,
+  m5OverviewCard,
   m5UsageCard,
   huginTasksCard,
   taskHistoryCard,
