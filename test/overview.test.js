@@ -403,6 +403,13 @@ describe('GET / (v2 Overview)', () => {
     // v1 /deployments page was retired; the section is self-contained now.
     assert.doesNotMatch(res.body, /href="\/deployments"/);
   });
+
+  it('labels the header freshness as collector-cycle data (#61)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/card/last-updated' });
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /Collector cycle:/);
+    assert.doesNotMatch(res.body, /Last updated:/);
+  });
 });
 
 describe('GET /api/overview/deploys', () => {

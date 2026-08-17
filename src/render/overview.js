@@ -13,7 +13,12 @@ const { pageShell } = require('./shell');
 const { grid } = require('./cards');
 const { kpi, statusBadge, emptyState } = require('./components');
 const { esc } = require('./util');
-const { buildMachines, fleetGridFragment, isActiveMachine } = require('../fleet/render');
+const {
+  buildMachines,
+  fleetGridFragment,
+  isActiveMachine,
+  isMonitoredMachine,
+} = require('../fleet/render');
 const { aggregateCounts } = require('../fleet/liveness');
 const {
   servicesGridFragment, serviceView, isActionableServiceException,
@@ -32,18 +37,23 @@ function buildOverviewStatus({ machines = [], snapshots = [], alertCount = 0, ve
   // are rendered only as explainable historical context and never count as
   // current fleet membership in the overview KPIs.
   const activeMachines = machines.filter(isActiveMachine);
+  // Grimnir's node registry owns monitoring policy. Optional nodes remain
+  // visible on Fleet, but they are not part of the Overview liveness KPI and
+  // cannot turn the system banner red merely because they are quiet or their
+  // optional agent is on a different revision.
+  const monitoredMachines = activeMachines.filter(isMonitoredMachine);
   // Keep the online KPI about liveness, not agent-version hygiene. A drifted
   // but reporting machine remains online and is counted separately in
   // `fleetDrift`; non-alertable never-seen laptops are equivalent to sleeping
   // for the aggregate strip.
-  const fleetCounts = aggregateCounts(activeMachines.map((m) => (
+  const fleetCounts = aggregateCounts(monitoredMachines.map((m) => (
     m.state === 'never-seen' && m.alertable === false ? 'sleeping' : m.state
   )));
-  const fleetTotal = activeMachines.length;
+  const fleetTotal = monitoredMachines.length;
   const fleetOnline = fleetCounts.ok;
   const fleetOffline = fleetCounts.crit; // offline (always_on machines) → crit
   const fleetStale = fleetCounts.warn;   // late telemetry — NOT the benign "sleeping" bucket
-  const fleetDrift = activeMachines.filter((m) => m.agentVersionState === 'drift').length;
+  const fleetDrift = monitoredMachines.filter((m) => m.agentVersionState === 'drift').length;
 
   let svcOk = 0;
   let svcWarn = 0;

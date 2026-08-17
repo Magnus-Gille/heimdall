@@ -65,7 +65,7 @@ cp .env.example ~/.heimdall/env
 HEIMDALL_CONFIG_MODE=demo npm start
 ```
 
-Open <http://127.0.0.1:3033>. The committed `heimdall.config.json` uses RFC 5737 documentation addresses; replace its examples or point `HEIMDALL_CONFIG_PATH` to your own JSON. Set `GRIMNIR_SERVICES_JSON` to consume a Grimnir registry checkout. Without either integration, the committed overlay is a usable demonstration inventory. Its documentation targets require `HEIMDALL_CONFIG_MODE=demo` (or `NODE_ENV=test`); production always rejects them at startup.
+Open <http://127.0.0.1:3033>. The committed `heimdall.config.json` uses RFC 5737 documentation addresses; replace its examples or point `HEIMDALL_CONFIG_PATH` to your own JSON. Set `GRIMNIR_SERVICES_JSON` to consume a Grimnir registry checkout (a sibling `grimnir` checkout is also discovered automatically). Without a readable Grimnir registry, service probes can use the demonstration overlay but fleet membership stays fail-closed rather than inventing a second inventory. Documentation targets require `HEIMDALL_CONFIG_MODE=demo` (or `NODE_ENV=test`); production always rejects them at startup.
 
 Run the collector separately when you want live host data:
 
@@ -105,21 +105,22 @@ Important settings:
 - `HOMESERVER_GATEWAY_URL` and `HOMESERVER_GATEWAY_API_KEY` enable local-inference panels.
 - `HEIMDALL_SELF_HEAL_ENABLED=1` opts into recovery-task submission.
 
-Fleet membership is authoritative from `fleet.hosts`: configured hosts remain
-visible even before their first push (`never seen`), while telemetry-only rows
-are retained for history and marked `retired / unregistered` when the config
-reconciles. They do not contribute to fleet totals or liveness alerts. This
-keeps a rename from deleting evidence or counting a stale historical identity
-as another machine. A successfully loaded overlay with `fleet.hosts: []` is an
-intentional empty fleet and retires retained rows; an unavailable, malformed, or
-fleet-less overlay is not treated as authority, so existing lifecycle state is
-preserved until a valid overlay is available.
+Fleet membership, canonical names, labels, roles, and monitoring policy are
+projected from Grimnir's `services.json` `nodes` array. Active nodes remain
+visible before their first push (`never seen`); `monitor: true` nodes contribute
+to the liveness KPI and alert authority, while `monitor: false` nodes are shown
+informationally. Telemetry-only and old alias rows are retained for history as
+`retired / unregistered`, so a rename neither deletes evidence nor creates a
+second active machine. An unavailable or malformed registry cannot authorize
+membership changes, preserving the last known lifecycle state until authority
+returns. Any legacy `fleet.hosts` array in the Heimdall overlay is ignored.
 
 Two settings live in the JSON overlay rather than the environment:
 
-- `fleet.host_aliases` maps retired host identities onto the canonical one
-  (e.g. `{"huginmunin": "control-node"}`). One machine must have one identity, or
-  its metric series and alerts split and orphaned alerts can never be resolved.
+- `fleet.host_aliases` adds agent-reported or historical identities that are not
+  structured fields in Grimnir (e.g. `{"orin-nano": "orin"}`). Targets must
+  resolve to canonical registry nodes; aliases cannot remap a canonical node.
+  Registry `hostname`, `ssh_alias`, and `node_id` aliases are derived automatically.
 - A timer service may declare `findings_exit_codes` (e.g. `[1]`) for jobs whose
   exit status still means "I ran and found things" rather than "I could not run".
   Without it, a non-zero exit is treated as a failure — the safe default.

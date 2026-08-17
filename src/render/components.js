@@ -156,7 +156,10 @@ const AGENT_VERSION_STATE = {
  *      tempSpark[], href }
  */
 function machineCard(m) {
-  const view = Object.hasOwn(MACHINE_STATE, m.state) ? MACHINE_STATE[m.state] : MACHINE_STATE.sleeping;
+  const baseView = Object.hasOwn(MACHINE_STATE, m.state) ? MACHINE_STATE[m.state] : MACHINE_STATE.sleeping;
+  const view = m.state === 'never-seen' && m.monitored !== false
+    ? { cls: 'crit', glyph: '●', label: 'Instrumentation gap' }
+    : baseView;
   const tag = (clsTxt) => clsTxt ? `<span class="mono">${esc(clsTxt)}</span>` : '';
   const tempStr = m.temp_cpu_c != null ? `${Number(m.temp_cpu_c).toFixed(0)}°C` : '—';
   const ramStr = (m.ram_used_mb != null && m.ram_total_mb != null)
@@ -166,6 +169,8 @@ function machineCard(m) {
   const subBits = [
     tag(m.ip),
     tag(m.platform),
+    m.reportedHostname ? `<span>agent reports as <span class="mono">${esc(m.reportedHostname)}</span></span>` : '',
+    m.monitored === false ? `<span class="tag">informational · monitoring off</span>` : '',
     m.temp_cpu_c != null ? `<span>${esc(tempStr)}</span>` : '',
   ].filter(Boolean);
   const agentState = Object.hasOwn(AGENT_VERSION_STATE, m.agentVersionState)
@@ -189,7 +194,7 @@ function machineCard(m) {
       <span>${offline
         ? (m.state === 'never-seen' ? 'never seen' : (m.state === 'retired-unregistered' ? 'historical' : 'offline'))
         : `up ${esc(formatUptime(m.uptime_s))}`}</span>
-      <span>${m.lastSeen ? `seen ${esc(formatAge(m.lastSeen))}` : (m.state === 'never-seen' ? 'no telemetry yet' : '')}</span>
+      <span>${m.lastSeen ? `agent telemetry ${esc(formatAge(m.lastSeen))}` : (m.state === 'never-seen' ? 'no agent telemetry yet' : '')}</span>
     </div>`;
   if (m.href) return `<a class="card machine-card" href="${esc(m.href)}">${inner}</a>`;
   return `<div class="card machine-card">${inner}</div>`;
