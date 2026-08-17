@@ -451,6 +451,20 @@ describe('fleet render — agent version drift', () => {
     db.close();
   });
 
+  it('can omit the M5 agent only from the Overview fleet fragment', () => {
+    const db = tmpDb();
+    handlePush(db, { body: { hostname: 'm5' }, allowInsecureLoopback: true, now: NOW });
+    handlePush(db, { body: { hostname: 'nas' }, allowInsecureLoopback: true, now: NOW });
+
+    const overview = fleetGridFragment(db, NOW + 1000, {}, { excludeHostnames: ['m5'] });
+    const fullFleet = fleetGridFragment(db, NOW + 1000, {});
+
+    assert.doesNotMatch(overview, />m5</);
+    assert.match(overview, />nas</);
+    assert.match(fullFleet, />m5</);
+    db.close();
+  });
+
   it('machineCard renders the agent version with current, drift, and unknown badges', () => {
     const current = machineCard({
       hostname: 'a', label: 'A', state: 'online',
