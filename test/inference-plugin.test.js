@@ -34,19 +34,20 @@ describe('inference plugin registry', () => {
 });
 
 describe('inference plugin — descriptor & snapshot', () => {
-  it('builds the M5 descriptor with four operator-focused panels and gateway links', () => {
+  it('builds the M5 descriptor with only the two first-principles panels', () => {
     const d = buildM5Descriptor({ gatewayUrl: 'http://m5.local:8080/', status: 'pass' });
     assert.equal(d.kind, 'inference');
     assert.equal(d.service.name, 'm5-gateway');
     assert.equal(d.service.instance_id, 'm5');
     assert.equal(d.status, 'pass');
-    assert.equal(d.panels.length, 4);
-    assert.deepEqual(d.panels.map((p) => p.view), ['status', 'models', 'capability-map', 'routing']);
+    assert.equal(d.panels.length, 2);
+    assert.deepEqual(d.panels.map((p) => p.view), ['overview', 'models']);
     assert.ok(d.panels.every((p) => p.plugin === 'inference' && typeof p.view === 'string'));
     // trailing slash on the base must not double up in the link
     assert.equal(d.links.ledger, 'http://m5.local:8080/ledger');
     assert.equal(d.links.health, 'http://m5.local:8080/healthz');
     assert.equal(d.links.metrics, 'http://m5.local:8080/metrics');
+    assert.equal(d.links.operations, 'http://m5.local:8080/ops/summary');
   });
 
   it('m5Snapshot derives status from the collected inference_healthy metric', () => {
@@ -57,7 +58,7 @@ describe('inference plugin — descriptor & snapshot', () => {
     assert.equal(snap.status, 'pass');
     assert.equal(snap.reachable, true);
     assert.equal(snap.source, 'plugin');
-    assert.equal(snap.descriptor.panels.length, 4);
+    assert.equal(snap.descriptor.panels.length, 2);
   });
 
   it('m5Snapshot reports unreachable / null status before any metric exists', () => {
@@ -80,49 +81,56 @@ describe('inference plugin — descriptor & snapshot', () => {
   });
 });
 
-describe('inference plugin — renderPanel parity with v1 /m5 cards', () => {
+describe('inference plugin — minimal operator view', () => {
   const panel = (view) => M5_PANELS.find((p) => p.view === view);
 
-  it('status: reads collected metrics into the v1 status card', async () => {
-    const getLatestMetrics = () => [
-      { metric: 'inference_healthy', value: 1 },
-      { metric: 'inference_latency_ms', value: 42 },
-      { metric: 'inference_avg_tok_per_sec', value: 138 },
-    ];
-    const html = await renderPanel(panel('status'), {
-      db: {}, descriptor: DESCRIPTOR, getLatestMetrics, getLastCollectionTime: () => new Date(0).toISOString(),
+  it('overview: shows live state and the three basic usage answers', async () => {
+    const m5 = fakeM5({
+      fetchHealth: async () => ({ ok: true }),
+      fetchOperations: async () => ({ summary: {
+        generatedAt: '2026-08-17T12:00:00.000Z', activeRequests: 1,
+        lastUsedAt: '2026-08-17T11:55:00.000Z',
+        last24Hours: { requests: 3, requestTimeMs: 125_000 },
+        last7Days: { requests: 9, requestTimeMs: 500_000 },
+        daily: [
+          { date: '2026-08-17', requests: 3, requestTimeMs: 125_000 },
+          { date: '2026-08-16', requests: 0, requestTimeMs: 0 },
+        ],
+      } }),
     });
-    assert.ok(html.includes('M5 Status'));
+    const html = await renderPanel(panel('overview'), { m5, descriptor: DESCRIPTOR });
     assert.ok(html.includes('Online'));
-    assert.ok(html.includes('42ms'));
-    assert.ok(html.includes('138 tok/s'));
+    assert.ok(html.includes('1 request running'));
+    assert.ok(html.includes('3'));
+    assert.ok(html.includes('2m 5s'));
+    assert.ok(html.includes('5m ago'));
+    assert.ok(html.indexOf('2026-08-17') < html.indexOf('2026-08-16'), 'newest day renders first');
+    assert.ok(html.includes('No activity'), 'zero days are explicit rather than looking like missing data');
   });
 
-  it('status: threads recentPassRate and recentUnverifiedCount through to the rendered card', async () => {
-    const getLatestMetrics = () => [
-      { metric: 'inference_healthy', value: 1 },
-      { metric: 'inference_recent_pass_rate', value: 0.8 },
-      { metric: 'inference_recent_unverified_count', value: 10 },
-    ];
-    const html = await renderPanel(panel('status'), {
-      db: {}, descriptor: DESCRIPTOR, getLatestMetrics, getLastCollectionTime: () => new Date(0).toISOString(),
+  it('overview: keeps live health separate from usage-data availability', async () => {
+    const m5 = fakeM5({
+      fetchHealth: async () => ({ ok: true }),
+      fetchOperations: async () => ({ error: 'operations HTTP 503' }),
     });
-    assert.ok(html.includes('80%'), 'should render the verified pass rate');
-    assert.ok(html.includes('(+10 unverified)'), 'should surface the excluded unverified count');
+    const html = await renderPanel(panel('overview'), { m5, descriptor: DESCRIPTOR });
+    assert.ok(html.includes('Online'));
+    assert.ok(html.includes('Usage data unavailable'));
+    assert.ok(html.includes('503'));
   });
 
   it('models: success path renders the model list', async () => {
     const m5 = fakeM5({ fetchModels: async () => ({ models: [{ key: 'mellum', loaded: true, displayName: 'Mellum' }] }) });
     const html = await renderPanel(panel('models'), { m5, descriptor: DESCRIPTOR });
-    assert.ok(html.includes('Models on the M5'));
+    assert.ok(html.includes('<h3>Models</h3>'));
     assert.ok(html.includes('Mellum'));
-    assert.ok(html.includes('loaded'));
+    assert.ok(html.includes('Loaded now'));
   });
 
   it('models: error path renders a graceful note', async () => {
     const m5 = fakeM5({ fetchModels: async () => ({ error: 'models HTTP 403' }) });
     const html = await renderPanel(panel('models'), { m5, descriptor: DESCRIPTOR });
-    assert.ok(html.includes('Models on the M5'));
+    assert.ok(html.includes('<h3>Models</h3>'));
     assert.ok(html.includes('403'));
     assert.ok(/unavailable/i.test(html));
   });
@@ -130,7 +138,7 @@ describe('inference plugin — renderPanel parity with v1 /m5 cards', () => {
   it('capability-map: builds the matrix from a live ledger', async () => {
     const report = [{ taskType: 'classify', modelId: 'mellum', verdict: 'viable', successRate: 0.9, avgTokPerSec: 138, attempts: 5 }];
     const m5 = fakeM5({ fetchLedger: async () => ({ report, recent: [] }) });
-    const html = await renderPanel(panel('capability-map'), { m5, descriptor: DESCRIPTOR });
+    const html = await renderPanel({ view: 'capability-map' }, { m5, descriptor: DESCRIPTOR });
     assert.ok(html.includes('Capability Map'));
     assert.ok(html.includes('classify'));
     assert.ok(html.includes('90%'));
@@ -138,7 +146,7 @@ describe('inference plugin — renderPanel parity with v1 /m5 cards', () => {
 
   it('capability-map: ledger error renders the unavailable note', async () => {
     const m5 = fakeM5({ fetchLedger: async () => ({ error: 'ledger HTTP 403' }) });
-    const html = await renderPanel(panel('capability-map'), { m5, descriptor: DESCRIPTOR });
+    const html = await renderPanel({ view: 'capability-map' }, { m5, descriptor: DESCRIPTOR });
     assert.ok(/Ledger unavailable/.test(html));
     assert.ok(html.includes('403'));
   });
@@ -176,7 +184,7 @@ describe('inference plugin — renderPanel parity with v1 /m5 cards', () => {
   it('routing: no snapshot file → derives a hint from the live ledger', async () => {
     const report = [{ taskType: 'classify', modelId: 'mellum', verdict: 'viable', successRate: 0.9, avgTokPerSec: 138 }];
     const m5 = fakeM5({ fetchLedger: async () => ({ report, recent: [] }) });
-    const html = await renderPanel(panel('routing'), { m5, descriptor: DESCRIPTOR, env: {} });
+    const html = await renderPanel({ view: 'routing' }, { m5, descriptor: DESCRIPTOR, env: {} });
     assert.ok(/Routing/.test(html));
     assert.ok(html.includes('classify'));
     assert.ok(html.includes('delegate-local'));
@@ -185,7 +193,7 @@ describe('inference plugin — renderPanel parity with v1 /m5 cards', () => {
   it('routing: reads a snapshot file when M5_ROUTING_JSON_PATH points at one', async () => {
     const snapshot = { globalRule: 'escalate SQL', modelProfiles: {}, routing: { classify: { verdict: 'delegate-local', model: 'mellum', passRate: 0.9 } } };
     const fs = { existsSync: () => true, readFileSync: () => JSON.stringify(snapshot) };
-    const html = await renderPanel(panel('routing'), { descriptor: DESCRIPTOR, env: { M5_ROUTING_JSON_PATH: '/x/routing.json' }, fs });
+    const html = await renderPanel({ view: 'routing' }, { descriptor: DESCRIPTOR, env: { M5_ROUTING_JSON_PATH: '/x/routing.json' }, fs });
     assert.ok(html.includes('Routing Plan'));
     assert.ok(html.includes('escalate SQL'));
   });
@@ -199,7 +207,7 @@ describe('inference plugin — renderPanel parity with v1 /m5 cards', () => {
   it('never emits an unescaped script even if the ledger carries one', async () => {
     const report = [{ taskType: '<script>alert(1)</script>', modelId: 'mellum', verdict: 'viable', successRate: 0.5 }];
     const m5 = fakeM5({ fetchLedger: async () => ({ report, recent: [] }) });
-    const html = await renderPanel(panel('capability-map'), { m5, descriptor: DESCRIPTOR });
+    const html = await renderPanel({ view: 'capability-map' }, { m5, descriptor: DESCRIPTOR });
     assert.ok(!/<script>alert/.test(html), 'task type must be escaped');
     assert.ok(html.includes('&lt;script&gt;'));
   });

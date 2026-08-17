@@ -4,8 +4,8 @@
  * plugins/inference.js — the inference panel plugin (v2 platform).
  *
  * This is the ONE piece of genuinely service-specific code in the platform. It
- * renders the M5 inference box's operator panels (status, models, capability
- * matrix, routing) on the GENERIC service page, by reusing the
+ * renders the M5 inference box's focused operator view (live state, basic use,
+ * and available models) on the generic service-page platform, by reusing the
  * proven v1 data layer (`src/m5.js`) and card renderers (`src/html.js`).
  *
  * Why reuse rather than re-implement: M5 parity is the P2 acceptance gate, and
@@ -42,10 +42,8 @@ const GATEWAY_DEFAULT = process.env.HOMESERVER_GATEWAY_URL || 'http://127.0.0.1:
  * documents the gateway endpoint each panel reads.
  */
 const M5_PANELS = [
-  { id: 'm5-status', view: 'status', label: 'M5 Status', source: null, refresh: 60, fullWidth: false },
-  { id: 'm5-models', view: 'models', label: 'Models on the M5', source: '/models', refresh: 60, fullWidth: false },
-  { id: 'm5-capability-map', view: 'capability-map', label: 'Capability Map', source: '/ledger', refresh: 300, fullWidth: true },
-  { id: 'm5-routing', view: 'routing', label: 'Routing', source: '/ledger', refresh: 600, fullWidth: true },
+  { id: 'm5-overview', view: 'overview', label: 'M5 usage', source: '/ops/summary', refresh: 60, fullWidth: true },
+  { id: 'm5-models', view: 'models', label: 'Models', source: '/models', refresh: 60, fullWidth: true },
 ];
 
 /** Build the M5 service descriptor (Heimdall-side; the gateway has no /heimdall.json yet). */
@@ -77,6 +75,7 @@ function buildM5Descriptor(opts = {}) {
     links: {
       health: `${b}/healthz`,
       metrics: `${b}/metrics`,
+      operations: `${b}/ops/summary`,
       ledger: `${b}/ledger`,
       repo: 'https://github.com/Magnus-Gille/gille-inference',
     },
@@ -151,6 +150,18 @@ async function renderPanel(panel, deps = {}) {
   const base = deps.gatewayUrl || GATEWAY_DEFAULT;
 
   switch (view) {
+    case 'overview': {
+      const [health, operations] = await Promise.all([
+        m5.fetchHealth(base),
+        m5.fetchOperations(base),
+      ]);
+      return html.m5OverviewCard({
+        health,
+        usage: operations.summary || null,
+        error: operations.error || null,
+      });
+    }
+
     case 'status': {
       const map = {};
       try {
@@ -192,8 +203,8 @@ async function renderPanel(panel, deps = {}) {
 
     case 'models': {
       const result = await m5.fetchModels(base);
-      if (result.error) return html.m5ModelsCard(null, result.error);
-      return html.m5ModelsCard(m5.summarizeModels(result.models), null);
+      if (result.error) return html.m5SimpleModelsCard(null, result.error);
+      return html.m5SimpleModelsCard(m5.summarizeModels(result.models), null);
     }
 
     case 'usage': {

@@ -291,7 +291,7 @@ describe('GET /services/:name with pushed panels', () => {
   });
 
   // #102 — panels pushed as `m5-inference` belong on the m5-gateway page.
-  it('renders m5-inference pushed panels on the owning m5-gateway page', async () => {
+  it('keeps legacy m5-inference pushed panels out of the focused m5-gateway page', async () => {
     const r = await app.inject({
       method: 'POST', url: '/api/panels',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
@@ -300,8 +300,8 @@ describe('GET /services/:name with pushed panels', () => {
     assert.equal(r.statusCode, 200);
     const res = await app.inject({ method: 'GET', url: '/services/m5-gateway' });
     assert.equal(res.statusCode, 200);
-    assert.ok(res.body.includes('Offloadability'), 'aliased panel label rendered on owner page');
-    assert.ok(res.body.includes('qwen3-30b-instruct'), 'aliased detail table rendered on owner page');
+    assert.ok(!res.body.includes('Offloadability'), 'legacy panel must not re-grow the focused page');
+    assert.ok(!res.body.includes('qwen3-30b-instruct'), 'legacy detail must stay out of the focused page');
   });
 
   it('redirects the aliased producer id to the owning service page', async () => {

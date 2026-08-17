@@ -10,6 +10,8 @@ const {
   _resetSummaryCache,
   __setSummaryCacheForTest,
   KNOWN_MODELS,
+  fetchHealth,
+  fetchOperations,
   fetchModels,
   summarizeModels,
   fetchMetrics,
@@ -602,6 +604,48 @@ async function testFetchMetricsNetworkFailure() {
   console.log('  PASS: fetchMetrics returns { error } on network failure');
 }
 
+async function testFetchOperationsContract() {
+  let seenUrl;
+  let seenAuth;
+  const body = {
+    generatedAt: '2026-08-17T12:00:00.000Z', activeRequests: 0,
+    lastUsedAt: '2026-08-17T11:55:00.000Z',
+    last24Hours: { requests: 3, requestTimeMs: 125000 },
+    last7Days: { requests: 9, requestTimeMs: 500000 },
+    daily: [{ date: '2026-08-17', requests: 3, requestTimeMs: 125000 }],
+    unexpectedPrivateField: 'discard me',
+  };
+  const fakeFetch = async (url, opts) => {
+    seenUrl = url;
+    seenAuth = opts.headers.Authorization;
+    return { ok: true, json: async () => body };
+  };
+  const result = await fetchOperations('http://m5.test/', 'monitor-key', { _fetch: fakeFetch });
+  assert.strictEqual(seenUrl, 'http://m5.test/ops/summary');
+  assert.strictEqual(seenAuth, 'Bearer monitor-key');
+  assert.strictEqual(result.summary.last24Hours.requests, 3);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(result.summary, 'unexpectedPrivateField'), false);
+  console.log('  PASS: fetchOperations validates and narrows the authenticated summary');
+}
+
+async function testFetchOperationsRejectsMalformed() {
+  const result = await fetchOperations('http://m5.test', 'key', {
+    _fetch: async () => ({ ok: true, json: async () => ({ daily: 'not-an-array' }) }),
+  });
+  assert.strictEqual(result.error, 'usage response malformed');
+  console.log('  PASS: fetchOperations rejects malformed gateway data');
+}
+
+async function testFetchHealthContract() {
+  let seenUrl;
+  const result = await fetchHealth('http://m5.test/', {
+    _fetch: async (url) => { seenUrl = url; return { ok: true, json: async () => ({ ok: true }) }; },
+  });
+  assert.strictEqual(seenUrl, 'http://m5.test/healthz');
+  assert.strictEqual(result.ok, true);
+  console.log('  PASS: fetchHealth checks the live unauthenticated health endpoint');
+}
+
 async function main() {
   console.log('M5 dashboard data-layer tests:');
   testResistsPrototypePollutionKeys();
@@ -647,6 +691,9 @@ async function main() {
   await testFetchMetricsSuccess();
   await testFetchMetricsHttpError();
   await testFetchMetricsNetworkFailure();
+  await testFetchOperationsContract();
+  await testFetchOperationsRejectsMalformed();
+  await testFetchHealthContract();
   console.log('\nAll M5 dashboard tests passed.');
 }
 

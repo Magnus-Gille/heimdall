@@ -44,6 +44,90 @@ function authHeaders(apiKey) {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
 }
 
+function nonNegativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Live GET /healthz. Health is intentionally independent of usage-history availability. */
+async function fetchHealth(baseUrl = GATEWAY_DEFAULT, opts = {}) {
+  const safeOpts = opts !== null && typeof opts === 'object' ? opts : {};
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), LEDGER_TIMEOUT_MS);
+  try {
+    const fetchImpl = safeOpts._fetch || globalThis.fetch;
+    if (typeof fetchImpl !== 'function') return { error: 'fetch unavailable' };
+    const base = String(baseUrl).replace(/\/$/, '');
+    const res = await fetchImpl(`${base}/healthz`, { signal: ctrl.signal });
+    if (!res.ok) return { error: `health HTTP ${res.status}` };
+    const body = await res.json();
+    return body && body.ok === true ? { ok: true } : { error: 'health response malformed' };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Live GET /ops/summary. The gateway response is content-blind, but is still treated as
+ * untrusted input: validate its small bounded shape before it reaches the renderer.
+ */
+async function fetchOperations(
+  baseUrl = GATEWAY_DEFAULT,
+  apiKey = process.env.HOMESERVER_GATEWAY_API_KEY,
+  opts = {},
+) {
+  const safeOpts = opts !== null && typeof opts === 'object' ? opts : {};
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), LEDGER_TIMEOUT_MS);
+  try {
+    const fetchImpl = safeOpts._fetch || globalThis.fetch;
+    if (typeof fetchImpl !== 'function') return { error: 'fetch unavailable' };
+    const base = String(baseUrl).replace(/\/$/, '');
+    const res = await fetchImpl(`${base}/ops/summary`, {
+      headers: authHeaders(apiKey),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { error: `usage HTTP ${res.status}` };
+    const body = await res.json();
+    const last24 = body && body.last24Hours;
+    const last7 = body && body.last7Days;
+    const daily = body && body.daily;
+    if (
+      !body || typeof body.generatedAt !== 'string'
+      || nonNegativeNumber(body.activeRequests) === null
+      || !last24 || nonNegativeNumber(last24.requests) === null || nonNegativeNumber(last24.requestTimeMs) === null
+      || !last7 || nonNegativeNumber(last7.requests) === null || nonNegativeNumber(last7.requestTimeMs) === null
+      || !Array.isArray(daily) || daily.length > 31
+      || !(body.lastUsedAt === null || typeof body.lastUsedAt === 'string')
+    ) return { error: 'usage response malformed' };
+
+    const normalizedDays = [];
+    for (const day of daily) {
+      if (
+        !day || typeof day.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day.date)
+        || nonNegativeNumber(day.requests) === null || nonNegativeNumber(day.requestTimeMs) === null
+      ) return { error: 'usage response malformed' };
+      normalizedDays.push({ date: day.date, requests: day.requests, requestTimeMs: day.requestTimeMs });
+    }
+
+    return {
+      summary: {
+        generatedAt: body.generatedAt,
+        activeRequests: body.activeRequests,
+        lastUsedAt: body.lastUsedAt,
+        last24Hours: { requests: last24.requests, requestTimeMs: last24.requestTimeMs },
+        last7Days: { requests: last7.requests, requestTimeMs: last7.requestTimeMs },
+        daily: normalizedDays,
+      },
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Live GET /ledger. Best-effort: returns { report, recent } on success, or { error } on any
  * failure (unreachable / non-2xx / unparseable). NEVER throws — the card renders a clean note.
@@ -609,6 +693,8 @@ function summarizeUsageMetrics(samples) {
 module.exports = {
   KNOWN_MODELS,
   STATIC_FINDINGS,
+  fetchHealth,
+  fetchOperations,
   fetchLedger,
   fetchModels,
   fetchMetrics,
