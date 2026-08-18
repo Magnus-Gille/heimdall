@@ -155,6 +155,7 @@
       "control-node": "huginmunin",
       "edge-node": "orin",
       "orin-nano": "orin",
+      "macbook-air": "laptop",
       "workstation": "laptop"
     },
     "stale_after_s": 90,

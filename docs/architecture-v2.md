@@ -467,7 +467,9 @@ CREATE TABLE IF NOT EXISTS fleet_hosts (
 Grimnir's `services.json` `nodes` array is the fleet-membership and monitoring
 authority. Heimdall deterministically projects active nodes and derives aliases
 from `name`, `hostname`, `ssh_alias`, and `node_id`; the overlay may add only
-reporter/history aliases targeting those canonical nodes. The `fleet_hosts`
+reporter/history aliases targeting those canonical nodes. Repository aliases are
+the public history baseline and remain active when a private overlay is selected;
+the private overlay extends that baseline rather than replacing it. The `fleet_hosts`
 table retains observed identities and raw `fleet_metrics` history, but a row
 absent from the projection is marked `retired` and excluded from fleet totals.
 Monitored rows with no `last_seen` render as explicit instrumentation gaps;

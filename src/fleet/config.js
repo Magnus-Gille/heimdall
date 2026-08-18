@@ -4,8 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { canonicalHost, loadHostAliases, normalizeHostKey } = require('../host-identity');
 
-const CONFIG_PATH = process.env.HEIMDALL_CONFIG_PATH
-  || path.join(__dirname, '..', '..', 'heimdall.config.json');
+const REPOSITORY_CONFIG_PATH = path.join(__dirname, '..', '..', 'heimdall.config.json');
+const CONFIG_PATH = process.env.HEIMDALL_CONFIG_PATH || REPOSITORY_CONFIG_PATH;
 
 const DEFAULT_THRESHOLDS = { staleAfterS: 90, offlineAfterS: 600, sleepAfterS: 1800 };
 
@@ -72,7 +72,7 @@ function addRegistryAlias(aliases, alias, canonical) {
 }
 
 /** Deterministically project active Grimnir nodes into Heimdall's fleet model. */
-function deriveFleetProjection(registry, overlay = {}) {
+function deriveFleetProjection(registry, overlay = {}, historyAliases = {}) {
   const hosts = [];
   const aliases = {};
   const canonicalNames = new Set();
@@ -118,7 +118,7 @@ function deriveFleetProjection(registry, overlay = {}) {
   // example `orin-nano`). They are identity reconciliation only: accept them
   // when their target resolves to a registry node, and never let them remap a
   // registry canonical name away from itself.
-  const overlayAliases = loadHostAliases(overlay);
+  const overlayAliases = { ...historyAliases, ...loadHostAliases(overlay) };
   for (const [alias, target] of Object.entries(overlayAliases)) {
     const key = normalizeHostKey(alias);
     const resolved = canonicalHost(target, aliases);
@@ -138,6 +138,10 @@ function deriveFleetProjection(registry, overlay = {}) {
  */
 function loadFleetConfig(configPath = CONFIG_PATH, options = {}) {
   const overlay = readOverlay(configPath);
+  const aliasDefaultsPath = options.aliasDefaultsPath || REPOSITORY_CONFIG_PATH;
+  const historyAliases = configPath === aliasDefaultsPath
+    ? {}
+    : loadHostAliases(readOverlay(aliasDefaultsPath));
   const fleet = overlay.fleet && typeof overlay.fleet === 'object' && !Array.isArray(overlay.fleet)
     ? overlay.fleet
     : {};
@@ -152,7 +156,7 @@ function loadFleetConfig(configPath = CONFIG_PATH, options = {}) {
     return emptyConfig(loaded.status, thresholds, loaded.path);
   }
 
-  const projection = deriveFleetProjection(loaded.registry, overlay);
+  const projection = deriveFleetProjection(loaded.registry, overlay, historyAliases);
   return {
     ...projection,
     thresholds,
@@ -185,4 +189,5 @@ module.exports = {
   grimnirCandidates,
   DEFAULT_THRESHOLDS,
   CONFIG_PATH,
+  REPOSITORY_CONFIG_PATH,
 };
