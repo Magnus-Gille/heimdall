@@ -94,7 +94,7 @@ const db = injectedDb || openDatabase();
 // instead of inflating the fleet. An unavailable/malformed registry must not be
 // mistaken for an intentionally empty fleet: preserve lifecycle state until a
 // valid authority is available.
-const fleetConfig = loadFleetConfig();
+const fleetConfig = loadFleetConfig(undefined, { grimnirPath: options.grimnirPath });
 if (fleetConfig.authority.status === 'loaded') {
   try {
     reconcileFleetHostConfig(db, fleetConfig.hosts, fleetConfig.hostAliases);

@@ -19,6 +19,13 @@ function freshDb() {
   return openDatabase(path.join(dir, 'test.db'));
 }
 
+function writeGrimnirRegistry(nodes) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-overview-grimnir-'));
+  const registryPath = path.join(dir, 'services.json');
+  fs.writeFileSync(registryPath, JSON.stringify({ nodes, components: [] }));
+  return registryPath;
+}
+
 // Minimal snapshot shape consumed by serviceView (via buildOverviewStatus).
 function snap(name, status, { reachable = true, drift = 0 } = {}) {
   return {
@@ -459,7 +466,14 @@ describe('GET /api/overview/status', () => {
 
   before(async () => {
     db = freshDb();
-    ({ app } = buildApp(db));
+    const grimnirPath = writeGrimnirRegistry([{
+      name: 'm5',
+      node_id: 'node-m5',
+      role: 'inference',
+      status: 'active',
+      monitor: false,
+    }]);
+    ({ app } = buildApp(db, { grimnirPath }));
     await app.ready();
   });
 
@@ -483,12 +497,12 @@ describe('GET /api/overview/status', () => {
     assert.match(res.body, /col-full/);
   });
 
-  it('keeps the stale M5 agent out of Overview fleet attention but not the Fleet page', async () => {
+  it('keeps the canonical M5 node out of Overview fleet attention but not the Fleet page', async () => {
     const overview = await app.inject({ method: 'GET', url: '/api/overview/fleet' });
     const fleet = await app.inject({ method: 'GET', url: '/api/fleet/grid' });
     assert.equal(overview.statusCode, 200);
-    assert.doesNotMatch(overview.body, /M5 inference/);
-    assert.match(fleet.body, /M5 inference/);
+    assert.doesNotMatch(overview.body, /class="machine-name">m5<\/span>/);
+    assert.match(fleet.body, /class="machine-name">m5<\/span>/);
   });
 });
 
