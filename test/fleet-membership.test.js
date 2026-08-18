@@ -18,7 +18,12 @@ const {
   deriveDisplayState,
   shouldAlert,
 } = require('../src/fleet/liveness');
-const { buildMachines, fleetGridFragment, aggregateMachineCounts } = require('../src/fleet/render');
+const {
+  buildMachines,
+  fleetGridFragment,
+  aggregateMachineCounts,
+  isFleetException,
+} = require('../src/fleet/render');
 const { buildOverviewStatus } = require('../src/render/overview');
 
 const NOW = Date.parse('2026-06-23T12:00:00Z');
@@ -30,6 +35,59 @@ function tmpDb() {
 }
 
 describe('fleet membership lifecycle (#56)', () => {
+  it('derives fleet identity, labels, aliases, and monitor policy from Grimnir nodes (#61)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-registry-projection-'));
+    const overlayPath = path.join(dir, 'overlay.json');
+    const registryPath = path.join(dir, 'services.json');
+    fs.writeFileSync(overlayPath, JSON.stringify({
+      fleet: {
+        stale_after_s: 42,
+        hosts: [{ hostname: 'edge-node', label: 'stale duplicate', always_on: true }],
+        host_aliases: {
+          'orin-nano': 'orin',
+          'huginmunin': 'control-node',
+          ghost: 'not-a-node',
+        },
+      },
+    }));
+    fs.writeFileSync(registryPath, JSON.stringify({
+      components: [
+        { name: 'heimdall', target_node_id: 'node-huginmunin', host: 'huginmunin.local' },
+      ],
+      nodes: [
+        { name: 'huginmunin', node_id: 'node-huginmunin', hostname: 'huginmunin.local', role: 'service-host', status: 'active', monitor: true },
+        { name: 'nas', node_id: 'node-nas', hostname: 'nas.local', role: 'storage', status: 'active', monitor: true },
+        { name: 'm5', node_id: 'node-m5', hostname: '100.76.72.59', ssh_alias: 'm5', role: 'inference', status: 'active', monitor: false },
+        { name: 'orin', node_id: 'node-orin', hostname: '100.127.176.78', ssh_alias: 'orin', role: 'inference', status: 'active', monitor: false },
+        { name: 'laptop', node_id: 'node-laptop', hostname: null, role: 'inference', status: 'active', monitor: false },
+        { name: 'munin-zero', node_id: 'node-munin-zero', hostname: 'munin-zero.local', role: 'memory-appliance', status: 'active', monitor: true },
+        { name: 'retired-node', node_id: 'node-retired', status: 'retired', monitor: true },
+      ],
+    }));
+
+    const cfg = loadFleetConfig(overlayPath, { grimnirPath: registryPath });
+    assert.equal(cfg.authority.status, 'loaded');
+    assert.equal(cfg.authority.source, 'grimnir');
+    assert.equal(cfg.thresholds.staleAfterS, 42);
+    assert.deepEqual(cfg.hosts.map((host) => host.hostname), [
+      'huginmunin', 'nas', 'm5', 'orin', 'laptop', 'munin-zero',
+    ]);
+    assert.ok(!cfg.hosts.some((host) => host.hostname === 'edge-node'));
+    assert.ok(!cfg.hosts.some((host) => host.hostname === 'retired-node'));
+    assert.deepEqual(
+      Object.fromEntries(cfg.hosts.map((host) => [host.hostname, host.always_on])),
+      { huginmunin: true, nas: true, m5: false, orin: false, laptop: false, 'munin-zero': true },
+    );
+    assert.equal(cfg.hosts.find((host) => host.hostname === 'orin').role, 'inference');
+    assert.equal(cfg.hostAliases['control-node'], 'huginmunin',
+      'local collector identity follows Grimnir workload placement');
+    assert.equal(cfg.hostAliases['orin-nano'], 'orin');
+    assert.equal(cfg.hostAliases['100.127.176.78'], 'orin');
+    assert.equal(cfg.hostAliases['node-orin'], 'orin');
+    assert.equal(cfg.hostAliases.huginmunin, undefined, 'overlay cannot remap a canonical registry node');
+    assert.equal(cfg.hostAliases.ghost, undefined, 'overlay alias targets must resolve to a registry node');
+  });
+
   it('keeps config as membership authority while retaining observed history', () => {
     const db = tmpDb();
     handlePush(db, {
@@ -76,22 +134,24 @@ describe('fleet membership lifecycle (#56)', () => {
     db.close();
   });
 
-  it('does not retire pushes while fleet authority is unavailable, malformed, or fleet-less', () => {
+  it('does not retire pushes while the Grimnir node authority is unavailable, malformed, or node-less', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-authority-'));
     const missing = path.join(dir, 'missing.json');
     const malformed = path.join(dir, 'malformed.json');
-    const fleetLess = path.join(dir, 'fleet-less.json');
+    const nodesMissing = path.join(dir, 'nodes-missing.json');
+    const overlay = path.join(dir, 'overlay.json');
     fs.writeFileSync(malformed, '{not-json');
-    fs.writeFileSync(fleetLess, JSON.stringify({ services: [] }));
+    fs.writeFileSync(nodesMissing, JSON.stringify({ components: [] }));
+    fs.writeFileSync(overlay, JSON.stringify({ fleet: { stale_after_s: 45 } }));
 
     const cases = [
       [missing, 'unavailable'],
       [malformed, 'malformed'],
-      [fleetLess, 'fleet-less'],
+      [nodesMissing, 'nodes-missing'],
     ];
     const db = tmpDb();
-    for (const [configPath, status] of cases) {
-      const cfg = loadFleetConfig(configPath);
+    for (const [registryPath, status] of cases) {
+      const cfg = loadFleetConfig(overlay, { grimnirPath: registryPath });
       assert.equal(cfg.authority.status, status);
       const hostname = `authority-${status.replace('-', '')}`;
       const result = handlePush(db, {
@@ -107,11 +167,13 @@ describe('fleet membership lifecycle (#56)', () => {
     db.close();
   });
 
-  it('treats a successfully loaded empty fleet as intentionally authoritative', () => {
+  it('treats a successfully loaded empty Grimnir node projection as intentionally authoritative', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-empty-fleet-'));
-    const configPath = path.join(dir, 'empty.json');
-    fs.writeFileSync(configPath, JSON.stringify({ fleet: { hosts: [] } }));
-    const cfg = loadFleetConfig(configPath);
+    const configPath = path.join(dir, 'overlay.json');
+    const registryPath = path.join(dir, 'services.json');
+    fs.writeFileSync(configPath, JSON.stringify({ fleet: {} }));
+    fs.writeFileSync(registryPath, JSON.stringify({ components: [], nodes: [] }));
+    const cfg = loadFleetConfig(configPath, { grimnirPath: registryPath });
     assert.equal(cfg.authority.status, 'loaded');
     assert.equal(cfg.authority.intentionallyEmpty, true);
 
@@ -147,7 +209,8 @@ describe('fleet membership lifecycle (#56)', () => {
     assert.equal(byHost.laptop.state, 'never-seen');
     assert.equal(shouldAlert(byHost.pi.state, { always_on: 1 }), true);
     assert.equal(shouldAlert(byHost.laptop.state, { always_on: 0 }), false);
-    assert.deepEqual(aggregateMachineCounts(Object.values(byHost)), { ok: 0, warn: 0, crit: 1, stale: 1 });
+    assert.deepEqual(aggregateMachineCounts(Object.values(byHost)), { ok: 0, warn: 0, crit: 1, stale: 0 },
+      'the unmonitored laptop remains visible but is excluded from aggregate health');
     db.close();
   });
 
@@ -161,5 +224,68 @@ describe('fleet membership lifecycle (#56)', () => {
     assert.equal(shouldAlert('offline', { always_on: true }), true);
     assert.equal(shouldAlert('sleeping', { always_on: false }), false);
     assert.equal(deriveDisplayState({ membership_state: 'retired', last_seen: ago(10) }, NOW, cfg), 'retired-unregistered');
+  });
+
+  it('projects reported aliases onto one canonical card and aggregates only monitored nodes (#61)', () => {
+    const db = tmpDb();
+    const hosts = [
+      { hostname: 'huginmunin', label: 'Huginmunin', role: 'service-host', always_on: true },
+      { hostname: 'orin', label: 'Orin', role: 'inference', always_on: false },
+      { hostname: 'm5', label: 'M5', role: 'inference', always_on: false },
+      { hostname: 'munin-zero', label: 'Munin Zero', role: 'memory-appliance', always_on: true },
+    ];
+    const aliases = { 'control-node': 'huginmunin', 'orin-nano': 'orin' };
+    reconcileFleetHostConfig(db, hosts, aliases, NOW);
+
+    handlePush(db, {
+      body: { hostname: 'control-node', cpu_pct: 12, agent_version: 'abc1234' },
+      configuredHostnames: hosts.map((host) => host.hostname),
+      aliases,
+      allowInsecureLoopback: true,
+      now: NOW + 1000,
+    });
+    handlePush(db, {
+      body: { hostname: 'orin-nano', cpu_pct: 34, agent_version: 'old0000' },
+      configuredHostnames: hosts.map((host) => host.hostname),
+      aliases,
+      allowInsecureLoopback: true,
+      now: NOW + 2000,
+    });
+
+    const machines = buildMachines(db, NOW + 3000, {}, { baselineVersion: 'abc1234' });
+    const active = machines.filter((machine) => machine.active !== false);
+    const byHost = Object.fromEntries(active.map((machine) => [machine.hostname, machine]));
+
+    assert.deepEqual(active.map((machine) => machine.hostname).sort(), ['huginmunin', 'm5', 'munin-zero', 'orin']);
+    assert.equal(byHost.huginmunin.cpu_pct, 12);
+    assert.equal(byHost.huginmunin.reportedHostname, 'control-node');
+    assert.equal(byHost.orin.cpu_pct, 34);
+    assert.equal(byHost.orin.reportedHostname, 'orin-nano');
+    assert.equal(byHost.orin.monitored, false);
+    assert.equal(byHost['munin-zero'].monitored, true);
+    assert.equal(byHost['munin-zero'].state, 'never-seen');
+    assert.equal(isFleetException(byHost.orin), false, 'unmonitored drift/telemetry state is informational');
+
+    assert.deepEqual(aggregateMachineCounts(machines), { ok: 1, warn: 0, crit: 1, stale: 0 });
+    const status = buildOverviewStatus({ machines });
+    assert.equal(status.fleetOnline, 1);
+    assert.equal(status.fleetTotal, 2, 'overview denominator is the monitored registry projection');
+    assert.equal(status.fleetOffline, 1, 'monitored munin-zero remains an explicit evidence gap');
+    assert.equal(status.fleetDrift, 0, 'unmonitored Orin version drift does not trigger attention');
+    assert.equal(status.allHealthy, false);
+
+    const exceptions = fleetGridFragment(db, NOW + 3000, {}, {
+      exceptionsOnly: true,
+      baselineVersion: 'abc1234',
+    });
+    assert.match(exceptions, /Munin Zero/);
+    assert.doesNotMatch(exceptions, /Orin/);
+
+    const full = fleetGridFragment(db, NOW + 3000, {}, { baselineVersion: 'abc1234' });
+    assert.match(full, /agent reports as <span class="mono">control-node/);
+    assert.match(full, /agent reports as <span class="mono">orin-nano/);
+    assert.doesNotMatch(full, /machine-name">control-node</);
+    assert.doesNotMatch(full, /machine-name">orin-nano</);
+    db.close();
   });
 });

@@ -313,32 +313,47 @@ describe('always_on normalization', () => {
     assert.equal(deriveState(h, NOW), 'sleeping');
     db.close();
   });
-  it('loadFleetConfig normalizes always_on:0 → false (default → true)', () => {
+  it('loadFleetConfig derives monitoring policy from Grimnir nodes', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-cfg-'));
     const p = path.join(dir, 'cfg.json');
-    fs.writeFileSync(p, JSON.stringify({ fleet: { hosts: [{ hostname: 'lap', always_on: 0 }, { hostname: 'pi' }] } }));
-    const cfg = loadFleetConfig(p);
+    const registry = path.join(dir, 'services.json');
+    fs.writeFileSync(p, JSON.stringify({ fleet: { hosts: [{ hostname: 'stale-duplicate' }] } }));
+    fs.writeFileSync(registry, JSON.stringify({ nodes: [
+      { name: 'lap', status: 'active', monitor: false },
+      { name: 'pi', status: 'active', monitor: true },
+    ] }));
+    const cfg = loadFleetConfig(p, { grimnirPath: registry });
     assert.equal(cfg.hosts.find((h) => h.hostname === 'lap').always_on, false);
     assert.equal(cfg.hosts.find((h) => h.hostname === 'pi').always_on, true);
+    assert.ok(!cfg.hosts.some((h) => h.hostname === 'stale-duplicate'));
   });
 
-  it('loadFleetConfig uses the HEIMDALL_CONFIG_PATH overlay by default', () => {
+  it('loadFleetConfig uses the configured overlay and Grimnir registry paths by default', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-private-cfg-'));
     const configPath = path.join(dir, 'private.json');
+    const registryPath = path.join(dir, 'services.json');
     fs.writeFileSync(configPath, JSON.stringify({
-      fleet: { hosts: [{ hostname: 'private-node' }] },
+      fleet: { stale_after_s: 12, hosts: [{ hostname: 'stale-private-node' }] },
     }));
+    fs.writeFileSync(registryPath, JSON.stringify({ nodes: [
+      { name: 'canonical-node', status: 'active', monitor: true },
+    ] }));
     const modulePath = path.resolve(__dirname, '../src/fleet/config.js');
     const output = execFileSync(process.execPath, ['-e', [
       `const { loadFleetConfig } = require(${JSON.stringify(modulePath)});`,
       'process.stdout.write(JSON.stringify(loadFleetConfig()));',
     ].join('\n')], {
       cwd: path.resolve(__dirname, '..'),
-      env: { ...process.env, HEIMDALL_CONFIG_PATH: configPath },
+      env: {
+        ...process.env,
+        HEIMDALL_CONFIG_PATH: configPath,
+        GRIMNIR_SERVICES_JSON: registryPath,
+      },
       encoding: 'utf8',
     });
     const cfg = JSON.parse(output);
-    assert.deepEqual(cfg.hosts.map((h) => h.hostname), ['private-node']);
+    assert.deepEqual(cfg.hosts.map((h) => h.hostname), ['canonical-node']);
+    assert.equal(cfg.thresholds.staleAfterS, 12);
     assert.equal(cfg.authority.status, 'loaded');
   });
 });
@@ -492,6 +507,30 @@ describe('fleet render — agent version drift', () => {
       legacy,
       /machine-agent"><span class="mono">agent unknown<\/span><span class="status-badge is-stale">[\s\S]*?unknown<\/span><\/div>/,
     );
+  });
+
+  it('machineCard labels agent freshness/provenance and monitored evidence gaps explicitly (#61)', () => {
+    const canonical = machineCard({
+      hostname: 'orin',
+      label: 'Orin',
+      state: 'online',
+      monitored: false,
+      reportedHostname: 'orin-nano',
+      lastSeen: new Date(NOW).toISOString(),
+    });
+    assert.match(canonical, /agent reports as/);
+    assert.match(canonical, /orin-nano/);
+    assert.match(canonical, /informational · monitoring off/);
+    assert.match(canonical, /agent telemetry/);
+
+    const gap = machineCard({
+      hostname: 'munin-zero',
+      label: 'Munin Zero',
+      state: 'never-seen',
+      monitored: true,
+    });
+    assert.match(gap, /Instrumentation gap/);
+    assert.match(gap, /no agent telemetry yet/);
   });
 });
 

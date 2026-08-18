@@ -89,12 +89,12 @@ app.register(require('@fastify/rate-limit'), {
 
 const db = injectedDb || openDatabase();
 
-// Reconcile fleet membership from heimdall.config.json. Configured hosts are
-// the display/count authority; observed-only rows stay in SQLite as historical
-// telemetry and are marked retired instead of inflating the fleet. A failed or
-// fleet-less authority must not be mistaken for an intentionally empty fleet:
-// preserve the existing lifecycle state until a valid overlay is available.
-const fleetConfig = loadFleetConfig();
+// Reconcile fleet membership from Grimnir's canonical node registry. Observed-
+// only rows stay in SQLite as historical telemetry and are marked retired
+// instead of inflating the fleet. An unavailable/malformed registry must not be
+// mistaken for an intentionally empty fleet: preserve lifecycle state until a
+// valid authority is available.
+const fleetConfig = loadFleetConfig(undefined, { grimnirPath: options.grimnirPath });
 if (fleetConfig.authority.status === 'loaded') {
   try {
     reconcileFleetHostConfig(db, fleetConfig.hosts, fleetConfig.hostAliases);
@@ -633,7 +633,7 @@ app.get('/api/card/last-updated', async () => {
   const latest = lastControlNode && lastNas
     ? (lastControlNode > lastNas ? lastControlNode : lastNas)
     : lastControlNode || lastNas;
-  return { html: `Last updated: ${formatAgeWithTimestamp(latest)}` };
+  return { html: `Collector cycle: ${formatAgeWithTimestamp(latest)}` };
 });
 
 // Metrics API for charts
@@ -851,9 +851,9 @@ app.post('/api/fleet/push', { bodyLimit: 64 * 1024 }, async (request, reply) => 
     allowInsecureLoopback: insecureLoopback,
     body: request.body,
     now: Date.now(),
-    // Only a successfully loaded overlay can authorize lifecycle transitions.
-    // An intentionally empty `fleet.hosts` array is still passed as [] and is
-    // therefore deliberately authoritative.
+    // Only a successfully loaded Grimnir registry can authorize lifecycle
+    // transitions. An intentionally empty valid node projection is still
+    // passed as [] and is therefore deliberately authoritative.
     configuredHostnames: fleetConfig.authority.status === 'loaded'
       ? fleetConfig.hosts.map((host) => host.hostname)
       : undefined,

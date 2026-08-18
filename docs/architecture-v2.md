@@ -282,7 +282,7 @@ Content-Type: application/json
 
 ### 4.3 Per-machine model + offline/laptop handling
 
-Each machine has a config record: `{ hostname, label, always_on: bool, role }`. State is derived from `now - last_seen`:
+Each active Grimnir registry node projects to `{ hostname: node.name, label, always_on: node.monitor, role }`. State is derived from `now - last_seen`:
 
 | State | Condition | Badge |
 |---|---|---|
@@ -291,7 +291,7 @@ Each machine has a config record: `{ hostname, label, always_on: bool, role }`. 
 | **offline** | `last_seen ≥ threshold` **and** `always_on` | red ● + **alert** |
 | **sleeping** | `last_seen ≥ threshold` **and** `!always_on` | grey ? "sleeping, last seen Xm ago" — **no alert** |
 
-Always-on hosts (`always_on: true`) alert after prolonged silence. An intermittent laptop (`always_on: false`) only greys to "sleeping" after its configured window and never produces an offline alert. This flag makes intermittent machines first-class citizens rather than permanent false positives.
+Monitored nodes (`node.monitor: true`, stored as `always_on: true`) alert after prolonged silence. Unmonitored nodes remain visible informationally but are excluded from aggregate liveness and the Overview denominator, so an intermittent laptop or optional inference node never produces a false outage.
 
 ### 4.4 Fleet card UI
 
@@ -464,14 +464,15 @@ CREATE TABLE IF NOT EXISTS fleet_hosts (
 );
 ```
 
-`fleet.hosts` in the Heimdall overlay is the fleet-membership authority. The
-`fleet_hosts` table retains observed identities and raw `fleet_metrics` history,
-but a row absent from the configured list is marked `retired` (an alias points
-to its canonical configured hostname) and is excluded from fleet totals and
-liveness alert authority. Configured rows with no `last_seen` render as
-`never-seen`; observed ages derive `online`/`stale`/`offline`/`sleeping` using
-the configured thresholds. This makes renames and retirement explainable
-without turning historical rows into extra machines.
+Grimnir's `services.json` `nodes` array is the fleet-membership and monitoring
+authority. Heimdall deterministically projects active nodes and derives aliases
+from `name`, `hostname`, `ssh_alias`, and `node_id`; the overlay may add only
+reporter/history aliases targeting those canonical nodes. The `fleet_hosts`
+table retains observed identities and raw `fleet_metrics` history, but a row
+absent from the projection is marked `retired` and excluded from fleet totals.
+Monitored rows with no `last_seen` render as explicit instrumentation gaps;
+unmonitored rows remain informational. This makes renames and retirement
+explainable without turning historical rows into extra machines.
 
 `alerts` gains `dedup_key TEXT` and `source TEXT` (additive) to back consolidation and service-pushed alerts. **Retention** (reuse `heimdall-maintain` daily prune+vacuum): `fleet_metrics` raw kept 7d → rolled into existing `metrics_rollup` beyond 7d (push 30s data is dense — rollup is essential); `service_snapshots` keeps only latest per service (history not needed); `alerts` resolved >30d pruned.
 

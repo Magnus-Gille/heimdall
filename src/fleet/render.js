@@ -42,7 +42,7 @@ function agentVersionDriftState(agentVersion, baselineVersion) {
 }
 
 function isFleetException(machine) {
-  return isActiveMachine(machine) && (machine.state === 'offline'
+  return isActiveMachine(machine) && isMonitoredMachine(machine) && (machine.state === 'offline'
     || (machine.state === 'never-seen' && machine.alertable !== false)
     || machine.state === 'stale'
     || machine.agentVersionState === 'drift');
@@ -55,10 +55,15 @@ function isActiveMachine(machine) {
     && machine.state !== 'retired-unregistered';
 }
 
+/** Registry monitoring policy, kept separate from the machine's current state. */
+function isMonitoredMachine(machine) {
+  return machine.monitored !== false;
+}
+
 function aggregateMachineCounts(machines = []) {
   const counts = { ok: 0, warn: 0, crit: 0, stale: 0 };
   for (const machine of machines) {
-    if (!isActiveMachine(machine)) continue;
+    if (!isActiveMachine(machine) || !isMonitoredMachine(machine)) continue;
     if (machine.state === 'offline' || (machine.state === 'never-seen' && machine.alertable !== false)) counts.crit += 1;
     else if (machine.state === 'never-seen') counts.stale += 1;
     else if (machine.state === 'sleeping') counts.stale += 1;
@@ -97,6 +102,7 @@ function buildMachines(db, now, thresholds, opts = {}) {
       active,
       aliasOf: h.alias_of || null,
       always_on: h.always_on,
+      monitored: h.always_on === true || h.always_on === 1,
       state,
       cpu_pct: m.cpu_pct,
       ram_used_pct: m.ram_used_pct,
@@ -106,6 +112,7 @@ function buildMachines(db, now, thresholds, opts = {}) {
       uptime_s: m.uptime_s,
       lastSeen: hostLastSeen,
       lastSeenAgeS: hostLastSeen ? Math.max(0, (now - Date.parse(hostLastSeen)) / 1000) : null,
+      reportedHostname: m.hostname && m.hostname !== h.hostname ? m.hostname : null,
       agentVersion,
       agentVersionState: agentVersionDriftState(agentVersion, baselineVersion),
       alertable: shouldAlert(state, { ...h, membership_state: retired ? 'retired' : h.membership_state }),
@@ -126,7 +133,9 @@ function fleetGridFragment(db, now, thresholds, opts = {}) {
     .filter((machine) => !excluded.has(String(machine.hostname).toLowerCase()));
   const visible = opts.exceptionsOnly
     ? machines.filter(isFleetException)
-    : machines;
+    // A renamed reporter is provenance on its canonical card, not a second
+    // physical-machine card. Keep genuinely unregistered history visible.
+    : machines.filter((machine) => isActiveMachine(machine) || !machine.aliasOf);
   const counts = aggregateMachineCounts(machines);
   const activeMachines = machines.filter(isActiveMachine);
   const aggCard = card({
@@ -163,7 +172,7 @@ function fleetPage(gitVersion, db, now, thresholds) {
   const content = `
     <div class="page-head">
       <h1 class="page-title">Fleet</h1>
-      <p class="page-sub">Configured fleet membership is authoritative; telemetry history is retained for renamed or unregistered hosts. Green ✓ online · amber ▲ stale · red ● offline · grey ? sleeping/never seen.</p>
+      <p class="page-sub">Grimnir's node registry is authoritative; reporting aliases resolve onto canonical cards and unregistered telemetry remains historical. Green ✓ online · amber ▲ stale · red ● offline · grey ? informational/never seen.</p>
     </div>
     <div class="card" style="margin-bottom: var(--space-4)">
       <div class="card-head"><span class="card-title">Temperature — last 24h</span></div>
@@ -183,5 +192,5 @@ function fleetPage(gitVersion, db, now, thresholds) {
 
 module.exports = {
   buildMachines, fleetGridFragment, fleetPage, STATE_RANK,
-  agentVersionDriftState, aggregateMachineCounts, isFleetException, isActiveMachine,
+  agentVersionDriftState, aggregateMachineCounts, isFleetException, isActiveMachine, isMonitoredMachine,
 };
