@@ -91,16 +91,26 @@ async function fetchOperations(
     if (!res.ok) return { error: `usage HTTP ${res.status}` };
     const body = await res.json();
     const last24 = body && body.last24Hours;
+    const byTier = body && body.last24HoursByTier;
     const last7 = body && body.last7Days;
     const daily = body && body.daily;
     if (
       !body || typeof body.generatedAt !== 'string'
       || nonNegativeNumber(body.activeRequests) === null
       || !last24 || nonNegativeNumber(last24.requests) === null || nonNegativeNumber(last24.requestTimeMs) === null
+      || !byTier
+      || !byTier.owner || nonNegativeNumber(byTier.owner.requests) === null || nonNegativeNumber(byTier.owner.requestTimeMs) === null
+      || !byTier.guest || nonNegativeNumber(byTier.guest.requests) === null || nonNegativeNumber(byTier.guest.requestTimeMs) === null
+      || !byTier.other || nonNegativeNumber(byTier.other.requests) === null || nonNegativeNumber(byTier.other.requestTimeMs) === null
       || !last7 || nonNegativeNumber(last7.requests) === null || nonNegativeNumber(last7.requestTimeMs) === null
       || !Array.isArray(daily) || daily.length > 31
       || !(body.lastUsedAt === null || typeof body.lastUsedAt === 'string')
     ) return { error: 'usage response malformed' };
+    const bucketRequests = byTier.owner.requests + byTier.guest.requests + byTier.other.requests;
+    const bucketTimeMs = byTier.owner.requestTimeMs + byTier.guest.requestTimeMs + byTier.other.requestTimeMs;
+    if (bucketRequests !== last24.requests || bucketTimeMs !== last24.requestTimeMs) {
+      return { error: 'usage response malformed' };
+    }
 
     const normalizedDays = [];
     for (const day of daily) {
@@ -117,6 +127,11 @@ async function fetchOperations(
         activeRequests: body.activeRequests,
         lastUsedAt: body.lastUsedAt,
         last24Hours: { requests: last24.requests, requestTimeMs: last24.requestTimeMs },
+        last24HoursByTier: {
+          owner: { requests: byTier.owner.requests, requestTimeMs: byTier.owner.requestTimeMs },
+          guest: { requests: byTier.guest.requests, requestTimeMs: byTier.guest.requestTimeMs },
+          other: { requests: byTier.other.requests, requestTimeMs: byTier.other.requestTimeMs },
+        },
         last7Days: { requests: last7.requests, requestTimeMs: last7.requestTimeMs },
         daily: normalizedDays,
       },

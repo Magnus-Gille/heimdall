@@ -611,6 +611,11 @@ async function testFetchOperationsContract() {
     generatedAt: '2026-08-17T12:00:00.000Z', activeRequests: 0,
     lastUsedAt: '2026-08-17T11:55:00.000Z',
     last24Hours: { requests: 3, requestTimeMs: 125000 },
+    last24HoursByTier: {
+      owner: { requests: 2, requestTimeMs: 100000 },
+      guest: { requests: 1, requestTimeMs: 25000 },
+      other: { requests: 0, requestTimeMs: 0 },
+    },
     last7Days: { requests: 9, requestTimeMs: 500000 },
     daily: [{ date: '2026-08-17', requests: 3, requestTimeMs: 125000 }],
     unexpectedPrivateField: 'discard me',
@@ -624,6 +629,7 @@ async function testFetchOperationsContract() {
   assert.strictEqual(seenUrl, 'http://m5.test/ops/summary');
   assert.strictEqual(seenAuth, 'Bearer monitor-key');
   assert.strictEqual(result.summary.last24Hours.requests, 3);
+  assert.deepStrictEqual(result.summary.last24HoursByTier.guest, { requests: 1, requestTimeMs: 25000 });
   assert.strictEqual(Object.prototype.hasOwnProperty.call(result.summary, 'unexpectedPrivateField'), false);
   console.log('  PASS: fetchOperations validates and narrows the authenticated summary');
 }
@@ -633,6 +639,19 @@ async function testFetchOperationsRejectsMalformed() {
     _fetch: async () => ({ ok: true, json: async () => ({ daily: 'not-an-array' }) }),
   });
   assert.strictEqual(result.error, 'usage response malformed');
+  const mismatch = await fetchOperations('http://m5.test', 'key', {
+    _fetch: async () => ({ ok: true, json: async () => ({
+      generatedAt: '2026-08-17T12:00:00.000Z', activeRequests: 0, lastUsedAt: null,
+      last24Hours: { requests: 2, requestTimeMs: 20 },
+      last24HoursByTier: {
+        owner: { requests: 1, requestTimeMs: 10 },
+        guest: { requests: 0, requestTimeMs: 0 },
+        other: { requests: 0, requestTimeMs: 0 },
+      },
+      last7Days: { requests: 2, requestTimeMs: 20 }, daily: [],
+    }) }),
+  });
+  assert.strictEqual(mismatch.error, 'usage response malformed');
   console.log('  PASS: fetchOperations rejects malformed gateway data');
 }
 

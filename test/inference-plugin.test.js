@@ -91,6 +91,11 @@ describe('inference plugin — minimal operator view', () => {
         generatedAt: '2026-08-17T12:00:00.000Z', activeRequests: 1,
         lastUsedAt: '2026-08-17T11:55:00.000Z',
         last24Hours: { requests: 3, requestTimeMs: 125_000 },
+        last24HoursByTier: {
+          owner: { requests: 2, requestTimeMs: 100_000 },
+          guest: { requests: 1, requestTimeMs: 25_000 },
+          other: { requests: 0, requestTimeMs: 0 },
+        },
         last7Days: { requests: 9, requestTimeMs: 500_000 },
         daily: [
           { date: '2026-08-17', requests: 3, requestTimeMs: 125_000 },
@@ -104,6 +109,10 @@ describe('inference plugin — minimal operator view', () => {
     assert.ok(html.includes('3'));
     assert.ok(html.includes('2m 5s'));
     assert.ok(html.includes('5m ago'));
+    assert.ok(html.includes('You vs guests'));
+    assert.ok(html.includes('You</span><strong>2 requests'));
+    assert.ok(html.includes('Guests</span><strong>1 request'));
+    assert.ok(html.includes('67%'), 'request-share comparison is explicit');
     assert.ok(html.indexOf('2026-08-17') < html.indexOf('2026-08-16'), 'newest day renders first');
     assert.ok(html.includes('No activity'), 'zero days are explicit rather than looking like missing data');
   });

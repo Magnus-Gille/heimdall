@@ -8,6 +8,7 @@ const path = require('node:path');
 
 const {
   buildOverviewStatus, overviewStatusFragment, buildDeployRows, deploysGridFragment,
+  overviewFleetMachines,
 } = require('../src/render/overview');
 const { withPushedStatus, PUSH_STATUS_STALE_MS } = require('../src/render/service-page');
 const { buildApp } = require('../src/server');
@@ -31,6 +32,14 @@ function snap(name, status, { reachable = true, drift = 0 } = {}) {
 }
 
 describe('buildOverviewStatus', () => {
+  it('uses the gateway-backed M5 panel as Overview truth instead of stale fleet-agent state', () => {
+    const machines = overviewFleetMachines([
+      { hostname: 'm5', state: 'offline' },
+      { hostname: 'nas', state: 'online' },
+    ]);
+    assert.deepEqual(machines, [{ hostname: 'nas', state: 'online' }]);
+  });
+
   it('reports all-healthy when nothing is broken', () => {
     const s = buildOverviewStatus({
       machines: [{ state: 'online' }, { state: 'online' }],
@@ -391,10 +400,18 @@ describe('GET / (v2 Overview)', () => {
 
   it('embeds the live-refresh wrappers for status, fleet, services and deployments', async () => {
     const res = await app.inject({ method: 'GET', url: '/' });
+    assert.match(res.body, /hx-get="\/api\/plugins\/inference\/m5-gateway\/m5-overview"/);
     assert.match(res.body, /hx-get="\/api\/overview\/status"/);
-    assert.match(res.body, /hx-get="\/api\/fleet\/grid\?mode=exceptions"/);
+    assert.match(res.body, /hx-get="\/api\/overview\/fleet"/);
     assert.match(res.body, /hx-get="\/api\/services\/grid\?mode=exceptions"/);
     assert.match(res.body, /hx-get="\/api\/overview\/deploys\?mode=exceptions"/);
+  });
+
+  it('puts the basic M5 view first and links to models and details', async () => {
+    const res = await app.inject({ method: 'GET', url: '/' });
+    assert.match(res.body, /href="\/services\/m5-gateway"[^>]*>Models and details/);
+    assert.match(res.body, /css\/inference\.css/);
+    assert.ok(res.body.indexOf('M5 inference') < res.body.indexOf('System status'));
   });
 
   it('renders the Deployments section inline (no standalone detail page)', async () => {
@@ -464,6 +481,14 @@ describe('GET /api/overview/status', () => {
     // .col-full card always has a .grid parent (no layout shift on swap).
     assert.match(res.body, /class="grid"/);
     assert.match(res.body, /col-full/);
+  });
+
+  it('keeps the stale M5 agent out of Overview fleet attention but not the Fleet page', async () => {
+    const overview = await app.inject({ method: 'GET', url: '/api/overview/fleet' });
+    const fleet = await app.inject({ method: 'GET', url: '/api/fleet/grid' });
+    assert.equal(overview.statusCode, 200);
+    assert.doesNotMatch(overview.body, /M5 inference/);
+    assert.match(fleet.body, /M5 inference/);
   });
 });
 

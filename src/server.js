@@ -44,7 +44,9 @@ const { loadServices, loadServicesWithMeta } = require('./config/services');
 const { loadDiskThresholds } = require('./config/disk-thresholds');
 const { assertSafeStartupTargets } = require('./config/live-config');
 const { servicesIndexPage, servicesGridFragment, servicePage, buildSelfDescriptor, selfSnapshot, withPushedStatus } = require('./render/service-page');
-const { overviewPage, overviewStatusSection, buildOverviewStatus, deploysGridFragment } = require('./render/overview');
+const {
+  overviewPage, overviewStatusSection, buildOverviewStatus, deploysGridFragment, overviewFleetMachines,
+} = require('./render/overview');
 const { buildMachines } = require('./fleet/render');
 // v2 Read pages (replace the v1 readListPage/readArticlePage from html.js).
 const { readListPage, readArticlePage } = require('./render/read');
@@ -443,13 +445,25 @@ app.get('/', async (request, reply) => {
 // Overview status hero — self-refreshing fragment.
 app.get('/api/overview/status', async (request, reply) => {
   const status = buildOverviewStatus({
-    machines: buildMachines(db, Date.now(), fleetConfig.thresholds, { baselineVersion: gitVersion }),
+    machines: overviewFleetMachines(
+      buildMachines(db, Date.now(), fleetConfig.thresholds, { baselineVersion: gitVersion }),
+    ),
     snapshots: snapshotsWithPushedOnly(),
     alertCount: getActiveAlerts(db).length,
     versions: getLatestServiceVersions(db),
     overallStatus: computeOverallStatus(db),
   });
   reply.header('Content-Type', 'text/html; charset=utf-8').send(overviewStatusSection(status));
+});
+
+// Overview fleet attention excludes M5: its authoritative live state is the gateway panel above.
+app.get('/api/overview/fleet', async (request, reply) => {
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .send(fleetGridFragment(db, Date.now(), fleetConfig.thresholds, {
+      exceptionsOnly: true,
+      excludeHostnames: ['m5'],
+      baselineVersion: gitVersion,
+    }));
 });
 
 // Overview Deployments section — self-refreshing fragment.

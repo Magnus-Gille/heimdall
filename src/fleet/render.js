@@ -127,7 +127,10 @@ function buildMachines(db, now, thresholds, opts = {}) {
 
 /** The refreshing grid fragment: aggregate strip + machine cards. */
 function fleetGridFragment(db, now, thresholds, opts = {}) {
-  const machines = buildMachines(db, now, thresholds, { baselineVersion: opts.baselineVersion });
+  const excluded = new Set((Array.isArray(opts.excludeHostnames) ? opts.excludeHostnames : [])
+    .map((hostname) => String(hostname).toLowerCase()));
+  const machines = buildMachines(db, now, thresholds, { baselineVersion: opts.baselineVersion })
+    .filter((machine) => !excluded.has(String(machine.hostname).toLowerCase()));
   const visible = opts.exceptionsOnly
     ? machines.filter(isFleetException)
     // A renamed reporter is provenance on its canonical card, not a second

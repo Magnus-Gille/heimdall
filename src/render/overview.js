@@ -299,6 +299,11 @@ function sectionHead(title, href, linkLabel) {
   </div>`;
 }
 
+/** M5 health on Overview comes from the gateway, not the separate machine agent. */
+function overviewFleetMachines(machines = []) {
+  return machines.filter((machine) => String(machine && machine.hostname).toLowerCase() !== 'm5');
+}
+
 /**
  * Full Overview page. deps: { db, now, thresholds, snapshots, alertCount, overallStatus }.
  * The hero, fleet grid and services grid each refresh independently via their
@@ -308,7 +313,7 @@ function overviewPage(gitVersion, deps = {}) {
   const {
     db, now = Date.now(), thresholds, snapshots = [], alertCount = 0, versions = [], overallStatus = null,
   } = deps;
-  const machines = buildMachines(db, now, thresholds, { baselineVersion: gitVersion });
+  const machines = overviewFleetMachines(buildMachines(db, now, thresholds, { baselineVersion: gitVersion }));
   const status = buildOverviewStatus({ machines, snapshots, alertCount, versions, overallStatus });
   const findings = findingsFromSnapshots(snapshots);
 
@@ -318,13 +323,18 @@ function overviewPage(gitVersion, deps = {}) {
       <p class="page-sub">Bifröst watch — the whole estate at a glance.</p>
     </div>
 
+    ${sectionHead('M5 inference', '/services/m5-gateway', 'Models and details')}
+    ${grid([`<div class="card col-full" hx-get="/api/plugins/inference/m5-gateway/m5-overview" hx-trigger="load, every 60s" hx-swap="innerHTML">
+      <div class="m5-note">Loading M5 usage…</div>
+    </div>`])}
+
     <div hx-get="/api/overview/status" hx-trigger="every 30s" hx-swap="innerHTML">
       ${overviewStatusSection(status)}
     </div>
 
     ${sectionHead('Fleet attention', '/fleet', 'View fleet')}
-    <div hx-get="/api/fleet/grid?mode=exceptions" hx-trigger="every 30s" hx-swap="innerHTML">
-      ${fleetGridFragment(db, now, thresholds, { exceptionsOnly: true, baselineVersion: gitVersion })}
+    <div hx-get="/api/overview/fleet" hx-trigger="every 30s" hx-swap="innerHTML">
+      ${fleetGridFragment(db, now, thresholds, { exceptionsOnly: true, excludeHostnames: ['m5'], baselineVersion: gitVersion })}
     </div>
 
     ${sectionHead('Service attention', '/services', 'View services')}
@@ -345,6 +355,7 @@ function overviewPage(gitVersion, deps = {}) {
     active: '/',
     gitVersion,
     content,
+    head: `<link rel="stylesheet" href="/css/inference.css?v=${esc(gitVersion || 'dev')}">`,
     lastUpdated: true,
   });
 }
@@ -352,5 +363,6 @@ function overviewPage(gitVersion, deps = {}) {
 module.exports = {
   buildOverviewStatus, overviewStatusFragment, overviewStatusSection,
   buildDeployRows, deploysGridFragment, overviewPage,
+  overviewFleetMachines,
   findingsFromSnapshots, findingsFragment,
 };
