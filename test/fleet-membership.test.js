@@ -88,6 +88,65 @@ describe('fleet membership lifecycle (#56)', () => {
     assert.equal(cfg.hostAliases.ghost, undefined, 'overlay alias targets must resolve to a registry node');
   });
 
+  it('keeps repository history aliases when production selects a private overlay (#61)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-private-overlay-aliases-'));
+    const privateOverlayPath = path.join(dir, 'private.json');
+    const aliasDefaultsPath = path.join(dir, 'repository-defaults.json');
+    const registryPath = path.join(dir, 'services.json');
+    fs.writeFileSync(privateOverlayPath, JSON.stringify({
+      fleet: { host_aliases: { huginmunin: 'control-node' } },
+    }));
+    fs.writeFileSync(aliasDefaultsPath, JSON.stringify({
+      fleet: {
+        host_aliases: {
+          'orin-nano': 'orin',
+          'macbook-air': 'laptop',
+          workstation: 'laptop',
+        },
+      },
+    }));
+    fs.writeFileSync(registryPath, JSON.stringify({
+      components: [{ name: 'heimdall', target_node_id: 'node-huginmunin' }],
+      nodes: [
+        { name: 'huginmunin', node_id: 'node-huginmunin', status: 'active', monitor: true },
+        { name: 'orin', node_id: 'node-orin', status: 'active', monitor: false },
+        { name: 'laptop', node_id: 'node-laptop', status: 'active', monitor: false },
+      ],
+    }));
+
+    const cfg = loadFleetConfig(privateOverlayPath, { grimnirPath: registryPath, aliasDefaultsPath });
+    assert.equal(cfg.hostAliases['control-node'], 'huginmunin');
+    assert.equal(cfg.hostAliases['orin-nano'], 'orin');
+    assert.equal(cfg.hostAliases['macbook-air'], 'laptop');
+    assert.equal(cfg.hostAliases.workstation, 'laptop');
+    assert.equal(cfg.hostAliases.huginmunin, undefined,
+      'a stale private reverse alias cannot remap the canonical registry node');
+
+    const db = tmpDb();
+    handlePush(db, {
+      body: { hostname: 'orin-nano', cpu_pct: 34 },
+      allowInsecureLoopback: true,
+      now: NOW,
+    });
+    handlePush(db, {
+      body: { hostname: 'macbook-air', cpu_pct: 12 },
+      allowInsecureLoopback: true,
+      now: NOW + 1000,
+    });
+    reconcileFleetHostConfig(db, cfg.hosts, cfg.hostAliases, NOW + 2000);
+
+    const machines = buildMachines(db, NOW + 3000, cfg.thresholds);
+    const active = Object.fromEntries(
+      machines.filter((machine) => machine.active !== false).map((machine) => [machine.hostname, machine]),
+    );
+    assert.equal(active.orin.reportedHostname, 'orin-nano');
+    assert.equal(active.laptop.reportedHostname, 'macbook-air');
+    const html = fleetGridFragment(db, NOW + 3000, cfg.thresholds);
+    assert.doesNotMatch(html, /machine-name">orin-nano</);
+    assert.doesNotMatch(html, /machine-name">macbook-air</);
+    db.close();
+  });
+
   it('keeps config as membership authority while retaining observed history', () => {
     const db = tmpDb();
     handlePush(db, {

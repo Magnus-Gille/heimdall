@@ -121,6 +121,9 @@ Two settings live in the JSON overlay rather than the environment:
   structured fields in Grimnir (e.g. `{"orin-nano": "orin"}`). Targets must
   resolve to canonical registry nodes; aliases cannot remap a canonical node.
   Registry `hostname`, `ssh_alias`, and `node_id` aliases are derived automatically.
+  The committed overlay is the non-secret history-alias baseline even when
+  `HEIMDALL_CONFIG_PATH` selects a private overlay; private aliases extend that
+  baseline and pass through the same canonical-target validation.
 - A timer service may declare `findings_exit_codes` (e.g. `[1]`) for jobs whose
   exit status still means "I ran and found things" rather than "I could not run".
   Without it, a non-zero exit is treated as a failure — the safe default.
