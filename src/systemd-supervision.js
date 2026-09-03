@@ -115,12 +115,17 @@ function validateSupervisionAudit(value) {
     if (!Number.isSafeInteger(value.freshness.max_age_seconds) || value.freshness.max_age_seconds < 1 || value.freshness.max_age_seconds > 86400) errors.push('freshness:max-age');
   }
   if (!Array.isArray(value.notifiers) || value.notifiers.length > 512) errors.push('audit:notifiers');
-  else value.notifiers.forEach((notifier, i) => {
-    const path = `notifier-${i}`;
-    if (!closedObject(notifier, new Set(['target_node_id', 'status']), path, errors)) return;
-    if (!ID_RE.test(notifier.target_node_id)) errors.push(`${path}:target-node`);
-    if (!['available', 'absent', 'unknown'].includes(notifier.status)) errors.push(`${path}:status`);
-  });
+  else {
+    const notifierNodes = new Set();
+    value.notifiers.forEach((notifier, i) => {
+      const path = `notifier-${i}`;
+      if (!closedObject(notifier, new Set(['target_node_id', 'status']), path, errors)) return;
+      if (!ID_RE.test(notifier.target_node_id)) errors.push(`${path}:target-node`);
+      else if (notifierNodes.has(notifier.target_node_id)) errors.push('audit:duplicate-notifiers');
+      else notifierNodes.add(notifier.target_node_id);
+      if (!['available', 'absent', 'unknown'].includes(notifier.status)) errors.push(`${path}:status`);
+    });
+  }
   if (closedObject(value.summary, new Set(['status', 'unit_count', 'compliant_unit_count', 'finding_count']), 'summary', errors)) {
     if (!['pass', 'fail'].includes(value.summary.status)) errors.push('summary:status');
     for (const field of ['unit_count', 'compliant_unit_count', 'finding_count']) {
@@ -143,11 +148,13 @@ function deriveUnitState(unit, context = {}) {
   const codes = new Set((unit.findings || []).map((finding) => finding.code));
   const notifier = context.notifiers instanceof Map ? context.notifiers.get(`${unit.target_node_id}:${unit.scope}`) : undefined;
   const stale = context.freshness === 'stale' || context.freshness === 'future';
+  const fixtureReplay = context.freshness === 'fixture-replay';
   const managerUnavailable = notifier === 'absent' || notifier === 'unknown' || codes.has('failure_delivery_unavailable');
   const absent = unit.evidence === null || codes.has('observation_missing');
   let state = 'pass';
   let classification = 'healthy';
-  if (stale) { state = 'stale'; classification = 'stale-producer'; }
+  if (fixtureReplay) { state = 'unknown'; classification = 'fixture-replay'; }
+  else if (stale) { state = 'stale'; classification = 'stale-producer'; }
   else if (managerUnavailable) { state = 'unknown'; classification = 'manager-unavailable'; }
   else if (absent) { state = 'unknown'; classification = 'unit-absent'; }
   else {
@@ -164,10 +171,13 @@ function deriveUnitState(unit, context = {}) {
       && (codes.has('timer_overdue') || (Number.isInteger(timer.missed_runs) && timer.missed_runs > 0));
     const inactiveSuccess = unit.workload_shape === 'oneshot'
       && evidence.unit_result.active_state === 'inactive' && evidence.unit_result.result === 'success';
+    const longRunningNotActive = unit.workload_shape === 'long-running'
+      && evidence.unit_result.active_state !== 'active';
     if (failed) { state = 'fail'; classification = 'failed'; }
     else if (overdue) { state = 'fail'; classification = 'overdue'; }
     else if (neverRun) { state = 'unknown'; classification = 'never-run'; }
     else if (unknown) { state = 'unknown'; classification = 'unknown'; }
+    else if (longRunningNotActive) { state = 'fail'; classification = 'not-active'; }
     else if (unit.status === 'fail') { state = 'fail'; classification = 'failed'; }
     else if (inactiveSuccess) classification = 'inactive-success';
   }
@@ -208,7 +218,9 @@ function projectSupervisionAudit(value, options = {}) {
     return unavailableProjection('invalid-clock', ['projection:clock']);
   }
   const age = now - Date.parse(value.observed_at);
-  const freshness = age < -futureSkewMs ? 'future' : (age >= maxAgeMs ? 'stale' : 'fresh');
+  const freshness = value.evaluated_at_source === 'fixture-override'
+    ? 'fixture-replay'
+    : (age < -futureSkewMs ? 'future' : (age >= maxAgeMs ? 'stale' : 'fresh'));
   const notifiers = new Map();
   for (const notifier of value.notifiers) notifiers.set(`${notifier.target_node_id}:system`, notifier.status);
   const units = value.units.map((unit) => deriveUnitState(unit, { freshness, notifiers }));

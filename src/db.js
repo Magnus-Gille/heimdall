@@ -8,6 +8,13 @@ const { canonicalHost } = require('./host-identity');
 
 const DEFAULT_DB_PATH = path.join(os.homedir(), '.heimdall', 'heimdall.db');
 
+function canonicalJson(value) {
+  return JSON.stringify(value, (_key, nested) => {
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return nested;
+    return Object.fromEntries(Object.keys(nested).sort().map((key) => [key, nested[key]]));
+  });
+}
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -1190,7 +1197,7 @@ function getMaintenanceExecutionResult(db, sourceId = 'brokkr-maintenance') {
 
 function upsertSystemdSupervisionAudit(db, audit, receivedAt = new Date().toISOString()) {
   const sourceId = 'brokkr-systemd-supervision';
-  const body = JSON.stringify(audit);
+  const body = canonicalJson(audit);
   return db.transaction(() => {
     const previous = db.prepare(
       'SELECT observed_at, audit FROM systemd_supervision_audits WHERE source_id = ?',
@@ -1198,7 +1205,7 @@ function upsertSystemdSupervisionAudit(db, audit, receivedAt = new Date().toISOS
     if (previous) {
       if (previous.observed_at > audit.observed_at) return { ok: false, code: 'older_observation' };
       if (previous.observed_at === audit.observed_at) {
-        if (previous.audit === body) return { ok: true, replay: true };
+        if (canonicalJson(JSON.parse(previous.audit)) === body) return { ok: true, replay: true };
         return { ok: false, code: 'observation_conflict' };
       }
     }
