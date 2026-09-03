@@ -3,7 +3,9 @@
 #
 # Rsync the Heimdall push agent to a remote Linux host, stamp VERSION, update
 # the systemd user unit, enable it, and restart it. Host config.env is required,
-# preserved, and validated before any remote mutation.
+# preserved, and validated before any remote mutation. The target user's
+# systemd linger policy must already be enabled so a successful user-unit
+# install is guaranteed to start without an interactive login after reboot.
 set -euo pipefail
 
 TARGET_HOST="${1:?Usage: deploy-agent.sh <ssh-host>}"
@@ -58,6 +60,14 @@ if [ "$config_mode" != "600" ]; then
 fi
 if ! required_key_present HUB_URL || ! required_key_present FLEET_TOKEN; then
   echo "ERROR: protected config.env must contain non-empty HUB_URL and FLEET_TOKEN; refusing to update or restart heimdall-agent" >&2
+  exit 1
+fi
+if ! linger_state="$(loginctl show-user "$USER" --property=Linger --value)"; then
+  echo "ERROR: unable to verify systemd linger; refusing to update or restart heimdall-agent" >&2
+  exit 1
+fi
+if [ "$linger_state" != "yes" ]; then
+  echo "ERROR: systemd linger is not enabled; run 'sudo loginctl enable-linger $USER' on the target before deploying" >&2
   exit 1
 fi
 REMOTE_PREFLIGHT

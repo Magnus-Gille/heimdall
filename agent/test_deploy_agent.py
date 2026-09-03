@@ -41,6 +41,17 @@ printf '%s\n' "$@" > "$MOCK_RSYNC_ARGS"
 """
 
 
+LOGINCTL_MOCK = r"""#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"show-user"* ]] && [[ "$*" == *"Linger"* ]]; then
+  printf '%s\n' "${MOCK_LINGER:-yes}"
+else
+  echo "unexpected loginctl invocation: $*" >&2
+  exit 91
+fi
+"""
+
+
 def deploy_env(tmp_path, config_text=None):
     mock_bin = tmp_path / "bin"
     remote_home = tmp_path / "remote-home"
@@ -53,10 +64,13 @@ def deploy_env(tmp_path, config_text=None):
 
     ssh = mock_bin / "ssh"
     rsync = mock_bin / "rsync"
+    loginctl = mock_bin / "loginctl"
     ssh.write_text(SSH_MOCK)
     rsync.write_text(RSYNC_MOCK)
+    loginctl.write_text(LOGINCTL_MOCK)
     ssh.chmod(0o755)
     rsync.chmod(0o755)
+    loginctl.chmod(0o755)
 
     env = os.environ.copy()
     env.update(
@@ -136,6 +150,19 @@ def test_preflight_rejects_unprotected_config_permissions(tmp_path):
     assert result.returncode != 0
     assert events(env) == ["preflight"]
     assert "must have mode 600" in result.stderr
+
+
+def test_preflight_rejects_disabled_linger_before_any_mutation(tmp_path):
+    env, _config = deploy_env(
+        tmp_path, "HUB_URL=http://hub/push\nFLEET_TOKEN=token\n"
+    )
+    env["MOCK_LINGER"] = "no"
+
+    result = run_deploy(env)
+
+    assert result.returncode != 0
+    assert events(env) == ["preflight"]
+    assert "systemd linger is not enabled" in result.stderr
 
 
 def test_deploy_preserves_config_updates_unit_and_orders_every_step(tmp_path):
