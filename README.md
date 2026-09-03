@@ -56,7 +56,7 @@ they explicitly replace `disk_volumes`.
 
 ## Quick start
 
-Requirements: Node.js 22 or newer, npm, and Python 3 with `pytest` for the optional fleet-agent tests.
+Requirements: Node.js 22.12.0 through 25.x, npm, and Python 3 with `pytest` for the optional fleet-agent tests.
 
 ```bash
 npm ci
