@@ -21,6 +21,7 @@ const { handleAlertIngest } = require('./alert-ingest');
 const { handlePanelIngest, PANEL_SCHEMA_DOC } = require('./panel-ingest');
 const { handleMaintenanceExecutionIngest } = require('./maintenance-execution-ingest');
 const { handleSystemdSupervisionIngest } = require('./systemd-supervision-ingest');
+const { ingestSyntheticJourney, JOURNEY_SPECS } = require('./synthetic-journeys');
 const { consolidationHealthCard, consolidationStatusCard, projectsListCard, taskHistoryCard, formatAgeWithTimestamp } = require('./html');
 const { fetchLedger, fetchModels, summarizeModels, fetchMetrics, parseMetrics, summarizeUsageMetrics, ledgerToMatrix, tallyVerdicts, deriveRoutingFromLedger, generateFindings, STATIC_FINDINGS } = require('./m5');
 const { listArticles, getArticle, isValidSlug, EXPORT_DIR } = require('./read-docs');
@@ -56,8 +57,9 @@ const { projectsPage: projectsPageV2 } = require('./render/projects');
 const { consolidationPage } = require('./render/consolidation');
 const { insightsPage } = require('./render/insights');
 const { systemdSupervisionPage } = require('./render/systemd-supervision');
+const { reliabilityPage } = require('./render/reliability');
 const { fetchInsightsRecords, buildTrend, buildObjective } = require('./insights');
-const { upsertServiceSnapshot, getServiceSnapshots, getServiceSnapshot, getPanelsForService, listPanelServices, listPanels, pruneServiceSnapshots, getSystemdSupervisionAudit } = require('./db');
+const { upsertServiceSnapshot, getServiceSnapshots, getServiceSnapshot, getPanelsForService, listPanelServices, listPanels, pruneServiceSnapshots, getSystemdSupervisionAudit, getLatestSyntheticJourneys, getSyntheticJourneyHistory } = require('./db');
 const { getPlugin } = require('./plugins');
 const { panelAliasOwnerOf, panelServiceIdsFor } = require('./plugins/known-panels');
 const { m5Snapshot } = require('./plugins/inference');
@@ -151,6 +153,7 @@ const STATIC_FILES = {
   '/css/consolidation.css': { file: 'css/consolidation.css', ct: 'text/css; charset=utf-8' },
   '/css/insights.css': { file: 'css/insights.css', ct: 'text/css; charset=utf-8' },
   '/css/supervision.css': { file: 'css/supervision.css', ct: 'text/css; charset=utf-8' },
+  '/css/reliability.css': { file: 'css/reliability.css', ct: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', ct: 'application/javascript; charset=utf-8' },
   '/reader.js': { file: 'reader.js', ct: 'application/javascript; charset=utf-8' },
 };
@@ -772,6 +775,23 @@ app.post('/api/systemd-supervision', { bodyLimit: 256 * 1024 }, async (request, 
   reply.code(result.status).send(result.body);
 });
 
+// Producer-owned, content-free Hugin/gateway readiness outcomes. Direct
+// Heimdall probes are inserted internally and cannot be impersonated here.
+app.post('/api/synthetic-journeys', { bodyLimit: 64 * 1024 }, async (request, reply) => {
+  const result = ingestSyntheticJourney(db, {
+    authHeader: request.headers.authorization || '',
+    tokens: {
+      hugin: process.env.HEIMDALL_HUGIN_JOURNEY_TOKEN || '',
+      'gille-inference': process.env.HEIMDALL_GATEWAY_JOURNEY_TOKEN || '',
+    },
+    bindHost: process.env.HEIMDALL_BIND || '127.0.0.1',
+    body: request.body,
+    now: now(),
+    logger: request.log,
+  });
+  reply.code(result.status).send(result.body);
+});
+
 // Discoverable schema doc for the typed-panel ingest (kinds + canonical example).
 app.get('/api/panels/schema', async () => PANEL_SCHEMA_DOC);
 
@@ -814,6 +834,24 @@ app.get('/supervision', async (request, reply) => {
       versions: getLatestServiceVersions(db),
       events: getRecentEvents(db, 200),
     }));
+});
+
+app.get('/reliability', async (request, reply) => {
+  const histories = {};
+  for (const journeyId of Object.keys(JOURNEY_SPECS)) {
+    histories[journeyId] = getSyntheticJourneyHistory(db, journeyId, 288);
+  }
+  const huginPreflight = getPanelsForService(db, 'hugin')
+    .find((panel) => panel.panel === 'hugin-learning-task-preflight');
+  const producerHints = {};
+  if (huginPreflight && Number.isFinite(huginPreflight.updated_at)) {
+    const ageMs = now() - huginPreflight.updated_at;
+    producerHints['hugin-gateway-preflight'] = {
+      freshness: ageMs >= 0 && ageMs < 15 * 60 * 1000 ? 'fresh' : 'stale',
+    };
+  }
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .send(reliabilityPage(gitVersion, getLatestSyntheticJourneys(db), { now: now(), histories, producerHints }));
 });
 
 // The self-refreshing alerts list fragment (returned as HTML, not the {html} envelope).

@@ -15,6 +15,9 @@ const { loadBackupDefinitions } = require('./backup-config');
 const { collectMicrosoftMcpHealth } = require('./microsoft-mcp');
 const { collectMcpHealth } = require('./mcp-probe');
 const { collectInferenceHealth } = require('./inference');
+const {
+  JOURNEY_SPECS, runMuninReadJourney, runMimirMetadataJourney, evaluateJourneyAlerts,
+} = require('./synthetic-journeys');
 const { syncAlertsToMunin } = require('./munin-sync');
 const { checkAndHeal } = require('./self-heal');
 const { loadServicesWithMeta } = require('./config/services');
@@ -70,6 +73,7 @@ async function run() {
   assertSafeStartupTargets([
     ...startupRegistry.services,
     { name: 'collector-storage', ssh_host: NAS_IP },
+    { name: 'synthetic-mimir', health_url: process.env.MIMIR_BASE_URL },
   ]);
   const db = openDatabase();
   // Fail before collecting partial data if a source lacks an explicit cadence.
@@ -435,6 +439,24 @@ async function run() {
     console.log(`  M5 inference: healthy=${infResult.healthy} latency=${infResult.latency_ms}ms${infResult.error ? ' error=' + infResult.error : ''}`);
   } catch (err) {
     console.error('  M5 inference probe failed:', err.message);
+  }
+
+  // 2e. Fixed content-free read journeys. These use only a reserved missing
+  // sentinel and never persist response bodies, filenames, prompts, or task
+  // data. Producer-owned Hugin/gateway journeys arrive over the dedicated
+  // ingest and are evaluated here without Heimdall impersonating those clients.
+  try {
+    const { insertSyntheticJourney } = require('./db');
+    const version = `heimdall@${require('../package.json').version}`;
+    const direct = await Promise.all([
+      runMuninReadJourney({ apiKey: process.env.MUNIN_API_KEY, version }),
+      runMimirMetadataJourney({ baseUrl: process.env.MIMIR_BASE_URL, apiKey: process.env.MIMIR_API_KEY, version }),
+    ]);
+    for (const result of direct) insertSyntheticJourney(db, result);
+    for (const journeyId of Object.keys(JOURNEY_SPECS)) evaluateJourneyAlerts(db, journeyId);
+    console.log(`  Reliability journeys: ${direct.map((result) => `${result.journey_id}=${result.outcome}`).join(' ')}`);
+  } catch (err) {
+    console.error('  Reliability journey cycle failed:', err.message);
   }
 
   // 3. Collect Hugin tasks
