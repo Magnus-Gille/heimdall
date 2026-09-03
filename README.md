@@ -52,6 +52,7 @@ they explicitly replace `disk_volumes`.
 - Declarative alert thresholds with streak-based fire and resolve behavior.
 - SQLite event history and a generic service detail renderer.
 - Content-free direct read journeys with freshness-aware success-rate and p95 objectives.
+- Read-only incident timeline with explicit producer-authored versus bounded inferred correlations.
 - Optional task and newly-fired critical-alert notifications through Ratatoskr.
 - Optional Hugin recovery-task submission, disabled by default.
 
@@ -178,7 +179,7 @@ normalized descriptor snapshot carries `panel_warnings` records with only
 displayed. Producers should treat these warnings as a contract error and send
 object rows rather than `string[][]`.
 
-Primary pages are `/`, `/services`, `/supervision`, `/reliability`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above.
+Primary pages are `/`, `/services`, `/supervision`, `/reliability`, `/timeline`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above. The timeline's non-causal correlation and retention semantics are documented in [`docs/incident-timeline.md`](docs/incident-timeline.md).
 
 ## Development
 

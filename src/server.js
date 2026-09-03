@@ -58,6 +58,8 @@ const { consolidationPage } = require('./render/consolidation');
 const { insightsPage } = require('./render/insights');
 const { systemdSupervisionPage } = require('./render/systemd-supervision');
 const { reliabilityPage } = require('./render/reliability');
+const { incidentTimelinePage } = require('./render/incident-timeline');
+const { loadIncidentTimeline } = require('./incident-timeline');
 const { fetchInsightsRecords, buildTrend, buildObjective } = require('./insights');
 const { upsertServiceSnapshot, getServiceSnapshots, getServiceSnapshot, getPanelsForService, listPanelServices, listPanels, pruneServiceSnapshots, getSystemdSupervisionAudit, getLatestSyntheticJourneys, getSyntheticJourneyHistory } = require('./db');
 const { getPlugin } = require('./plugins');
@@ -154,6 +156,7 @@ const STATIC_FILES = {
   '/css/insights.css': { file: 'css/insights.css', ct: 'text/css; charset=utf-8' },
   '/css/supervision.css': { file: 'css/supervision.css', ct: 'text/css; charset=utf-8' },
   '/css/reliability.css': { file: 'css/reliability.css', ct: 'text/css; charset=utf-8' },
+  '/css/timeline.css': { file: 'css/timeline.css', ct: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', ct: 'application/javascript; charset=utf-8' },
   '/reader.js': { file: 'reader.js', ct: 'application/javascript; charset=utf-8' },
 };
@@ -852,6 +855,22 @@ app.get('/reliability', async (request, reply) => {
   }
   reply.header('Content-Type', 'text/html; charset=utf-8')
     .send(reliabilityPage(gitVersion, getLatestSyntheticJourneys(db), { now: now(), histories, producerHints }));
+});
+
+app.get('/timeline', async (request, reply) => {
+  const requestedDays = Number.parseInt(request.query?.days, 10);
+  const days = Number.isSafeInteger(requestedDays) ? Math.max(1, Math.min(180, requestedDays)) : 1;
+  const trace = request.query?.trace;
+  if (trace != null && !/^[a-f0-9]{32}$/.test(trace)) {
+    reply.code(400).send('Invalid trace identifier');
+    return;
+  }
+  const current = now();
+  const to = new Date(current).toISOString();
+  const from = new Date(current - days * 24 * 60 * 60 * 1000).toISOString();
+  const timeline = loadIncidentTimeline(db, { now: current, from, to, trace });
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .send(incidentTimelinePage(gitVersion, timeline));
 });
 
 // The self-refreshing alerts list fragment (returned as HTML, not the {html} envelope).
