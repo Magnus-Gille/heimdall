@@ -18,13 +18,14 @@ payload="$(cat)"
 if [[ "$payload" == *"required_key_present"* ]]; then
   echo preflight >> "$MOCK_LOG"
   HOME="$MOCK_REMOTE_HOME" /bin/bash <<< "$payload"
-elif [[ "$payload" == *"systemctl --user restart heimdall-agent"* ]]; then
-  echo install-restart >> "$MOCK_LOG"
+elif [[ "$payload" == *"systemctl --user enable heimdall-agent"* ]] && [[ "$payload" == *"systemctl --user restart heimdall-agent"* ]]; then
+  echo install-enable-restart >> "$MOCK_LOG"
   printf '%s\n' "$payload" > "$MOCK_INSTALL_PAYLOAD"
 elif [[ "$*" == *"/VERSION"* ]]; then
   echo version >> "$MOCK_LOG"
 elif [[ "$*" == *"is-active"* ]]; then
   echo status >> "$MOCK_LOG"
+  echo enabled
   echo active
 else
   echo "unexpected ssh invocation: $*" >&2
@@ -149,7 +150,7 @@ def test_deploy_preserves_config_updates_unit_and_orders_every_step(tmp_path):
         "preflight",
         "rsync",
         "version",
-        "install-restart",
+        "install-enable-restart",
         "status",
     ]
     assert config.read_text() == original
@@ -166,9 +167,11 @@ def test_deploy_preserves_config_updates_unit_and_orders_every_step(tmp_path):
     state_dir_at = install_payload.index("install -d -m 0700")
     install_at = install_payload.index("install -m 0644")
     reload_at = install_payload.index("systemctl --user daemon-reload")
+    enable_at = install_payload.index("systemctl --user enable heimdall-agent")
     restart_at = install_payload.index("systemctl --user restart heimdall-agent")
-    assert state_dir_at < install_at < reload_at < restart_at
+    assert state_dir_at < install_at < reload_at < enable_at < restart_at
     assert 'if [ ! -f "${SERVICE_DIR}/heimdall-agent.service" ]' not in install_payload
+    assert "\nenabled\nactive\n" in result.stdout
 
 
 def test_valid_quoted_config_values_pass_preflight(tmp_path):

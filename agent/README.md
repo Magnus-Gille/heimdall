@@ -43,7 +43,7 @@ run, place a mode-`0600` `config.env` containing non-empty `HUB_URL` and
 `FLEET_TOKEN` at `~/repos/heimdall/agent/config.env` on the target. The script
 preflights that protected host configuration before changing anything, rsyncs
 the agent, stamps a `VERSION` file (the git short SHA), updates the systemd user
-unit, and restarts the service:
+unit, enables it for future boots, and restarts the service:
 
 ```bash
 # From the repo root on your laptop:
@@ -55,7 +55,9 @@ bash agent/deploy/deploy-agent.sh worker-node
 bash agent/deploy/deploy-agent.sh user@192.0.2.1
 ```
 
-The script is idempotent — safe to re-run after any code change. It does
+The script is idempotent — safe to re-run after any code change. It verifies
+both `is-enabled` and `is-active` after deployment, so a successful first-time
+install persists across the next boot. It does
 **not** overwrite or delete the host's `config.env` (secrets are preserved),
 and refuses before rsync/restart when the required configuration is absent or
 empty.
