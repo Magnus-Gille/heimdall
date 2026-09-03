@@ -15,7 +15,9 @@ time. Alert acknowledgement remains separate from resolution.
 
 Arbitrary event and alert details, journal output, raw supervision audits,
 synthetic step payloads, prompt/model/task contents, response bodies, and raw
-traces are not copied into the timeline.
+traces are not copied into the timeline. Producer-controlled source and
+category labels cross a closed operational-token allowlist; rejected labels
+fall back to explicit generic sources instead of being rendered.
 
 ## Correlation semantics
 
@@ -32,7 +34,9 @@ Correlation is evidence navigation, not incident diagnosis:
 
 Diagnostic links stay inside Heimdall. Trace filters accept only a closed
 32-character lowercase hexadecimal identifier and never construct an external
-trace URL.
+trace URL. Filtering happens in the journey query before its result bound and
+before the timeline's global item limit, so an older retained trace cannot be
+hidden by newer unrelated observations.
 
 ## Bounds and retention
 

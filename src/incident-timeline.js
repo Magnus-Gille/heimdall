@@ -11,6 +11,7 @@ const MAX_CORRELATIONS = 1000;
 const FRESH_MS = 15 * 60 * 1000;
 const SAFE_UNIT_RE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}\.(?:service|timer)$/;
 const SAFE_SERVICE_RE = /^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,95}$/;
+const SAFE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,95}$/;
 const TRACE_RE = /^[a-f0-9]{32}$/;
 
 function validIso(value) {
@@ -27,6 +28,10 @@ function safeHost(value) {
 
 function safeUnit(value) {
   return typeof value === 'string' && SAFE_UNIT_RE.test(value) ? value : null;
+}
+
+function safeLabel(value) {
+  return typeof value === 'string' && SAFE_LABEL_RE.test(value) ? value : null;
 }
 
 function unitFromText(value) {
@@ -50,7 +55,7 @@ function baseItem(fields, now) {
     id: fields.id,
     kind: fields.kind,
     title: fields.title,
-    source: fields.source,
+    source: safeLabel(fields.source) || 'unknown-source',
     observedAt,
     collectedAt,
     freshness: freshness(observedAt, now),
@@ -62,7 +67,7 @@ function baseItem(fields, now) {
     unit: safeUnit(fields.unit),
     release: typeof fields.release === 'string' && /^[a-f0-9]{7,64}$/.test(fields.release)
       ? fields.release : null,
-    outcome: fields.outcome || null,
+    outcome: safeLabel(fields.outcome),
     diagnosticRef: typeof fields.diagnosticRef === 'string' && /^trace:[a-f0-9]{32}$/.test(fields.diagnosticRef)
       ? fields.diagnosticRef : null,
     acknowledged: Boolean(fields.acknowledged),
@@ -75,15 +80,17 @@ function alertItems(rows, now) {
   const items = [];
   for (const row of Array.isArray(rows) ? rows : []) {
     const unit = unitFromText(row.title);
+    const source = safeLabel(row.source) || 'heimdall-alert-engine';
+    const category = safeLabel(row.category) || 'uncategorized';
     const common = {
-      source: row.source || 'heimdall-alert-engine', host: row.host, unit,
+      source, host: row.host, unit,
       firstObservedAt: row.created_at, lastObservedAt: row.last_observed_at || row.created_at,
       evidenceAuthority: 'Heimdall alert lifecycle', acknowledged: row.acknowledged === 1,
       localHref: '/alerts', outcome: row.severity,
     };
     const fired = baseItem({
       ...common, id: `alert-${row.id}-fired`, kind: 'alert-fired',
-      title: `Alert ${row.id} fired (${row.category || 'uncategorized'})`, observedAt: row.created_at,
+      title: `Alert ${row.id} fired (${category})`, observedAt: row.created_at,
     }, now);
     if (fired) items.push(fired);
     if (row.resolved_at) {
@@ -106,7 +113,7 @@ function eventItems(rows, now) {
     if (!unit) continue;
     const item = baseItem({
       id: `event-${row.id}`, kind: 'service-event', title: 'Systemd service event',
-      source: row.source || 'event-collector', observedAt: row.timestamp,
+      source: safeLabel(row.source) || 'event-collector', observedAt: row.timestamp,
       evidenceAuthority: 'Heimdall structured event', host: row.host, unit,
       outcome: row.severity, localHref: `/services/${encodeURIComponent(unit.replace(/\.(?:service|timer)$/, ''))}`,
     }, now);
@@ -294,15 +301,11 @@ function buildIncidentTimeline(sources = {}, options = {}) {
   const to = normalizeIso(options.to);
   if (from) items = items.filter((item) => item.observedAt >= from);
   if (to) items = items.filter((item) => item.observedAt <= to);
+  const trace = TRACE_RE.test(options.trace || '') ? `trace:${options.trace}` : null;
+  if (trace) items = items.filter((item) => item.diagnosticRef === trace);
   items = items.slice(0, limit);
   const exact = exactCorrelations(items);
   const correlations = [...exact, ...inferredCorrelations(items, exact, maxSkewMs)];
-  if (TRACE_RE.test(options.trace || '')) {
-    const diagnosticRef = `trace:${options.trace}`;
-    const ids = new Set(correlations.filter((row) => row.diagnosticRef === diagnosticRef)
-      .flatMap((row) => row.itemIds));
-    items = items.filter((item) => item.diagnosticRef === diagnosticRef || ids.has(item.id));
-  }
   return {
     items, correlations: correlations.filter((row) => row.itemIds.every((id) => items.some((item) => item.id === id))),
     clockSource: 'observed_at', maxSkewMs,
@@ -361,7 +364,7 @@ function loadIncidentTimeline(db, options = {}) {
   metrics.push(...priorMetrics);
   return buildIncidentTimeline({
     alerts, events, deployments, metrics,
-    journeys: getSyntheticJourneysInWindow(db, from, to, 2000),
+    journeys: getSyntheticJourneysInWindow(db, from, to, 2000, options.trace),
     supervision: getSystemdSupervisionAudit(db),
   }, {
     now, from, to, limit: options.limit, maxSkewMs: options.maxSkewMs, trace: options.trace,

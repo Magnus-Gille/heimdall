@@ -24,6 +24,7 @@
 .timeline-list {
   position: relative;
   display: grid;
+  min-width: 0;
   gap: var(--space-3);
   padding-left: var(--space-5);
 }
@@ -40,6 +41,7 @@
 
 .timeline-item {
   position: relative;
+  min-width: 0;
 }
 
 .timeline-marker {
@@ -55,6 +57,7 @@
 
 .timeline-item-body,
 .timeline-empty {
+  min-width: 0;
   padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -105,4 +108,5 @@
 @media (max-width: 640px) {
   .timeline-item-head { display: block; }
   .timeline-badge { display: inline-block; margin-bottom: var(--space-2); }
+  .timeline-facts { grid-template-columns: minmax(0, 1fr); }
 }

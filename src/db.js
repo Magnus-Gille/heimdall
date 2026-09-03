@@ -8,6 +8,13 @@ const { canonicalHost } = require('./host-identity');
 
 const DEFAULT_DB_PATH = path.join(os.homedir(), '.heimdall', 'heimdall.db');
 
+function canonicalJson(value) {
+  return JSON.stringify(value, (_key, nested) => {
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return nested;
+    return Object.fromEntries(Object.keys(nested).sort().map((key) => [key, nested[key]]));
+  });
+}
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -1190,7 +1197,7 @@ function getMaintenanceExecutionResult(db, sourceId = 'brokkr-maintenance') {
 
 function upsertSystemdSupervisionAudit(db, audit, receivedAt = new Date().toISOString()) {
   const sourceId = 'brokkr-systemd-supervision';
-  const body = JSON.stringify(audit);
+  const body = canonicalJson(audit);
   return db.transaction(() => {
     const previous = db.prepare(
       'SELECT observed_at, audit FROM systemd_supervision_audits WHERE source_id = ?',
@@ -1198,7 +1205,7 @@ function upsertSystemdSupervisionAudit(db, audit, receivedAt = new Date().toISOS
     if (previous) {
       if (previous.observed_at > audit.observed_at) return { ok: false, code: 'older_observation' };
       if (previous.observed_at === audit.observed_at) {
-        if (previous.audit === body) return { ok: true, replay: true };
+        if (canonicalJson(JSON.parse(previous.audit)) === body) return { ok: true, replay: true };
         return { ok: false, code: 'observation_conflict' };
       }
     }
@@ -1231,14 +1238,14 @@ function getSystemdSupervisionAudit(db) {
 const SYNTHETIC_HISTORY_LIMIT = 60000;
 
 function insertSyntheticJourney(db, journey, receivedAt = new Date().toISOString()) {
-  const payload = JSON.stringify(journey);
+  const payload = canonicalJson(journey);
   return db.transaction(() => {
     const previous = db.prepare(`
       SELECT payload FROM synthetic_journeys
       WHERE journey_id = ? AND attempt_id = ?
     `).get(journey.journey_id, journey.attempt_id);
     if (previous) {
-      if (previous.payload === payload) return { ok: true, replay: true };
+      if (canonicalJson(JSON.parse(previous.payload)) === payload) return { ok: true, replay: true };
       return { ok: false, replay: false, code: 'attempt_conflict' };
     }
     db.prepare(`
@@ -1296,13 +1303,23 @@ function getLatestSyntheticJourneys(db) {
   `).all().map(hydrateSyntheticJourney).filter(Boolean);
 }
 
-function getSyntheticJourneysInWindow(db, fromIso, toIso, limit = 2000) {
+function getSyntheticJourneysInWindow(db, fromIso, toIso, limit = 2000, traceId = null) {
   const bounded = Math.max(1, Math.min(10000, Number.isSafeInteger(limit) ? limit : 2000));
+  const trace = typeof traceId === 'string' && /^[a-f0-9]{32}$/.test(traceId)
+    ? traceId : null;
+  if (traceId != null && !trace) return [];
+  const traceClause = trace
+    ? "AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.trace_id') = ? ELSE 0 END"
+    : '';
+  const params = [fromIso, toIso];
+  if (trace) params.push(trace);
+  params.push(bounded);
   return db.prepare(`
     SELECT payload, received_at FROM synthetic_journeys
     WHERE observed_at >= ? AND observed_at <= ?
+      ${traceClause}
     ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
-  `).all(fromIso, toIso, bounded).map((row) => {
+  `).all(...params).map((row) => {
     const outcome = hydrateSyntheticJourney(row);
     return outcome ? { outcome, collected_at: row.received_at } : null;
   }).filter(Boolean);

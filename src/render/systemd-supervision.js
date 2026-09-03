@@ -17,6 +17,7 @@ function classificationLabel(value) {
   const labels = {
     pass: 'All units healthy', fail: 'Attention needed', stale: 'Stale',
     healthy: 'Healthy', failed: 'Failed', overdue: 'Overdue', 'never-run': 'Never run',
+    'not-active': 'Not active', 'fixture-replay': 'Fixture replay',
     'inactive-success': 'Completed / inactive', 'manager-unavailable': 'Manager unavailable',
     'unit-absent': 'Unit absent', 'stale-producer': 'Stale', unknown: 'Unknown',
   };
@@ -81,7 +82,9 @@ function renderSystemdSupervision(row, now = Date.now(), context = {}) {
   const projection = enrichSupervisionProjection(projectionForRow(row, now), context);
   const state = badgeState(projection.state);
   const freshness = projection.freshness === 'fresh' ? 'Fresh'
-    : (projection.freshness === 'stale' ? 'Stale' : (projection.freshness === 'future' ? 'Future-dated' : 'Unknown'));
+    : (projection.freshness === 'stale' ? 'Stale'
+      : (projection.freshness === 'future' ? 'Future-dated'
+        : (projection.freshness === 'fixture-replay' ? 'Fixture replay' : 'Unknown')));
   const summary = card({
     fullWidth: true,
     className: 'supervision-summary',

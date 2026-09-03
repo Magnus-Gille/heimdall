@@ -102,6 +102,7 @@ describe('direct content-free journeys', () => {
     assert.equal(result.steps.every((step) => step.outcome === 'pass'), true);
     assert.equal(calls.length, 1);
     assert.match(calls[0].opts.body, /memory_read/);
+    assert.equal(calls[0].opts.redirect, 'error');
     assert.doesNotMatch(JSON.stringify(result), /secret-token|content/);
   });
 
@@ -124,6 +125,7 @@ describe('direct content-free journeys', () => {
     assert.equal(result.outcome, 'pass');
     assert.equal(calls[0].url, 'http://nas:3031/list/__heimdall_content_free_probe__');
     assert.equal(calls[0].opts.method, 'GET');
+    assert.equal(calls[0].opts.redirect, 'error');
     assert.doesNotMatch(JSON.stringify(result), /mimir-token|Directory not found/);
   });
 
@@ -144,6 +146,16 @@ describe('journey history, objectives, alerts, and rendering', () => {
     const first = outcome(undefined, { attempt_id: 'attempt-001', observed_at: '2026-09-03T07:57:00Z' });
     insertSyntheticJourney(db, first);
     assert.equal(insertSyntheticJourney(db, first).replay, true);
+    const reordered = {
+      extensions: first.extensions, steps: first.steps, trace_id: first.trace_id,
+      error_class: first.error_class, latency_ms: first.latency_ms,
+      runner_outcome: first.runner_outcome, outcome: first.outcome,
+      max_age_seconds: first.max_age_seconds, observed_at: first.observed_at,
+      started_at: first.started_at, version: first.version,
+      attempt_id: first.attempt_id, producer: first.producer,
+      journey_id: first.journey_id, schema_version: first.schema_version, kind: first.kind,
+    };
+    assert.equal(insertSyntheticJourney(db, reordered).replay, true);
     assert.equal(insertSyntheticJourney(db, { ...first, latency_ms: 99 }).code, 'attempt_conflict');
     insertSyntheticJourney(db, outcome(undefined, { attempt_id: 'attempt-002', observed_at: '2026-09-03T07:58:00Z' }));
     assert.deepEqual(getSyntheticJourneyHistory(db, 'heimdall-munin-read', 10).map((row) => row.attempt_id), ['attempt-002', 'attempt-001']);
@@ -173,6 +185,31 @@ describe('journey history, objectives, alerts, and rendering', () => {
     assert.equal(runnerObjective.state, 'unknown');
     assert.equal(runnerObjective.sampleCount, 0);
     assert.equal(runnerObjective.observationCount, 20);
+  });
+
+  it('grades success rate and latency sample sufficiency independently', () => {
+    const failedSteps = outcome().steps.map((item, i) => i === 2
+      ? { ...item, outcome: 'fail', error_class: 'dependency-down' } : item);
+    const failedWithoutLatency = Array.from({ length: 3 }, (_, i) => outcome(undefined, {
+      attempt_id: `failed-no-latency-${i}`, outcome: 'fail', error_class: 'dependency-down',
+      latency_ms: null, steps: failedSteps,
+    }));
+    const failed = computeJourneyObjectives(failedWithoutLatency, {
+      minSamples: 3, successTarget: 1, now: NOW,
+    });
+    assert.equal(failed.state, 'fail');
+    assert.equal(failed.successState, 'fail');
+    assert.equal(failed.latencyState, 'unknown');
+
+    const passingWithoutLatency = Array.from({ length: 3 }, (_, i) => outcome(undefined, {
+      attempt_id: `passing-no-latency-${i}`, latency_ms: null,
+    }));
+    const unknown = computeJourneyObjectives(passingWithoutLatency, {
+      minSamples: 3, successTarget: 1, now: NOW,
+    });
+    assert.equal(unknown.state, 'unknown');
+    assert.equal(unknown.successState, 'pass');
+    assert.equal(unknown.latencyState, 'unknown');
   });
 
   it('alerts on a complete failure/objective breach and resolves after recovery', () => {
@@ -222,6 +259,13 @@ describe('journey history, objectives, alerts, and rendering', () => {
     assert.equal(ingestSyntheticJourney(db, { body: outcome('hugin-gateway-preflight'), tokens, authHeader: 'Bearer right' }).status, 200);
     assert.equal(ingestSyntheticJourney(db, { body: outcome('gateway-model-readiness'), tokens, authHeader: 'Bearer right' }).status, 401);
     assert.equal(ingestSyntheticJourney(db, { body: { ...outcome('hugin-gateway-preflight'), producer: 'heimdall' }, tokens, authHeader: 'Bearer right' }).status, 403);
+    const future = outcome('hugin-gateway-preflight', {
+      attempt_id: 'attempt-future-poison', observed_at: '2026-09-03T08:00:06Z',
+    });
+    assert.equal(ingestSyntheticJourney(db, {
+      body: future, tokens, authHeader: 'Bearer right', now: NOW,
+    }).status, 409);
+    assert.equal(getSyntheticJourneyHistory(db, 'hugin-gateway-preflight', 10).length, 1);
     db.close();
   });
 
@@ -239,6 +283,14 @@ describe('journey history, objectives, alerts, and rendering', () => {
         headers: { authorization: 'Bearer journey-token' }, payload: outcome('hugin-gateway-preflight'),
       });
       assert.equal(accepted.statusCode, 200);
+      const future = await app.inject({
+        method: 'POST', url: '/api/synthetic-journeys',
+        headers: { authorization: 'Bearer journey-token' },
+        payload: outcome('hugin-gateway-preflight', {
+          attempt_id: 'attempt-future-http', observed_at: '2026-09-03T08:00:06Z',
+        }),
+      });
+      assert.equal(future.statusCode, 409);
       const page = await app.inject({ method: 'GET', url: '/reliability' });
       assert.equal(page.statusCode, 200);
       assert.match(page.body, /Hugin → gateway preflight/);

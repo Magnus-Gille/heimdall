@@ -145,12 +145,19 @@ function computeJourneyObjectives(rows, options = {}) {
   const successRate = sampleCount ? passing / sampleCount : null;
   const latencies = samples.map((row) => row.latency_ms).filter(Number.isFinite);
   const p95LatencyMs = percentileNearestRank(latencies, 0.95);
-  if (sampleCount < minSamples || latencies.length < minSamples) {
-    return { state: 'unknown', sampleCount, observationCount: observations.length, minSamples, windowMs, successRate, p95LatencyMs, successTarget, latencyTargetMs };
-  }
-  const successPass = successRate >= successTarget;
-  const latencyPass = p95LatencyMs <= latencyTargetMs;
-  return { state: successPass && latencyPass ? 'pass' : 'fail', sampleCount, observationCount: observations.length, minSamples, windowMs, successRate, p95LatencyMs, successTarget, latencyTargetMs, successPass, latencyPass };
+  const successState = sampleCount < minSamples
+    ? 'unknown' : (successRate >= successTarget ? 'pass' : 'fail');
+  const latencyState = latencies.length < minSamples
+    ? 'unknown' : (p95LatencyMs <= latencyTargetMs ? 'pass' : 'fail');
+  const state = successState === 'fail' || latencyState === 'fail'
+    ? 'fail' : (successState === 'pass' && latencyState === 'pass' ? 'pass' : 'unknown');
+  return {
+    state, sampleCount, observationCount: observations.length, minSamples, windowMs,
+    successRate, p95LatencyMs, successTarget, latencyTargetMs,
+    successState, latencyState,
+    successPass: successState === 'unknown' ? null : successState === 'pass',
+    latencyPass: latencyState === 'unknown' ? null : latencyState === 'pass',
+  };
 }
 
 function nowIso(now) { return new Date(now()).toISOString(); }
@@ -243,7 +250,8 @@ async function runMuninReadJourney(options = {}) {
   });
   try {
     const res = await requestWithTimeout(options.fetchFn || fetch, MUNIN_URL, {
-      method: 'POST', headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body,
+      method: 'POST', redirect: 'error',
+      headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body,
     }, options.timeoutMs || 5000);
     const connect = step('connect', 'pass', 0);
     if (res.status === 401 || res.status === 403) {
@@ -304,7 +312,8 @@ async function runMimirMetadataJourney(options = {}) {
   });
   try {
     const res = await requestWithTimeout(options.fetchFn || fetch, url, {
-      method: 'GET', headers: { Authorization: `Bearer ${options.apiKey}`, Accept: 'application/json' },
+      method: 'GET', redirect: 'error',
+      headers: { Authorization: `Bearer ${options.apiKey}`, Accept: 'application/json' },
     }, options.timeoutMs || 5000);
     const connect = step('connect', 'pass', 0);
     if (res.status === 401 || res.status === 403) {
@@ -375,6 +384,11 @@ function ingestSyntheticJourney(db, options = {}) {
   if (!auth.ok) return { status: auth.code || 401, body: { error: 'synthetic journey ingest is not configured' } };
   const checked = validateJourneyOutcome(options.body);
   if (!checked.ok) return { status: 400, body: { error: 'invalid synthetic journey outcome', reasons: checked.errors.slice(0, 20) } };
+  const now = options.now == null ? Date.now() : Number(options.now);
+  if (!Number.isFinite(now)) return { status: 500, body: { error: 'invalid ingest clock' } };
+  if (Date.parse(options.body.observed_at) > now + FUTURE_SKEW_MS) {
+    return { status: 409, body: { error: 'future-dated synthetic journey rejected' } };
+  }
   try {
     const stored = insertSyntheticJourney(db, options.body);
     if (!stored.ok) return { status: 409, body: { error: 'synthetic journey replay rejected', reason: stored.code } };

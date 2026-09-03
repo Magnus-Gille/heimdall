@@ -2,11 +2,12 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
   openDatabase, insertSyntheticJourney, pruneSyntheticJourneys,
-  insertServiceVersion, createAlert,
+  getSyntheticJourneysInWindow, insertServiceVersion, createAlert,
 } = require('../src/db');
 const { buildIncidentTimeline, loadIncidentTimeline } = require('../src/incident-timeline');
 const { incidentTimelinePage } = require('../src/render/incident-timeline');
@@ -145,6 +146,52 @@ describe('incident timeline correlations', () => {
     assert.equal(timeline.correlations.length, 0);
   });
 
+  it('applies a trace filter before the global item limit', () => {
+    const trace = 'b'.repeat(32);
+    const events = Array.from({ length: 501 }, (_, index) => ({
+      id: index + 1,
+      timestamp: '2026-09-03T10:10:00Z',
+      host: 'control-node',
+      category: 'system',
+      severity: 'info',
+      title: `Service event: noise${index}.service`,
+      source: 'fixture',
+    }));
+    const timeline = buildIncidentTimeline(sources({
+      events,
+      journeys: [
+        { outcome: outcome('hugin-gateway-preflight', {
+          attempt_id: 'trace-hugin', trace_id: trace,
+        }), collected_at: '2026-09-03T10:00:02Z' },
+        { outcome: outcome('gateway-model-readiness', {
+          attempt_id: 'trace-gateway', trace_id: trace,
+        }), collected_at: '2026-09-03T10:00:03Z' },
+      ],
+    }), { now: NOW, limit: 500, trace });
+    assert.equal(timeline.items.length, 2);
+    assert.equal(timeline.correlations.length, 1);
+    assert.equal(timeline.correlations[0].diagnosticRef, `trace:${trace}`);
+  });
+
+  it('deny-lists arbitrary alert and event classification labels', () => {
+    const timeline = buildIncidentTimeline(sources({
+      alerts: [{
+        id: 9, created_at: '2026-09-03T10:00:00Z', host: 'control-node',
+        category: 'client/acme', severity: 'critical',
+        title: 'heimdall.service failed', source: 'credential=private',
+      }],
+      events: [{
+        id: 10, timestamp: '2026-09-03T10:01:00Z', host: 'control-node',
+        category: 'system', severity: 'error',
+        title: 'Service event: heimdall.service', source: 'path=/private/data',
+      }],
+    }), { now: NOW });
+    const serialized = JSON.stringify(timeline);
+    assert.doesNotMatch(serialized, /client\/acme|credential=private|path=\/private/);
+    assert.equal(timeline.items.find((item) => item.kind === 'alert-fired').source, 'heimdall-alert-engine');
+    assert.equal(timeline.items.find((item) => item.kind === 'service-event').source, 'event-collector');
+  });
+
   it('does not correlate unrelated coincident units on the same host', () => {
     const timeline = buildIncidentTimeline(sources({
       events: [{ id: 1, timestamp: '2026-09-03T10:00:00Z', host: 'control-node', category: 'system', severity: 'error', title: 'Service event: alpha.service', source: 'journald', detail: 'private detail' }],
@@ -177,6 +224,33 @@ describe('incident timeline retention, loading, and rendering', () => {
     db.close();
   });
 
+  it('filters trace-bearing journey rows before the database result limit', () => {
+    const db = tmpDb();
+    const wanted = 'c'.repeat(32);
+    insertSyntheticJourney(db, outcome(undefined, {
+      attempt_id: 'wanted-old', trace_id: wanted,
+      started_at: '2026-09-03T09:00:00Z', observed_at: '2026-09-03T09:00:01Z',
+    }), '2026-09-03T09:00:02Z');
+    insertSyntheticJourney(db, outcome(undefined, {
+      attempt_id: 'unrelated-new', trace_id: 'd'.repeat(32),
+      started_at: '2026-09-03T10:00:00Z', observed_at: '2026-09-03T10:00:01Z',
+    }), '2026-09-03T10:00:02Z');
+    db.prepare(`
+      INSERT INTO synthetic_journeys
+        (journey_id, attempt_id, producer, observed_at, received_at,
+         outcome, runner_outcome, latency_ms, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('heimdall-munin-read', 'corrupt-row', 'heimdall',
+      '2026-09-03T10:10:01.000Z', '2026-09-03T10:10:02Z',
+      'unknown', 'failed', null, '{');
+    const rows = getSyntheticJourneysInWindow(
+      db, '2026-09-03T08:00:00Z', '2026-09-03T10:30:00Z', 1, wanted,
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome.attempt_id, 'wanted-old');
+    db.close();
+  });
+
   it('loads bounded local sources and renders visible uncertainty without raw details', async () => {
     const db = tmpDb();
     insertServiceVersion(db, '2026-09-03T10:00:00Z', 'heimdall', 'control-node', 'a'.repeat(40), 'a'.repeat(40), 0, 'up-to-date', null, 'pass', null);
@@ -199,5 +273,11 @@ describe('incident timeline retention, loading, and rendering', () => {
       assert.match(page.body, /Incident timeline/);
       assert.match(page.body, /href="\/timeline" class="active"/);
     } finally { await app.close(); db.close(); }
+  });
+
+  it('collapses timeline facts to one bounded column on narrow screens', () => {
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'css', 'timeline.css'), 'utf8');
+    assert.match(css, /@media \(max-width: 640px\)[\s\S]*\.timeline-facts \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+    assert.match(css, /\.timeline-item \{[\s\S]*?min-width: 0;/);
   });
 });

@@ -25,6 +25,12 @@ function formatRate(value) {
   return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—';
 }
 
+function objectiveKpiState(state) {
+  if (state === 'pass') return 'ok';
+  if (state === 'fail') return 'crit';
+  return 'stale';
+}
+
 function renderJourney(journeyId, latest, history, now, producerHint) {
   const spec = JOURNEY_SPECS[journeyId];
   const projected = latest ? projectJourneyOutcome(latest, { now })
@@ -49,8 +55,8 @@ function renderJourney(journeyId, latest, history, now, producerHint) {
       ${failure}
       <div class="reliability-meta">Attempt ${esc(latest?.attempt_id || 'unavailable')} · version ${esc(latest?.version || 'unavailable')} · latency ${Number.isFinite(latest?.latency_ms) ? `${esc(latest.latency_ms)} ms` : 'unavailable'} · trace ${esc(latest?.trace_id || 'unavailable')}</div>
       <div class="kpi-row">
-        ${kpi(formatRate(objective.successRate), 'Success rate', objective.state === 'pass' ? 'ok' : (objective.state === 'fail' ? 'crit' : 'stale'))}
-        ${kpi(objective.p95LatencyMs == null ? '—' : `${objective.p95LatencyMs} ms`, 'p95 latency', objective.state === 'pass' ? 'ok' : (objective.state === 'fail' ? 'crit' : 'stale'))}
+        ${kpi(formatRate(objective.successRate), 'Success rate', objectiveKpiState(objective.successState))}
+        ${kpi(objective.p95LatencyMs == null ? '—' : `${objective.p95LatencyMs} ms`, 'p95 latency', objectiveKpiState(objective.latencyState))}
         ${kpi(`${objective.sampleCount}/${objective.minSamples}`, 'Samples', objective.sampleCount >= objective.minSamples ? 'ok' : 'stale')}
       </div>`,
   });

@@ -16,7 +16,7 @@ function validAudit(observedAt = '2026-08-02T11:55:00Z') {
     kind: 'systemd-supervision-audit', schema_version: 'v1',
     baseline_id: 'fleet-systemd-supervision', baseline_digest: `sha256:${'a'.repeat(64)}`,
     topology_authority: 'grimnir-service-registry', observed_at: observedAt,
-    evaluated_at: '2026-08-02T12:00:00Z', evaluated_at_source: 'fixture-override',
+    evaluated_at: '2026-08-02T12:00:00Z', evaluated_at_source: 'clock',
     freshness: { status: 'fresh', age_seconds: 300, max_age_seconds: 900 },
     notifiers: [{ target_node_id: 'node-core', status: 'available' }],
     summary: { status: 'fail', unit_count: 2, compliant_unit_count: 1, finding_count: 1 },
@@ -58,6 +58,19 @@ describe('systemd supervision ingest and view', () => {
     assert.equal(handleSystemdSupervisionIngest(db, { body, token: 'right', authHeader: 'Bearer wrong' }).status, 401);
     assert.equal(handleSystemdSupervisionIngest(db, { body, token: 'right', authHeader: 'Bearer right', now: NOW }).status, 200);
     assert.equal(handleSystemdSupervisionIngest(db, { body, token: 'right', authHeader: 'Bearer right', now: NOW }).body.replay, true);
+    const reordered = {
+      extensions: body.extensions, findings: body.findings, units: body.units,
+      summary: body.summary, notifiers: body.notifiers, freshness: body.freshness,
+      evaluated_at_source: body.evaluated_at_source, evaluated_at: body.evaluated_at,
+      observed_at: body.observed_at, topology_authority: body.topology_authority,
+      baseline_digest: body.baseline_digest, baseline_id: body.baseline_id,
+      schema_version: body.schema_version, kind: body.kind,
+    };
+    const semanticReplay = handleSystemdSupervisionIngest(db, {
+      body: reordered, token: 'right', authHeader: 'Bearer right', now: NOW,
+    });
+    assert.equal(semanticReplay.status, 200);
+    assert.equal(semanticReplay.body.replay, true);
     assert.equal(getSystemdSupervisionAudit(db).audit.observed_at, body.observed_at);
     assert.equal(handleSystemdSupervisionIngest(db, { body: validAudit('2026-08-02T11:54:00Z'), token: 'right', authHeader: 'Bearer right', now: NOW }).status, 409);
     assert.equal(handleSystemdSupervisionIngest(db, { body: { ...body, schema_version: 'v2' }, token: 'right', authHeader: 'Bearer right', now: NOW }).status, 422);
@@ -93,6 +106,10 @@ describe('systemd supervision ingest and view', () => {
     assert.doesNotMatch(renderSystemdSupervision({ state: 'missing' }, NOW), /All units healthy/);
     assert.match(renderSystemdSupervision({ state: 'malformed' }, NOW), /Unknown/);
     assert.match(renderSystemdSupervision({ state: 'valid', audit: validAudit('2026-08-02T11:00:00Z') }, NOW), /Stale/);
+    const replay = { ...validAudit(), evaluated_at_source: 'fixture-override' };
+    const replayHtml = renderSystemdSupervision({ state: 'valid', audit: replay }, NOW);
+    assert.match(replayHtml, /Fixture replay/);
+    assert.doesNotMatch(replayHtml, /All units healthy|>Healthy</);
   });
 
   it('enforces the route token and body limit, then exposes the read-only page', async () => {
