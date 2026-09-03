@@ -786,6 +786,7 @@ app.post('/api/synthetic-journeys', { bodyLimit: 64 * 1024 }, async (request, re
     },
     bindHost: process.env.HEIMDALL_BIND || '127.0.0.1',
     body: request.body,
+    now: now(),
     logger: request.log,
   });
   reply.code(result.status).send(result.body);

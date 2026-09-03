@@ -1235,14 +1235,14 @@ function getSystemdSupervisionAudit(db) {
 const SYNTHETIC_HISTORY_LIMIT = 576;
 
 function insertSyntheticJourney(db, journey, receivedAt = new Date().toISOString()) {
-  const payload = JSON.stringify(journey);
+  const payload = canonicalJson(journey);
   return db.transaction(() => {
     const previous = db.prepare(`
       SELECT payload FROM synthetic_journeys
       WHERE journey_id = ? AND attempt_id = ?
     `).get(journey.journey_id, journey.attempt_id);
     if (previous) {
-      if (previous.payload === payload) return { ok: true, replay: true };
+      if (canonicalJson(JSON.parse(previous.payload)) === payload) return { ok: true, replay: true };
       return { ok: false, replay: false, code: 'attempt_conflict' };
     }
     db.prepare(`
