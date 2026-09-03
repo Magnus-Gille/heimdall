@@ -291,6 +291,21 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // Latest validated Brokkr supervision audit. Heimdall is a read-only
+    // projection consumer; Brokkr remains the audit and failure-delivery
+    // authority. Keep one bounded current snapshot rather than raw journals.
+    version: 13,
+    sql: `
+      CREATE TABLE IF NOT EXISTS systemd_supervision_audits (
+        source_id TEXT PRIMARY KEY CHECK (source_id = 'brokkr-systemd-supervision'),
+        observed_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        audit TEXT NOT NULL,
+        schema_version TEXT NOT NULL CHECK (schema_version = 'v1')
+      );
+    `,
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -1151,6 +1166,43 @@ function getMaintenanceExecutionResult(db, sourceId = 'brokkr-maintenance') {
   try { return { ...row, state: 'valid', result: JSON.parse(row.result) }; } catch { return { ...row, state: 'malformed' }; }
 }
 
+function upsertSystemdSupervisionAudit(db, audit, receivedAt = new Date().toISOString()) {
+  const sourceId = 'brokkr-systemd-supervision';
+  const body = JSON.stringify(audit);
+  return db.transaction(() => {
+    const previous = db.prepare(
+      'SELECT observed_at, audit FROM systemd_supervision_audits WHERE source_id = ?',
+    ).get(sourceId);
+    if (previous) {
+      if (previous.observed_at > audit.observed_at) return { ok: false, code: 'older_observation' };
+      if (previous.observed_at === audit.observed_at) {
+        if (previous.audit === body) return { ok: true, replay: true };
+        return { ok: false, code: 'observation_conflict' };
+      }
+    }
+    db.prepare(`
+      INSERT INTO systemd_supervision_audits
+        (source_id, observed_at, received_at, audit, schema_version)
+      VALUES (?, ?, ?, ?, 'v1')
+      ON CONFLICT(source_id) DO UPDATE SET
+        observed_at = excluded.observed_at,
+        received_at = excluded.received_at,
+        audit = excluded.audit,
+        schema_version = 'v1'
+    `).run(sourceId, audit.observed_at, receivedAt, body);
+    return { ok: true, replay: false };
+  })();
+}
+
+function getSystemdSupervisionAudit(db) {
+  const row = db.prepare(
+    "SELECT * FROM systemd_supervision_audits WHERE source_id = 'brokkr-systemd-supervision'",
+  ).get();
+  if (!row) return { state: 'missing' };
+  try { return { ...row, state: 'valid', audit: JSON.parse(row.audit) }; }
+  catch { return { ...row, state: 'malformed', audit: null }; }
+}
+
 module.exports = {
   openDatabase,
   upsertPanel,
@@ -1163,6 +1215,8 @@ module.exports = {
   upsertMaintenanceExecutionResult,
   markUnsupportedMaintenanceExecutionResult,
   getMaintenanceExecutionResult,
+  upsertSystemdSupervisionAudit,
+  getSystemdSupervisionAudit,
   isRetiredPushedPanel,
   insertMetric,
   insertMetrics,
