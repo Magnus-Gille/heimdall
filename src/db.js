@@ -1225,7 +1225,10 @@ function getSystemdSupervisionAudit(db) {
   catch { return { ...row, state: 'malformed', audit: null }; }
 }
 
-const SYNTHETIC_HISTORY_LIMIT = 576;
+// A five-minute producer cadence yields about 52,000 rows in six months. The
+// count cap is a secondary safety bound; daily maintenance enforces the actual
+// six-month trace/operational-telemetry retention policy by received_at.
+const SYNTHETIC_HISTORY_LIMIT = 60000;
 
 function insertSyntheticJourney(db, journey, receivedAt = new Date().toISOString()) {
   const payload = JSON.stringify(journey);
@@ -1293,6 +1296,23 @@ function getLatestSyntheticJourneys(db) {
   `).all().map(hydrateSyntheticJourney).filter(Boolean);
 }
 
+function getSyntheticJourneysInWindow(db, fromIso, toIso, limit = 2000) {
+  const bounded = Math.max(1, Math.min(10000, Number.isSafeInteger(limit) ? limit : 2000));
+  return db.prepare(`
+    SELECT payload, received_at FROM synthetic_journeys
+    WHERE observed_at >= ? AND observed_at <= ?
+    ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
+  `).all(fromIso, toIso, bounded).map((row) => {
+    const outcome = hydrateSyntheticJourney(row);
+    return outcome ? { outcome, collected_at: row.received_at } : null;
+  }).filter(Boolean);
+}
+
+function pruneSyntheticJourneys(db, beforeIso) {
+  return db.prepare('DELETE FROM synthetic_journeys WHERE received_at < ?')
+    .run(beforeIso).changes;
+}
+
 module.exports = {
   openDatabase,
   upsertPanel,
@@ -1310,6 +1330,8 @@ module.exports = {
   insertSyntheticJourney,
   getSyntheticJourneyHistory,
   getLatestSyntheticJourneys,
+  getSyntheticJourneysInWindow,
+  pruneSyntheticJourneys,
   isRetiredPushedPanel,
   insertMetric,
   insertMetrics,

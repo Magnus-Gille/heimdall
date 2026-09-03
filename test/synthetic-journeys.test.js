@@ -151,7 +151,7 @@ describe('journey history, objectives, alerts, and rendering', () => {
     for (let i = 0; i < 580; i++) {
       insertSyntheticJourney(db, outcome(undefined, { attempt_id: `bounded-${String(i).padStart(4, '0')}` }));
     }
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM synthetic_journeys WHERE journey_id = 'heimdall-munin-read'").get().n, 576);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM synthetic_journeys WHERE journey_id = 'heimdall-munin-read'").get().n, 582);
     db.close();
   });
 

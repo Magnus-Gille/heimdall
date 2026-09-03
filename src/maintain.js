@@ -1,6 +1,6 @@
 'use strict';
 
-const { openDatabase, pruneFleetMetrics } = require('./db');
+const { openDatabase, pruneFleetMetrics, pruneSyntheticJourneys } = require('./db');
 
 function run() {
   const db = openDatabase();
@@ -11,6 +11,7 @@ function run() {
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
   const oneYearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString();
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 3600 * 1000).toISOString();
 
   // Wrap rollup + delete in a transaction for atomicity (Issue 6)
   const rollupAndClean = db.transaction(() => {
@@ -82,6 +83,11 @@ function run() {
     //    scalar fan-out into `metrics` is already rolled up above for history).
     const deleteFleet = pruneFleetMetrics(db, sevenDaysAgo);
     console.log(`  Deleted ${deleteFleet} raw fleet_metrics rows`);
+
+    // 8. Synthetic outcomes can contain diagnostic trace identifiers. Match
+    //    the parent platform's six-month operational-telemetry retention.
+    const deleteJourneys = pruneSyntheticJourneys(db, sixMonthsAgo);
+    console.log(`  Deleted ${deleteJourneys} expired synthetic journey rows`);
   });
 
   rollupAndClean();
