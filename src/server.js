@@ -20,6 +20,8 @@ const { alertsPage, alertsListFragment, alertsCountBadge } = require('./render/a
 const { handleAlertIngest } = require('./alert-ingest');
 const { handlePanelIngest, PANEL_SCHEMA_DOC } = require('./panel-ingest');
 const { handleMaintenanceExecutionIngest } = require('./maintenance-execution-ingest');
+const { handleSystemdSupervisionIngest } = require('./systemd-supervision-ingest');
+const { ingestSyntheticJourney, JOURNEY_SPECS } = require('./synthetic-journeys');
 const { consolidationHealthCard, consolidationStatusCard, projectsListCard, taskHistoryCard, formatAgeWithTimestamp } = require('./html');
 const { fetchLedger, fetchModels, summarizeModels, fetchMetrics, parseMetrics, summarizeUsageMetrics, ledgerToMatrix, tallyVerdicts, deriveRoutingFromLedger, generateFindings, STATIC_FINDINGS } = require('./m5');
 const { listArticles, getArticle, isValidSlug, EXPORT_DIR } = require('./read-docs');
@@ -54,8 +56,12 @@ const { readListPage, readArticlePage } = require('./render/read');
 const { projectsPage: projectsPageV2 } = require('./render/projects');
 const { consolidationPage } = require('./render/consolidation');
 const { insightsPage } = require('./render/insights');
+const { systemdSupervisionPage } = require('./render/systemd-supervision');
+const { reliabilityPage } = require('./render/reliability');
+const { incidentTimelinePage } = require('./render/incident-timeline');
+const { loadIncidentTimeline } = require('./incident-timeline');
 const { fetchInsightsRecords, buildTrend, buildObjective } = require('./insights');
-const { upsertServiceSnapshot, getServiceSnapshots, getServiceSnapshot, getPanelsForService, listPanelServices, listPanels, pruneServiceSnapshots } = require('./db');
+const { upsertServiceSnapshot, getServiceSnapshots, getServiceSnapshot, getPanelsForService, listPanelServices, listPanels, pruneServiceSnapshots, getSystemdSupervisionAudit, getLatestSyntheticJourneys, getSyntheticJourneyHistory } = require('./db');
 const { getPlugin } = require('./plugins');
 const { panelAliasOwnerOf, panelServiceIdsFor } = require('./plugins/known-panels');
 const { m5Snapshot } = require('./plugins/inference');
@@ -148,6 +154,9 @@ const STATIC_FILES = {
   '/css/projects.css': { file: 'css/projects.css', ct: 'text/css; charset=utf-8' },
   '/css/consolidation.css': { file: 'css/consolidation.css', ct: 'text/css; charset=utf-8' },
   '/css/insights.css': { file: 'css/insights.css', ct: 'text/css; charset=utf-8' },
+  '/css/supervision.css': { file: 'css/supervision.css', ct: 'text/css; charset=utf-8' },
+  '/css/reliability.css': { file: 'css/reliability.css', ct: 'text/css; charset=utf-8' },
+  '/css/timeline.css': { file: 'css/timeline.css', ct: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', ct: 'application/javascript; charset=utf-8' },
   '/reader.js': { file: 'reader.js', ct: 'application/javascript; charset=utf-8' },
 };
@@ -754,6 +763,38 @@ app.post('/api/maintenance-execution-results', { bodyLimit: 64 * 1024 }, async (
   reply.code(result.status).send(result.body);
 });
 
+// Brokkr's bounded, content-blind systemd audit projection. The dedicated
+// credential keeps this observation stream separate from generic panels; the
+// route has no unit-management methods and therefore cannot become an actuator.
+app.post('/api/systemd-supervision', { bodyLimit: 256 * 1024 }, async (request, reply) => {
+  const result = handleSystemdSupervisionIngest(db, {
+    authHeader: request.headers.authorization || '',
+    token: process.env.HEIMDALL_SUPERVISION_TOKEN || '',
+    bindHost: process.env.HEIMDALL_BIND || '127.0.0.1',
+    body: request.body,
+    now: now(),
+    logger: request.log,
+  });
+  reply.code(result.status).send(result.body);
+});
+
+// Producer-owned, content-free Hugin/gateway readiness outcomes. Direct
+// Heimdall probes are inserted internally and cannot be impersonated here.
+app.post('/api/synthetic-journeys', { bodyLimit: 64 * 1024 }, async (request, reply) => {
+  const result = ingestSyntheticJourney(db, {
+    authHeader: request.headers.authorization || '',
+    tokens: {
+      hugin: process.env.HEIMDALL_HUGIN_JOURNEY_TOKEN || '',
+      'gille-inference': process.env.HEIMDALL_GATEWAY_JOURNEY_TOKEN || '',
+    },
+    bindHost: process.env.HEIMDALL_BIND || '127.0.0.1',
+    body: request.body,
+    now: now(),
+    logger: request.log,
+  });
+  reply.code(result.status).send(result.body);
+});
+
 // Discoverable schema doc for the typed-panel ingest (kinds + canonical example).
 app.get('/api/panels/schema', async () => PANEL_SCHEMA_DOC);
 
@@ -788,6 +829,48 @@ app.get('/api/panels', async (request, reply) => {
 app.get('/alerts', async (request, reply) => {
   reply.header('Content-Type', 'text/html; charset=utf-8')
     .send(alertsPage(gitVersion, getUnacknowledgedAlerts(db)));
+});
+
+app.get('/supervision', async (request, reply) => {
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .send(systemdSupervisionPage(gitVersion, getSystemdSupervisionAudit(db), now(), {
+      versions: getLatestServiceVersions(db),
+      events: getRecentEvents(db, 200),
+    }));
+});
+
+app.get('/reliability', async (request, reply) => {
+  const histories = {};
+  for (const journeyId of Object.keys(JOURNEY_SPECS)) {
+    histories[journeyId] = getSyntheticJourneyHistory(db, journeyId, 288);
+  }
+  const huginPreflight = getPanelsForService(db, 'hugin')
+    .find((panel) => panel.panel === 'hugin-learning-task-preflight');
+  const producerHints = {};
+  if (huginPreflight && Number.isFinite(huginPreflight.updated_at)) {
+    const ageMs = now() - huginPreflight.updated_at;
+    producerHints['hugin-gateway-preflight'] = {
+      freshness: ageMs >= 0 && ageMs < 15 * 60 * 1000 ? 'fresh' : 'stale',
+    };
+  }
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .send(reliabilityPage(gitVersion, getLatestSyntheticJourneys(db), { now: now(), histories, producerHints }));
+});
+
+app.get('/timeline', async (request, reply) => {
+  const requestedDays = Number.parseInt(request.query?.days, 10);
+  const days = Number.isSafeInteger(requestedDays) ? Math.max(1, Math.min(180, requestedDays)) : 1;
+  const trace = request.query?.trace;
+  if (trace != null && !/^[a-f0-9]{32}$/.test(trace)) {
+    reply.code(400).send('Invalid trace identifier');
+    return;
+  }
+  const current = now();
+  const to = new Date(current).toISOString();
+  const from = new Date(current - days * 24 * 60 * 60 * 1000).toISOString();
+  const timeline = loadIncidentTimeline(db, { now: current, from, to, trace });
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .send(incidentTimelinePage(gitVersion, timeline));
 });
 
 // The self-refreshing alerts list fragment (returned as HTML, not the {html} envelope).

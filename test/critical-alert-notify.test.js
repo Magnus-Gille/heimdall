@@ -70,7 +70,7 @@ describe('critical alert notification migration', () => {
     old.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 12);
+    assert.equal(db.pragma('user_version', { simple: true }), 14);
     const row = db.prepare('SELECT notification_sent_at FROM alerts').get();
     assert.equal(row.notification_sent_at, 'backfilled');
     db.close();

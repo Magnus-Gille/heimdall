@@ -8,6 +8,13 @@ const { canonicalHost } = require('./host-identity');
 
 const DEFAULT_DB_PATH = path.join(os.homedir(), '.heimdall', 'heimdall.db');
 
+function canonicalJson(value) {
+  return JSON.stringify(value, (_key, nested) => {
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return nested;
+    return Object.fromEntries(Object.keys(nested).sort().map((key) => [key, nested[key]]));
+  });
+}
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -290,6 +297,43 @@ const MIGRATIONS = [
         db.exec('CREATE INDEX IF NOT EXISTS idx_fleet_hosts_membership ON fleet_hosts(membership_state)');
       }
     },
+  },
+  {
+    // Latest validated Brokkr supervision audit. Heimdall is a read-only
+    // projection consumer; Brokkr remains the audit and failure-delivery
+    // authority. Keep one bounded current snapshot rather than raw journals.
+    version: 13,
+    sql: `
+      CREATE TABLE IF NOT EXISTS systemd_supervision_audits (
+        source_id TEXT PRIMARY KEY CHECK (source_id = 'brokkr-systemd-supervision'),
+        observed_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        audit TEXT NOT NULL,
+        schema_version TEXT NOT NULL CHECK (schema_version = 'v1')
+      );
+    `,
+  },
+  {
+    // Bounded, content-free synthetic journey history (#49). The payload is a
+    // closed diagnostic contract; no prompt, task, file, or memory content is
+    // accepted by the validator before insertion.
+    version: 14,
+    sql: `
+      CREATE TABLE IF NOT EXISTS synthetic_journeys (
+        journey_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        producer TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        runner_outcome TEXT NOT NULL,
+        latency_ms INTEGER,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (journey_id, attempt_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_synthetic_journeys_observed
+        ON synthetic_journeys(journey_id, observed_at DESC, attempt_id DESC);
+    `,
   },
 ];
 
@@ -1151,6 +1195,141 @@ function getMaintenanceExecutionResult(db, sourceId = 'brokkr-maintenance') {
   try { return { ...row, state: 'valid', result: JSON.parse(row.result) }; } catch { return { ...row, state: 'malformed' }; }
 }
 
+function upsertSystemdSupervisionAudit(db, audit, receivedAt = new Date().toISOString()) {
+  const sourceId = 'brokkr-systemd-supervision';
+  const body = canonicalJson(audit);
+  return db.transaction(() => {
+    const previous = db.prepare(
+      'SELECT observed_at, audit FROM systemd_supervision_audits WHERE source_id = ?',
+    ).get(sourceId);
+    if (previous) {
+      if (previous.observed_at > audit.observed_at) return { ok: false, code: 'older_observation' };
+      if (previous.observed_at === audit.observed_at) {
+        if (canonicalJson(JSON.parse(previous.audit)) === body) return { ok: true, replay: true };
+        return { ok: false, code: 'observation_conflict' };
+      }
+    }
+    db.prepare(`
+      INSERT INTO systemd_supervision_audits
+        (source_id, observed_at, received_at, audit, schema_version)
+      VALUES (?, ?, ?, ?, 'v1')
+      ON CONFLICT(source_id) DO UPDATE SET
+        observed_at = excluded.observed_at,
+        received_at = excluded.received_at,
+        audit = excluded.audit,
+        schema_version = 'v1'
+    `).run(sourceId, audit.observed_at, receivedAt, body);
+    return { ok: true, replay: false };
+  })();
+}
+
+function getSystemdSupervisionAudit(db) {
+  const row = db.prepare(
+    "SELECT * FROM systemd_supervision_audits WHERE source_id = 'brokkr-systemd-supervision'",
+  ).get();
+  if (!row) return { state: 'missing' };
+  try { return { ...row, state: 'valid', audit: JSON.parse(row.audit) }; }
+  catch { return { ...row, state: 'malformed', audit: null }; }
+}
+
+// A five-minute producer cadence yields about 52,000 rows in six months. The
+// count cap is a secondary safety bound; daily maintenance enforces the actual
+// six-month trace/operational-telemetry retention policy by received_at.
+const SYNTHETIC_HISTORY_LIMIT = 60000;
+
+function insertSyntheticJourney(db, journey, receivedAt = new Date().toISOString()) {
+  const payload = canonicalJson(journey);
+  return db.transaction(() => {
+    const previous = db.prepare(`
+      SELECT payload FROM synthetic_journeys
+      WHERE journey_id = ? AND attempt_id = ?
+    `).get(journey.journey_id, journey.attempt_id);
+    if (previous) {
+      if (canonicalJson(JSON.parse(previous.payload)) === payload) return { ok: true, replay: true };
+      return { ok: false, replay: false, code: 'attempt_conflict' };
+    }
+    db.prepare(`
+      INSERT INTO synthetic_journeys
+        (journey_id, attempt_id, producer, observed_at, received_at,
+         outcome, runner_outcome, latency_ms, payload)
+      VALUES (@journeyId, @attemptId, @producer, @observedAt, @receivedAt,
+              @outcome, @runnerOutcome, @latencyMs, @payload)
+    `).run({
+      journeyId: journey.journey_id, attemptId: journey.attempt_id,
+      producer: journey.producer,
+      // Normalize optional millisecond spelling before lexical SQLite ordering.
+      observedAt: new Date(Date.parse(journey.observed_at)).toISOString(),
+      receivedAt,
+      outcome: journey.outcome, runnerOutcome: journey.runner_outcome,
+      latencyMs: journey.latency_ms, payload,
+    });
+    db.prepare(`
+      DELETE FROM synthetic_journeys
+      WHERE journey_id = ? AND attempt_id NOT IN (
+        SELECT attempt_id FROM synthetic_journeys
+        WHERE journey_id = ?
+        ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
+      )
+    `).run(journey.journey_id, journey.journey_id, SYNTHETIC_HISTORY_LIMIT);
+    return { ok: true, replay: false };
+  })();
+}
+
+function hydrateSyntheticJourney(row) {
+  if (!row || typeof row.payload !== 'string') return null;
+  try { return JSON.parse(row.payload); } catch { return null; }
+}
+
+function getSyntheticJourneyHistory(db, journeyId, limit = 288) {
+  const bounded = Math.max(1, Math.min(SYNTHETIC_HISTORY_LIMIT, Number.isSafeInteger(limit) ? limit : 288));
+  return db.prepare(`
+    SELECT payload FROM synthetic_journeys
+    WHERE journey_id = ?
+    ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
+  `).all(journeyId, bounded).map(hydrateSyntheticJourney).filter(Boolean);
+}
+
+function getLatestSyntheticJourneys(db) {
+  return db.prepare(`
+    SELECT current.payload
+    FROM synthetic_journeys AS current
+    WHERE NOT EXISTS (
+      SELECT 1 FROM synthetic_journeys AS newer
+      WHERE newer.journey_id = current.journey_id
+        AND (newer.observed_at > current.observed_at
+          OR (newer.observed_at = current.observed_at AND newer.attempt_id > current.attempt_id))
+    )
+    ORDER BY current.journey_id
+  `).all().map(hydrateSyntheticJourney).filter(Boolean);
+}
+
+function getSyntheticJourneysInWindow(db, fromIso, toIso, limit = 2000, traceId = null) {
+  const bounded = Math.max(1, Math.min(10000, Number.isSafeInteger(limit) ? limit : 2000));
+  const trace = typeof traceId === 'string' && /^[a-f0-9]{32}$/.test(traceId)
+    ? traceId : null;
+  if (traceId != null && !trace) return [];
+  const traceClause = trace
+    ? "AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.trace_id') = ? ELSE 0 END"
+    : '';
+  const params = [fromIso, toIso];
+  if (trace) params.push(trace);
+  params.push(bounded);
+  return db.prepare(`
+    SELECT payload, received_at FROM synthetic_journeys
+    WHERE observed_at >= ? AND observed_at <= ?
+      ${traceClause}
+    ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
+  `).all(...params).map((row) => {
+    const outcome = hydrateSyntheticJourney(row);
+    return outcome ? { outcome, collected_at: row.received_at } : null;
+  }).filter(Boolean);
+}
+
+function pruneSyntheticJourneys(db, beforeIso) {
+  return db.prepare('DELETE FROM synthetic_journeys WHERE received_at < ?')
+    .run(beforeIso).changes;
+}
+
 module.exports = {
   openDatabase,
   upsertPanel,
@@ -1163,6 +1342,13 @@ module.exports = {
   upsertMaintenanceExecutionResult,
   markUnsupportedMaintenanceExecutionResult,
   getMaintenanceExecutionResult,
+  upsertSystemdSupervisionAudit,
+  getSystemdSupervisionAudit,
+  insertSyntheticJourney,
+  getSyntheticJourneyHistory,
+  getLatestSyntheticJourneys,
+  getSyntheticJourneysInWindow,
+  pruneSyntheticJourneys,
   isRetiredPushedPanel,
   insertMetric,
   insertMetrics,

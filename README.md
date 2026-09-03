@@ -47,16 +47,18 @@ they explicitly replace `disk_volumes`.
 
 - Service discovery from Grimnir's `services.json`, enriched by `heimdall.config.json`.
 - Self-describing `/heimdall.json` service contract with `/health` fallback.
-- Authenticated fleet-agent, alert, and typed-panel ingestion.
+- Authenticated fleet-agent, alert, typed-panel, systemd-supervision, and synthetic-journey ingestion.
 - CPU, memory, disk, temperature, task, deployment-drift, backup, MCP, and inference views.
 - Declarative alert thresholds with streak-based fire and resolve behavior.
 - SQLite event history and a generic service detail renderer.
+- Content-free direct read journeys with freshness-aware success-rate and p95 objectives.
+- Read-only incident timeline with explicit producer-authored versus bounded inferred correlations.
 - Optional task and newly-fired critical-alert notifications through Ratatoskr.
 - Optional Hugin recovery-task submission, disabled by default.
 
 ## Quick start
 
-Requirements: Node.js 22 or newer, npm, and Python 3 with `pytest` for the optional fleet-agent tests.
+Requirements: Node.js 22.12.0 through 25.x, npm, and Python 3 with `pytest` for the optional fleet-agent tests.
 
 ```bash
 npm ci
@@ -94,6 +96,13 @@ Important settings:
 - `HEIMDALL_MAINTENANCE_RESULT_TOKEN` authenticates the separate, read-only
   Brokkr v1 maintenance-evidence observer. It has no insecure-loopback mode;
   its card does not affect liveness, alerting, promotion, or actuation.
+- `HEIMDALL_SUPERVISION_TOKEN` authenticates Brokkr's closed v1 supervision
+  audit at `/api/systemd-supervision`. The `/supervision` view recomputes
+  freshness and exposes no restart, enable, or disable action.
+- `MUNIN_API_KEY`, `MIMIR_BASE_URL`, and `MIMIR_API_KEY` enable the two fixed content-free direct
+  read journeys; separate `HEIMDALL_HUGIN_JOURNEY_TOKEN` and
+  `HEIMDALL_GATEWAY_JOURNEY_TOKEN` credentials authenticate the corresponding
+  closed producer-owned outcomes at `/api/synthetic-journeys`.
 - `HEIMDALL_NOTIFY_CHAT_ID` enables task and critical-alert delivery through Ratatoskr.
 - `RATATOSKR_URL` stays loopback by default; non-loopback deployments should set
   `RATATOSKR_SEND_API_KEY`.
@@ -170,7 +179,7 @@ normalized descriptor snapshot carries `panel_warnings` records with only
 displayed. Producers should treat these warnings as a contract error and send
 object rows rather than `string[][]`.
 
-Primary pages are `/`, `/services`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above.
+Primary pages are `/`, `/services`, `/supervision`, `/reliability`, `/timeline`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above. The timeline's non-causal correlation and retention semantics are documented in [`docs/incident-timeline.md`](docs/incident-timeline.md).
 
 ## Development
 
