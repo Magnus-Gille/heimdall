@@ -2,8 +2,10 @@
 # deploy-agent.sh <ssh-host>
 #
 # Rsync the Heimdall push agent to a remote Linux host, stamp VERSION, update
-# the systemd user unit, and restart it. Host config.env is required, preserved,
-# and validated before any remote mutation.
+# the systemd user unit, enable it, and restart it. Host config.env is required,
+# preserved, and validated before any remote mutation. The target user's
+# systemd linger policy must already be enabled so a successful user-unit
+# install is guaranteed to start without an interactive login after reboot.
 set -euo pipefail
 
 TARGET_HOST="${1:?Usage: deploy-agent.sh <ssh-host>}"
@@ -60,6 +62,14 @@ if ! required_key_present HUB_URL || ! required_key_present FLEET_TOKEN; then
   echo "ERROR: protected config.env must contain non-empty HUB_URL and FLEET_TOKEN; refusing to update or restart heimdall-agent" >&2
   exit 1
 fi
+if ! linger_state="$(loginctl show-user "$USER" --property=Linger --value)"; then
+  echo "ERROR: unable to verify systemd linger; refusing to update or restart heimdall-agent" >&2
+  exit 1
+fi
+if [ "$linger_state" != "yes" ]; then
+  echo "ERROR: systemd linger is not enabled; run 'sudo loginctl enable-linger $USER' on the target before deploying" >&2
+  exit 1
+fi
 REMOTE_PREFLIGHT
 
 # 2. Sync agent source. rsync excludes host-owned config.env and VERSION; without
@@ -76,7 +86,7 @@ rsync -av --delete \
 # 3. Stamp the exact version that was synced.
 printf '%s\n' "$VERSION" | ssh "${TARGET_HOST}" 'cat > ~/repos/heimdall/agent/VERSION'
 
-# 4. Always update the installed unit before daemon-reload and restart so
+# 4. Always update the installed unit before daemon-reload, enable, and restart so
 # sandbox changes reach existing hosts, not only first installs.
 ssh "${TARGET_HOST}" bash << 'REMOTE_INSTALL'
 set -euo pipefail
@@ -90,10 +100,11 @@ install -d -m 0700 "$STATE_DIR"
 install -m 0644 "$SERVICE_SRC" "${SERVICE_DIR}/heimdall-agent.service"
 echo "    updated heimdall-agent.service → ${SERVICE_DIR}/"
 systemctl --user daemon-reload
+systemctl --user enable heimdall-agent
 systemctl --user restart heimdall-agent
 REMOTE_INSTALL
 
-# 5. Report live unit state only after the restart succeeds.
+# 5. Report both boot persistence and live state only after activation succeeds.
 echo "==> Deployed version : ${VERSION}"
-echo -n "==> Unit status      : "
-ssh "${TARGET_HOST}" "systemctl --user is-active heimdall-agent"
+echo "==> Unit lifecycle   :"
+ssh "${TARGET_HOST}" "systemctl --user is-enabled heimdall-agent && systemctl --user is-active heimdall-agent"

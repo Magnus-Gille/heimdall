@@ -18,13 +18,14 @@ payload="$(cat)"
 if [[ "$payload" == *"required_key_present"* ]]; then
   echo preflight >> "$MOCK_LOG"
   HOME="$MOCK_REMOTE_HOME" /bin/bash <<< "$payload"
-elif [[ "$payload" == *"systemctl --user restart heimdall-agent"* ]]; then
-  echo install-restart >> "$MOCK_LOG"
+elif [[ "$payload" == *"systemctl --user enable heimdall-agent"* ]] && [[ "$payload" == *"systemctl --user restart heimdall-agent"* ]]; then
+  echo install-enable-restart >> "$MOCK_LOG"
   printf '%s\n' "$payload" > "$MOCK_INSTALL_PAYLOAD"
 elif [[ "$*" == *"/VERSION"* ]]; then
   echo version >> "$MOCK_LOG"
 elif [[ "$*" == *"is-active"* ]]; then
   echo status >> "$MOCK_LOG"
+  echo enabled
   echo active
 else
   echo "unexpected ssh invocation: $*" >&2
@@ -40,6 +41,17 @@ printf '%s\n' "$@" > "$MOCK_RSYNC_ARGS"
 """
 
 
+LOGINCTL_MOCK = r"""#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"show-user"* ]] && [[ "$*" == *"Linger"* ]]; then
+  printf '%s\n' "${MOCK_LINGER:-yes}"
+else
+  echo "unexpected loginctl invocation: $*" >&2
+  exit 91
+fi
+"""
+
+
 def deploy_env(tmp_path, config_text=None):
     mock_bin = tmp_path / "bin"
     remote_home = tmp_path / "remote-home"
@@ -52,10 +64,13 @@ def deploy_env(tmp_path, config_text=None):
 
     ssh = mock_bin / "ssh"
     rsync = mock_bin / "rsync"
+    loginctl = mock_bin / "loginctl"
     ssh.write_text(SSH_MOCK)
     rsync.write_text(RSYNC_MOCK)
+    loginctl.write_text(LOGINCTL_MOCK)
     ssh.chmod(0o755)
     rsync.chmod(0o755)
+    loginctl.chmod(0o755)
 
     env = os.environ.copy()
     env.update(
@@ -137,6 +152,19 @@ def test_preflight_rejects_unprotected_config_permissions(tmp_path):
     assert "must have mode 600" in result.stderr
 
 
+def test_preflight_rejects_disabled_linger_before_any_mutation(tmp_path):
+    env, _config = deploy_env(
+        tmp_path, "HUB_URL=http://hub/push\nFLEET_TOKEN=token\n"
+    )
+    env["MOCK_LINGER"] = "no"
+
+    result = run_deploy(env)
+
+    assert result.returncode != 0
+    assert events(env) == ["preflight"]
+    assert "systemd linger is not enabled" in result.stderr
+
+
 def test_deploy_preserves_config_updates_unit_and_orders_every_step(tmp_path):
     secret = "do-not-print-this-token"
     original = f"HUB_URL=http://hub/push\nFLEET_TOKEN={secret}\nHOSTNAME=test\n"
@@ -149,7 +177,7 @@ def test_deploy_preserves_config_updates_unit_and_orders_every_step(tmp_path):
         "preflight",
         "rsync",
         "version",
-        "install-restart",
+        "install-enable-restart",
         "status",
     ]
     assert config.read_text() == original
@@ -166,9 +194,11 @@ def test_deploy_preserves_config_updates_unit_and_orders_every_step(tmp_path):
     state_dir_at = install_payload.index("install -d -m 0700")
     install_at = install_payload.index("install -m 0644")
     reload_at = install_payload.index("systemctl --user daemon-reload")
+    enable_at = install_payload.index("systemctl --user enable heimdall-agent")
     restart_at = install_payload.index("systemctl --user restart heimdall-agent")
-    assert state_dir_at < install_at < reload_at < restart_at
+    assert state_dir_at < install_at < reload_at < enable_at < restart_at
     assert 'if [ ! -f "${SERVICE_DIR}/heimdall-agent.service" ]' not in install_payload
+    assert "\nenabled\nactive\n" in result.stdout
 
 
 def test_valid_quoted_config_values_pass_preflight(tmp_path):

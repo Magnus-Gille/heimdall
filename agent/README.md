@@ -39,11 +39,18 @@ python3 core.py --once
 ### 3a. Linux / Raspberry Pi / Jetson — automated deploy (canonical)
 
 Use the deploy script for first-time installs and all updates. Before the first
-run, place a mode-`0600` `config.env` containing non-empty `HUB_URL` and
-`FLEET_TOKEN` at `~/repos/heimdall/agent/config.env` on the target. The script
-preflights that protected host configuration before changing anything, rsyncs
-the agent, stamps a `VERSION` file (the git short SHA), updates the systemd user
-unit, and restarts the service:
+run, enable systemd linger for the target user and place a mode-`0600`
+`config.env` containing non-empty `HUB_URL` and `FLEET_TOKEN` at
+`~/repos/heimdall/agent/config.env` on the target:
+
+```bash
+ssh <host> 'sudo loginctl enable-linger "$USER"'
+```
+
+The script preflights both linger and the protected host configuration before
+changing anything, rsyncs the agent, stamps a `VERSION` file (the git short
+SHA), updates the systemd user unit, enables it for future boots, and restarts
+the service:
 
 ```bash
 # From the repo root on your laptop:
@@ -55,26 +62,23 @@ bash agent/deploy/deploy-agent.sh worker-node
 bash agent/deploy/deploy-agent.sh user@192.0.2.1
 ```
 
-The script is idempotent — safe to re-run after any code change. It does
+The script is idempotent — safe to re-run after any code change. It verifies
+both `is-enabled` and `is-active` after deployment. Combined with the
+fail-closed linger preflight, a successful first-time install persists across
+logout and the next boot. It does
 **not** overwrite or delete the host's `config.env` (secrets are preserved),
-and refuses before rsync/restart when the required configuration is absent or
-empty.
-
-After deploying, enable linger so the user unit survives logout:
-
-```bash
-ssh <host> "sudo loginctl enable-linger \$USER"
-```
+and refuses before rsync/restart when the required configuration is absent,
+empty, improperly protected, or the target user does not have linger enabled.
 
 #### Manual install (alternative)
 
 ```bash
 mkdir -p ~/.config/systemd/user
 cp deploy/heimdall-agent.service ~/.config/systemd/user/
+sudo loginctl enable-linger "$USER"
 systemctl --user daemon-reload
 systemctl --user enable --now heimdall-agent.service
 systemctl --user status heimdall-agent.service
-sudo loginctl enable-linger "$USER"
 ```
 
 The shipped unit is a **user** unit (`WantedBy=default.target`, `%h` = your home, no root needed) — the recommended install for the always-on Pi/Jetson hosts. For a system-wide install instead, copy the unit to `/etc/systemd/system/`, add `User=<you>`, change `WantedBy` to `multi-user.target`, and replace `%h` with the absolute home path.
