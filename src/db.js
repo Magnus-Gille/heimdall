@@ -306,6 +306,28 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    // Bounded, content-free synthetic journey history (#49). The payload is a
+    // closed diagnostic contract; no prompt, task, file, or memory content is
+    // accepted by the validator before insertion.
+    version: 14,
+    sql: `
+      CREATE TABLE IF NOT EXISTS synthetic_journeys (
+        journey_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        producer TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        runner_outcome TEXT NOT NULL,
+        latency_ms INTEGER,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (journey_id, attempt_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_synthetic_journeys_observed
+        ON synthetic_journeys(journey_id, observed_at DESC, attempt_id DESC);
+    `,
+  },
 ];
 
 function openDatabase(dbPath) {
@@ -1203,6 +1225,74 @@ function getSystemdSupervisionAudit(db) {
   catch { return { ...row, state: 'malformed', audit: null }; }
 }
 
+const SYNTHETIC_HISTORY_LIMIT = 576;
+
+function insertSyntheticJourney(db, journey, receivedAt = new Date().toISOString()) {
+  const payload = JSON.stringify(journey);
+  return db.transaction(() => {
+    const previous = db.prepare(`
+      SELECT payload FROM synthetic_journeys
+      WHERE journey_id = ? AND attempt_id = ?
+    `).get(journey.journey_id, journey.attempt_id);
+    if (previous) {
+      if (previous.payload === payload) return { ok: true, replay: true };
+      return { ok: false, replay: false, code: 'attempt_conflict' };
+    }
+    db.prepare(`
+      INSERT INTO synthetic_journeys
+        (journey_id, attempt_id, producer, observed_at, received_at,
+         outcome, runner_outcome, latency_ms, payload)
+      VALUES (@journeyId, @attemptId, @producer, @observedAt, @receivedAt,
+              @outcome, @runnerOutcome, @latencyMs, @payload)
+    `).run({
+      journeyId: journey.journey_id, attemptId: journey.attempt_id,
+      producer: journey.producer,
+      // Normalize optional millisecond spelling before lexical SQLite ordering.
+      observedAt: new Date(Date.parse(journey.observed_at)).toISOString(),
+      receivedAt,
+      outcome: journey.outcome, runnerOutcome: journey.runner_outcome,
+      latencyMs: journey.latency_ms, payload,
+    });
+    db.prepare(`
+      DELETE FROM synthetic_journeys
+      WHERE journey_id = ? AND attempt_id NOT IN (
+        SELECT attempt_id FROM synthetic_journeys
+        WHERE journey_id = ?
+        ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
+      )
+    `).run(journey.journey_id, journey.journey_id, SYNTHETIC_HISTORY_LIMIT);
+    return { ok: true, replay: false };
+  })();
+}
+
+function hydrateSyntheticJourney(row) {
+  if (!row || typeof row.payload !== 'string') return null;
+  try { return JSON.parse(row.payload); } catch { return null; }
+}
+
+function getSyntheticJourneyHistory(db, journeyId, limit = 288) {
+  const bounded = Math.max(1, Math.min(SYNTHETIC_HISTORY_LIMIT, Number.isSafeInteger(limit) ? limit : 288));
+  return db.prepare(`
+    SELECT payload FROM synthetic_journeys
+    WHERE journey_id = ?
+    ORDER BY observed_at DESC, attempt_id DESC LIMIT ?
+  `).all(journeyId, bounded).map(hydrateSyntheticJourney).filter(Boolean);
+}
+
+function getLatestSyntheticJourneys(db) {
+  return db.prepare(`
+    SELECT current.payload
+    FROM synthetic_journeys AS current
+    WHERE NOT EXISTS (
+      SELECT 1 FROM synthetic_journeys AS newer
+      WHERE newer.journey_id = current.journey_id
+        AND (newer.observed_at > current.observed_at
+          OR (newer.observed_at = current.observed_at AND newer.attempt_id > current.attempt_id))
+    )
+    ORDER BY current.journey_id
+  `).all().map(hydrateSyntheticJourney).filter(Boolean);
+}
+
 module.exports = {
   openDatabase,
   upsertPanel,
@@ -1217,6 +1307,9 @@ module.exports = {
   getMaintenanceExecutionResult,
   upsertSystemdSupervisionAudit,
   getSystemdSupervisionAudit,
+  insertSyntheticJourney,
+  getSyntheticJourneyHistory,
+  getLatestSyntheticJourneys,
   isRetiredPushedPanel,
   insertMetric,
   insertMetrics,

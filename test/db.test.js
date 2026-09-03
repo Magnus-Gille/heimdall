@@ -55,6 +55,7 @@ describe('openDatabase', () => {
     assert.ok(names.includes('fleet_metrics'));
     assert.ok(names.includes('service_snapshots'));
     assert.ok(names.includes('systemd_supervision_audits'));
+    assert.ok(names.includes('synthetic_journeys'));
     const serviceVersionCols = db.prepare('PRAGMA table_info(service_versions)').all();
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_status'));
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_reason'));
@@ -73,7 +74,7 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 13); // bump when MIGRATIONS grows (v13 systemd supervision evidence)
+    assert.strictEqual(version, 14); // bump when MIGRATIONS grows (v14 synthetic journeys)
     db2.close();
   });
 
@@ -126,7 +127,7 @@ describe('openDatabase', () => {
     legacy.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 13);
+    assert.equal(db.pragma('user_version', { simple: true }), 14);
 
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     const metricCols = db.prepare('PRAGMA table_info(fleet_metrics)').all();
@@ -170,7 +171,7 @@ describe('openDatabase', () => {
     v11.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 13);
+    assert.equal(db.pragma('user_version', { simple: true }), 14);
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     assert.ok(hostCols.some((c) => c.name === 'agent_version'));
     assert.ok(hostCols.some((c) => c.name === 'membership_state'));
