@@ -37,7 +37,7 @@ function audit(overrides = {}) {
     baseline_id: 'fleet-systemd-supervision', baseline_digest: `sha256:${'a'.repeat(64)}`,
     topology_authority: 'grimnir-service-registry',
     observed_at: '2026-08-02T11:55:00Z', evaluated_at: '2026-08-02T12:00:00Z',
-    evaluated_at_source: 'fixture-override',
+    evaluated_at_source: 'clock',
     freshness: { status: 'fresh', age_seconds: 300, max_age_seconds: 900 },
     notifiers: [{ target_node_id: 'node-core', status: 'available' }],
     summary: { status: 'pass', unit_count: units.length, compliant_unit_count: units.length, finding_count: 0 },
@@ -81,6 +81,28 @@ describe('systemd supervision v1 projection', () => {
     assert.equal(projected.units[0].state, 'pass');
     assert.equal(projected.units[1].classification, 'never-run');
     assert.equal(projected.units[1].state, 'unknown');
+  });
+
+  it('never promotes an inactive long-running service from inconsistent producer status', () => {
+    const projected = projectSupervisionAudit(audit({ units: [
+      unit('stopped.service', {
+        status: 'pass',
+        evidence: evidence({
+          unit_result: { active_state: 'inactive', sub_state: 'dead', result: 'success' },
+        }),
+      }),
+    ] }), { now: NOW });
+    assert.equal(projected.units[0].classification, 'not-active');
+    assert.equal(projected.units[0].state, 'fail');
+    assert.equal(projected.state, 'fail');
+  });
+
+  it('stores fixture replay evidence but never projects it as live health', () => {
+    const projected = projectSupervisionAudit(audit({ evaluated_at_source: 'fixture-override' }), { now: NOW });
+    assert.equal(projected.freshness, 'fixture-replay');
+    assert.equal(projected.units[0].classification, 'fixture-replay');
+    assert.equal(projected.units[0].state, 'unknown');
+    assert.equal(projected.state, 'unknown');
   });
 
   it('distinguishes unavailable manager scope and absent units', () => {
@@ -160,6 +182,10 @@ describe('systemd supervision v1 projection', () => {
     assert.equal(validateSupervisionAudit({ ...audit(), observed_at: '2026-02-30T12:00:00Z' }).ok, false);
     const duplicate = { code: 'timer_overdue', severity: 'error', route: 'component-owner' };
     assert.equal(validateSupervisionAudit(audit({ units: [unit('x.service', { findings: [duplicate, duplicate] })] })).ok, false);
+    assert.equal(validateSupervisionAudit(audit({ notifiers: [
+      { target_node_id: 'node-core', status: 'available' },
+      { target_node_id: 'node-core', status: 'unknown' },
+    ] })).ok, false);
     assert.equal(validateSupervisionAudit({ ...audit(), summary: { status: 'pass', unit_count: 513, compliant_unit_count: 513, finding_count: 0 } }).ok, false);
     assert.equal(projectSupervisionAudit(null).state, 'unknown');
     assert.equal(projectSupervisionAudit(audit(), { now: Number.NaN }).state, 'unknown');
