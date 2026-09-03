@@ -47,7 +47,7 @@ they explicitly replace `disk_volumes`.
 
 - Service discovery from Grimnir's `services.json`, enriched by `heimdall.config.json`.
 - Self-describing `/heimdall.json` service contract with `/health` fallback.
-- Authenticated fleet-agent, alert, and typed-panel ingestion.
+- Authenticated fleet-agent, alert, typed-panel, and read-only systemd-supervision ingestion.
 - CPU, memory, disk, temperature, task, deployment-drift, backup, MCP, and inference views.
 - Declarative alert thresholds with streak-based fire and resolve behavior.
 - SQLite event history and a generic service detail renderer.
@@ -94,6 +94,9 @@ Important settings:
 - `HEIMDALL_MAINTENANCE_RESULT_TOKEN` authenticates the separate, read-only
   Brokkr v1 maintenance-evidence observer. It has no insecure-loopback mode;
   its card does not affect liveness, alerting, promotion, or actuation.
+- `HEIMDALL_SUPERVISION_TOKEN` authenticates Brokkr's closed v1 supervision
+  audit at `/api/systemd-supervision`. The `/supervision` view recomputes
+  freshness and exposes no restart, enable, or disable action.
 - `HEIMDALL_NOTIFY_CHAT_ID` enables task and critical-alert delivery through Ratatoskr.
 - `RATATOSKR_URL` stays loopback by default; non-loopback deployments should set
   `RATATOSKR_SEND_API_KEY`.
@@ -170,7 +173,7 @@ normalized descriptor snapshot carries `panel_warnings` records with only
 displayed. Producers should treat these warnings as a contract error and send
 object rows rather than `string[][]`.
 
-Primary pages are `/`, `/services`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above.
+Primary pages are `/`, `/services`, `/supervision`, `/fleet`, `/alerts`, `/events`, `/insights`, `/projects`, and `/consolidation`. The public read interface is intentionally broad for a trusted operator network; mutation and ingest routes have the additional controls described above.
 
 ## Development
 

@@ -14,6 +14,7 @@ const NAV = [
   { href: '/',              label: 'Overview' },
   { href: '/fleet',         label: 'Fleet' },
   { href: '/services',      label: 'Services' },
+  { href: '/supervision',   label: 'Units' },
   { href: '/alerts',        label: 'Alerts', badge: true },
   { href: '/projects',      label: 'Projects' },
   { href: '/insights',      label: 'Insights' },

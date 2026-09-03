@@ -1,0 +1,59 @@
+.supervision-summary p {
+  margin: 0 0 var(--space-4);
+  color: var(--text-muted);
+}
+
+.supervision-meta {
+  margin-top: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.supervision-unit .card-head {
+  gap: var(--space-3);
+}
+
+.supervision-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.supervision-line {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.45fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+
+.supervision-line > :first-child {
+  color: var(--text-muted);
+}
+
+.supervision-line > :last-child {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.supervision-timer {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 2px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  .supervision-line {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+
+  .supervision-line > :last-child {
+    text-align: left;
+  }
+}

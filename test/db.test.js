@@ -54,6 +54,7 @@ describe('openDatabase', () => {
     assert.ok(names.includes('fleet_hosts'));
     assert.ok(names.includes('fleet_metrics'));
     assert.ok(names.includes('service_snapshots'));
+    assert.ok(names.includes('systemd_supervision_audits'));
     const serviceVersionCols = db.prepare('PRAGMA table_info(service_versions)').all();
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_status'));
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_reason'));
@@ -72,7 +73,7 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 12); // bump when MIGRATIONS grows (v12 fleet membership)
+    assert.strictEqual(version, 13); // bump when MIGRATIONS grows (v13 systemd supervision evidence)
     db2.close();
   });
 
@@ -125,7 +126,7 @@ describe('openDatabase', () => {
     legacy.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 12);
+    assert.equal(db.pragma('user_version', { simple: true }), 13);
 
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     const metricCols = db.prepare('PRAGMA table_info(fleet_metrics)').all();
@@ -142,7 +143,7 @@ describe('openDatabase', () => {
     db.close();
   });
 
-  it('upgrades a v11 health schema with the v12 fleet membership migration', () => {
+  it('upgrades a v11 health schema through the current migrations', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
     const dbPath = path.join(dir, 'test.db');
 
@@ -169,7 +170,7 @@ describe('openDatabase', () => {
     v11.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 12);
+    assert.equal(db.pragma('user_version', { simple: true }), 13);
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     assert.ok(hostCols.some((c) => c.name === 'agent_version'));
     assert.ok(hostCols.some((c) => c.name === 'membership_state'));
