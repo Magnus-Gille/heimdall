@@ -176,7 +176,8 @@ function fleetPage(gitVersion, db, now, thresholds) {
     </div>
     <div class="card" style="margin-bottom: var(--space-4)">
       <div class="card-head"><span class="card-title">Temperature — last 24h</span></div>
-      <div class="fleet-temp-chart-wrap"><canvas id="fleet-temp-chart" height="260" data-hosts="${esc(JSON.stringify(hostnames))}"></canvas></div>
+      <div id="fleet-temp-chart-wrap" class="fleet-temp-chart-wrap" hidden><canvas id="fleet-temp-chart" height="260" data-hosts="${esc(JSON.stringify(hostnames))}" role="img" aria-label="Fleet CPU temperature over the last 24 hours"></canvas></div>
+      <p id="fleet-temp-chart-status" class="empty" role="status" aria-live="polite">Loading temperature data…</p>
     </div>
     <div hx-get="/api/fleet/grid" hx-trigger="every 30s" hx-swap="innerHTML">
       ${fleetGridFragment(db, now, thresholds, { baselineVersion: gitVersion })}
