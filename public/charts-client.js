@@ -581,26 +581,46 @@ function initFleetTempChart() {
     },
   });
 
-  loadFleetTempData(hosts, '24h');
+  return loadFleetTempData(hosts, '24h');
 }
 
 async function loadFleetTempData(hosts, range) {
   if (!fleetTempChart) return;
 
-  try {
-    const results = await Promise.all(
-      hosts.map((host) =>
-        fetch('/api/metrics/' + host + '/temp_cpu_c?range=' + range)
-          .then((r) => r.json())
-          .catch(() => [])
-      )
-    );
-    results.forEach((data, i) => {
-      fleetTempChart.data.datasets[i].data = Array.isArray(data) ? data.map((d) => ({ x: d.x, y: d.y })) : [];
-    });
+  const results = await Promise.all(hosts.map(async (host) => {
+    try {
+      const response = await fetch('/api/metrics/' + host + '/temp_cpu_c?range=' + range);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!Array.isArray(data)) throw new Error('Invalid temperature response');
+      return { data, failed: false };
+    } catch (err) {
+      console.error('Failed to load fleet temperature data for ' + host + ':', err);
+      return { data: [], failed: true };
+    }
+  }));
+
+  results.forEach((result, i) => {
+    fleetTempChart.data.datasets[i].data = result.data.map((point) => ({ x: point.x, y: point.y }));
+  });
+
+  const hasSamples = results.some((result) => result.data.length > 0);
+  const failedCount = results.filter((result) => result.failed).length;
+  const wrapper = document.getElementById('fleet-temp-chart-wrap');
+  const status = document.getElementById('fleet-temp-chart-status');
+  wrapper.hidden = !hasSamples;
+  status.hidden = hasSamples && failedCount === 0;
+  if (failedCount > 0) {
+    status.textContent = `Temperature data unavailable for ${failedCount} of ${hosts.length} hosts.`;
+  } else if (!hasSamples) {
+    status.textContent = range === '24h'
+      ? 'No temperature samples in the last 24 hours.'
+      : 'No temperature samples in the selected range.';
+  }
+  if (hasSamples) {
+    // Chart.js measured a zero-sized canvas while the wrapper was hidden.
+    fleetTempChart.resize();
     fleetTempChart.update('none');
-  } catch (err) {
-    console.error('Failed to load fleet temperature data:', err);
   }
 }
 
