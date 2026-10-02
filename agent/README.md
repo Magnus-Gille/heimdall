@@ -85,8 +85,9 @@ The shipped unit is a **user** unit (`WantedBy=default.target`, `%h` = your home
 
 The unit checks for the host-owned `config.env` before activation. If that file
 is absent, `systemctl --user status heimdall-agent` reports a skipped condition
-instead of retrying forever; provision it through the normal deploy path, which
-also validates its mode and required keys.
+instead of retrying forever; manually place a mode-`0600` `config.env` on the
+target as described in §3a, then rerun the deploy script so it can validate the
+file and required keys before updating the agent.
 
 ### 3b. macOS — launchd
 
@@ -143,4 +144,4 @@ the public contract payload.
 | `temp_cpu_c` missing on Mac | `brew install macmon` |
 | POST returns 401 | Set `FLEET_TOKEN` in config.env |
 | hostname wrong on server | Set `HOSTNAME=<name>` in config.env |
-| Service is skipped or won't start on Pi | Provision a mode-`0600` `config.env` with the normal deploy path, then check `systemctl --user status heimdall-agent` and `journalctl --user -u heimdall-agent` |
+| Service is skipped or won't start on Pi | Manually place a mode-`0600` `config.env` on the target as described in §3a, rerun the deploy script, then check `systemctl --user status heimdall-agent` and `journalctl --user -u heimdall-agent` |
