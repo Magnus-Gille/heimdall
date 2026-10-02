@@ -570,7 +570,7 @@ function initFleetTempChart() {
         y: {
           ticks: {
             color: '#565f89',
-            callback: function(value) { return value + '°C'; },
+            callback: function(value) { return Number(Number(value).toPrecision(12)) + '°C'; },
           },
           grid: { color: 'rgba(59, 66, 97, 0.3)' },
         },

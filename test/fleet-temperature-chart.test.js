@@ -18,6 +18,7 @@ async function renderChart(fetchResponse) {
   class FakeChart {
     constructor(_context, config) {
       this.data = config.data;
+      this.options = config.options;
       this.updates = 0;
       this.resizes = 0;
       charts.push(this);
@@ -86,5 +87,24 @@ describe('Fleet temperature chart data state (#75)', () => {
     assert.match(status.textContent, /Temperature data unavailable for 1 of 2 hosts/);
     assert.doesNotMatch(status.textContent, /^No temperature samples/);
     assert.equal(errors.length, 1);
+  });
+});
+
+describe('Fleet temperature chart axis labels (#77)', () => {
+  it('formats integer and decimal ticks without floating point tails', async () => {
+    const { chart } = await renderChart(async () => ({
+      ok: true,
+      json: async () => [{ x: '2026-09-26T12:00:00Z', y: 42.3 }],
+    }));
+    const tickLabel = chart.options.scales.y.ticks.callback;
+
+    assert.equal(tickLabel(42), '42°C');
+    assert.equal(tickLabel(42.5), '42.5°C');
+    assert.equal(tickLabel(42.300000000000004), '42.3°C');
+    assert.equal(chart.options.scales.y.min, undefined);
+    assert.equal(chart.options.scales.y.max, undefined);
+    assert.equal(chart.data.datasets[0].data.length, 1);
+    assert.equal(chart.data.datasets[0].data[0].x, '2026-09-26T12:00:00Z');
+    assert.equal(chart.data.datasets[0].data[0].y, 42.3);
   });
 });
