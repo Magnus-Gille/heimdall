@@ -5,6 +5,10 @@
 Description=Heimdall Fleet Push Agent
 After=network-online.target
 Wants=network-online.target
+# The host-owned config is provisioned separately and is required before the
+# unit may activate. A missing file is a visible skipped start, not a restart
+# loop while the normal deploy preflight remains the actionable repair path.
+ConditionPathExists=%h/repos/heimdall/agent/config.env
 
 [Service]
 Type=simple
