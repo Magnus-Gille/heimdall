@@ -86,9 +86,7 @@ The shipped unit is a **user** unit (`WantedBy=default.target`, `%h` = your home
 The unit checks for the host-owned `config.env` before activation. If that file
 is absent, `systemctl --user status heimdall-agent` reports a skipped condition
 instead of retrying forever; provision it through the normal deploy path, which
-also validates its mode and required keys. Other recurrent start failures are
-rate-limited to five attempts in five minutes while ordinary failure recovery
-remains enabled.
+also validates its mode and required keys.
 
 ### 3b. macOS — launchd
 

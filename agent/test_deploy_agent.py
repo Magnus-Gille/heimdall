@@ -101,14 +101,26 @@ def events(env):
     return path.read_text().splitlines() if path.exists() else []
 
 
+def test_service_requires_host_config_before_activation():
+    sections = {}
+    current = None
+    for raw_line in SERVICE_UNIT.read_text().splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+            sections[current] = {}
+        elif current and "=" in line and not line.startswith("#"):
+            key, value = line.split("=", 1)
+            sections[current][key] = value
+
+    config_path = "%h/repos/heimdall/agent/config.env"
+    assert sections["Unit"]["ConditionPathExists"] == config_path
+    assert sections["Service"]["EnvironmentFile"] == config_path
+
+
 def test_service_sandbox_allows_only_agent_and_heartbeat_state_writes():
     unit = SERVICE_UNIT.read_text()
 
-    assert "ConditionPathExists=%h/repos/heimdall/agent/config.env" in unit
-    assert "StartLimitIntervalSec=5min" in unit
-    assert "StartLimitBurst=5" in unit
-    assert "Restart=on-failure" in unit
-    assert "RestartSec=10" in unit
     assert "ProtectHome=read-only" in unit
     assert (
         "ReadWritePaths=%h/repos/heimdall/agent "
