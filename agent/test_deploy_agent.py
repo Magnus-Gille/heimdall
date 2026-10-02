@@ -104,6 +104,11 @@ def events(env):
 def test_service_sandbox_allows_only_agent_and_heartbeat_state_writes():
     unit = SERVICE_UNIT.read_text()
 
+    assert "ConditionPathExists=%h/repos/heimdall/agent/config.env" in unit
+    assert "StartLimitIntervalSec=5min" in unit
+    assert "StartLimitBurst=5" in unit
+    assert "Restart=on-failure" in unit
+    assert "RestartSec=10" in unit
     assert "ProtectHome=read-only" in unit
     assert (
         "ReadWritePaths=%h/repos/heimdall/agent "
