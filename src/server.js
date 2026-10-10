@@ -69,6 +69,7 @@ const { m5Snapshot } = require('./plugins/inference');
 const { mcpSnapshot } = require('./mcp-probe');
 const { getObjectiveHistory, readObjectiveSourceState } = require('./code-health/store');
 const { DEFAULT_SUBJECTIVE_SOURCE_CONFIG, readSubjectiveEvidence, filterSubjectiveEvidence } = require('./code-health/munin-export');
+const { loadCodeHealthRuntimeConfig } = require('./code-health/runtime-config');
 const { buildCodeHealthView, codeHealthPage, registeredRepositories } = require('./render/code-health');
 
 // Service names of the synthetic snapshots written outside the polled registry:
@@ -98,7 +99,7 @@ app.register(require('@fastify/rate-limit'), {
 });
 
 const db = injectedDb || openDatabase();
-const codeHealthOptions = options.codeHealth || {};
+const codeHealthOptions = options.codeHealth || loadCodeHealthRuntimeConfig();
 const codeHealthProviders = codeHealthOptions.providers || {};
 const codeHealthRead = {
   getObjectiveHistory: codeHealthProviders.getObjectiveHistory || getObjectiveHistory,
@@ -645,8 +646,8 @@ app.get('/api/insights/trend', async () => {
 });
 
 // Code health is a stored-evidence view. These GET routes never call a source
-// collector, Munin RPC, or credential loader; source activation remains an
-// explicit future integration decision.
+// collector, Munin RPC, or credential loader; the gated collector is the only
+// source activation path.
 async function loadCodeHealthView(query = {}) {
   const repositories = registeredRepositories();
   const requestedRepo = query.repo == null ? 'sagascript' : query.repo;
@@ -660,7 +661,7 @@ async function loadCodeHealthView(query = {}) {
   const days = Number(requestedDays);
   const at = now();
   const asOf = new Date(at);
-  const [objectiveHistory, objectiveSource] = await Promise.all([
+  const [objectiveHistory, loadedObjectiveSource] = await Promise.all([
     codeHealthRead.getObjectiveHistory(db, { repoOwner: repo.owner, repoName: repo.name, days, asOf }),
     Promise.resolve(codeHealthRead.readObjectiveSourceState(db, {
       repoOwner: repo.owner,
@@ -669,6 +670,11 @@ async function loadCodeHealthView(query = {}) {
       configured: codeHealthOptions.objectiveConfigured === true,
     })),
   ]);
+  const objectiveSource = { ...loadedObjectiveSource };
+  if (codeHealthOptions.status === 'rejected' && codeHealthOptions.gateEnabled === true) {
+    objectiveSource.status = 'rejected';
+    objectiveSource.last_error_code = 'invalid-source-configuration';
+  }
   const subjectiveConfig = typeof codeHealthOptions.subjectiveConfigForRepo === 'function'
     ? codeHealthOptions.subjectiveConfigForRepo(repo.name)
     : codeHealthOptions.subjectiveConfig || DEFAULT_SUBJECTIVE_SOURCE_CONFIG;

@@ -73,10 +73,11 @@ async function collectObjectiveReports({
   let replayed = 0;
   let rejected = 0;
   let unavailable = 0;
+  let incomplete = false;
   for (const source of REPOSITORIES) {
-    let candidates;
+    let listing;
     try {
-      candidates = await transport.listArtifacts({
+      listing = await transport.listArtifacts({
         owner: source.owner,
         repository: source.name,
         workflowPath: source.workflowPath,
@@ -89,12 +90,17 @@ async function collectObjectiveReports({
       auditAttempt(db, isoNow(clock()), source, 'admit', 'unavailable');
       continue;
     }
+    const candidates = Array.isArray(listing) ? listing : listing?.candidates;
     if (!Array.isArray(candidates)) {
       unavailable += 1;
       auditAttempt(db, isoNow(clock()), source, 'admit', 'unavailable');
       continue;
     }
-    if (candidates.length === 0) auditAttempt(db, isoNow(clock()), source, 'admit', 'no-artifacts');
+    let sourceIncomplete = !Array.isArray(listing) && listing.incomplete === true;
+    if (sourceIncomplete) incomplete = true;
+    if (candidates.length === 0 && !sourceIncomplete) {
+      auditAttempt(db, isoNow(clock()), source, 'admit', 'no-artifacts');
+    }
     for (const candidate of candidates) {
       let provenance;
       try {
@@ -112,19 +118,29 @@ async function collectObjectiveReports({
         const result = await admitObjectiveArtifact(db, parsed, provenance, clock());
         admitted += result.admitted;
         replayed += result.replayed;
-      } catch {
+      } catch (error) {
+        if (error?.message === 'github-scan-deadline-exceeded') {
+          sourceIncomplete = true;
+          incomplete = true;
+          break;
+        }
         rejected += 1;
         auditAttempt(db, isoNow(clock()), source, 'admit', 'rejected');
       }
     }
+    // Write this after candidate admissions so a successful artifact cannot
+    // obscure a truncated or ambiguous provider scan in the source status.
+    if (sourceIncomplete) auditAttempt(db, isoNow(clock()), source, 'admit', 'incomplete');
   }
   return {
-    status: rejected > 0 ? (admitted + replayed > 0 ? 'partial' : 'rejected') : unavailable > 0 ? 'partial' : admitted + replayed > 0 ? 'committed' : 'no-artifacts',
+    status: rejected > 0 ? (admitted + replayed > 0 ? 'partial' : 'rejected')
+      : unavailable > 0 || incomplete ? 'partial' : admitted + replayed > 0 ? 'committed' : 'no-artifacts',
     expired,
     admitted,
     replayed,
     rejected,
     unavailable,
+    incomplete,
   };
 }
 

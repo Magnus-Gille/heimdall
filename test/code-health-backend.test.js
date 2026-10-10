@@ -6,6 +6,8 @@ const { openDatabase } = require('../src/db');
 const { REPOSITORIES, EXPECTED_SLOTS } = require('../src/code-health/registry');
 const { parseObjectiveArtifact, parseZipArchive } = require('../src/code-health/artifact');
 const { collectObjectiveReports } = require('../src/code-health/objective-collector');
+const { loadCodeHealthRuntimeConfig } = require('../src/code-health/runtime-config');
+const { runCodeHealthCollection } = require('../src/code-health/runtime');
 const { expectedFilterHash, reconcileSubjectiveEvidence, readSubjectiveEvidence } = require('../src/code-health/munin-export');
 const { admitObjectiveArtifact, pruneExpiredEvidence, getObjectiveHistory, readObjectiveSourceState } = require('../src/code-health/store');
 
@@ -726,5 +728,98 @@ describe('code-health local retention and boundaries', () => {
     await assert.rejects(getObjectiveHistory(db, { repoOwner: 'Magnus-Gille', repoName: 'gille-inference', days: 180 }), /30, 90, or 365/);
     await assert.rejects(getObjectiveHistory(db, { repoOwner: 'other', repoName: 'gille-inference' }), /registered/);
     db.close();
+  });
+});
+
+describe('code-health runtime integration', () => {
+  it('collects injected producer and Munin fixtures, then serves stored rows through the normal app', async () => {
+    const sourceConfig = subjectiveConfig();
+    const runtimeConfig = loadCodeHealthRuntimeConfig({
+      env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'fixture-only' },
+      readConfig: () => ({
+        sources: [{
+          repoOwner: sourceConfig.repoOwner,
+          repoName: sourceConfig.repoName,
+          namespace: sourceConfig.namespace,
+          producerPrincipalId: sourceConfig.producerPrincipalId,
+        }],
+      }),
+    });
+    assert.equal(runtimeConfig.status, 'enabled');
+    const db = memoryDb();
+    const archive = makeObjectiveArchive('gille-inference', 731, 1);
+    const metadata = transportMetadata('gille-inference', 731, 1, archive);
+    const result = await runCodeHealthCollection(db, runtimeConfig, {
+      clock: () => new Date(NOW),
+      githubTransport: {
+        listArtifacts: async ({ repository }) => repository === 'gille-inference'
+          ? { candidates: [metadata], incomplete: false }
+          : { candidates: [], incomplete: false },
+        downloadArtifact: async () => archive,
+      },
+      muninRpc: async (method, args) => {
+        assert.equal(method, 'memory_code_health');
+        assert.equal(args.action, 'export');
+        return exportPage(sourceConfig, { records: [subjectiveRecord('ref:runtime-record', 'runtime-task')] });
+      },
+    });
+    assert.equal(result.objective.status, 'committed');
+    assert.equal(result.subjective[0].status, 'committed');
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM code_health_objective_snapshots').get().n, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM code_health_subjective_records WHERE record_role = \'record\'').get().n, 1);
+
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-code-health-runtime-'));
+    const envKeys = ['HOME', 'HEIMDALL_CONFIG_PATH', 'GRIMNIR_SERVICES_JSON'];
+    const priorEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    let app;
+    try {
+      process.env.HOME = home;
+      process.env.HEIMDALL_CONFIG_PATH = path.join(home, 'missing-config.json');
+      process.env.GRIMNIR_SERVICES_JSON = path.join(home, 'missing-services.json');
+      const { buildApp } = require('../src/server');
+      app = buildApp(db, {
+        runtimeRoot: path.resolve(__dirname, '..'),
+        grimnirPath: path.join(home, 'missing-nodes.json'),
+        now: () => Date.parse(NOW),
+        codeHealth: runtimeConfig,
+      }).app;
+      await app.ready();
+      const response = await app.inject({ method: 'GET', url: '/api/code-health?repo=gille-inference' });
+      assert.equal(response.statusCode, 200);
+      const view = response.json();
+      assert.equal(view.objectiveCollection.status, 'committed');
+      assert.equal(view.subjective.status, 'committed');
+      assert.equal(view.subjective.workerSamples, 1);
+      assert.ok(view.objective.some((metric) => metric.slots.some((slot) => slot.status === 'measured')));
+
+      await app.close();
+      app = null;
+      const rejectedConfig = loadCodeHealthRuntimeConfig({
+        env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'fixture-only' },
+        readConfig: () => ({ sources: [] }),
+      });
+      app = buildApp(db, {
+        runtimeRoot: path.resolve(__dirname, '..'),
+        grimnirPath: path.join(home, 'missing-nodes.json'),
+        now: () => Date.parse(NOW),
+        codeHealth: rejectedConfig,
+      }).app;
+      await app.ready();
+      const rejectedResponse = await app.inject({ method: 'GET', url: '/api/code-health?repo=gille-inference' });
+      assert.equal(rejectedResponse.statusCode, 200);
+      assert.equal(rejectedResponse.json().objectiveCollection.status, 'rejected');
+      assert.equal(rejectedResponse.json().subjective.status, 'rejected');
+    } finally {
+      if (app) await app.close();
+      for (const key of envKeys) {
+        if (priorEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = priorEnv[key];
+      }
+      fs.rmSync(home, { recursive: true, force: true });
+      db.close();
+    }
   });
 });

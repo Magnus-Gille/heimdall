@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "collect": "node src/collector.js",
+    "collect:code-health": "node scripts/collect-code-health.js",
     "boot-check": "node src/boot-check.js",
     "maintain": "node src/maintain.js",
     "audit:prod": "npm audit --omit=dev --audit-level=high",

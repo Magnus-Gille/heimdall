@@ -23,6 +23,8 @@ const { checkAndHeal } = require('./self-heal');
 const { loadServicesWithMeta } = require('./config/services');
 const { assertSafeStartupTargets, storageSshHost } = require('./config/live-config');
 const { buildRestartMetricRows } = require('./restart-evidence');
+const { loadCodeHealthRuntimeConfig } = require('./code-health/runtime-config');
+const { runCodeHealthCollection } = require('./code-health/runtime');
 const {
   REQUIRED_COLLECTOR_PROBES,
   DEFAULT_MAX_AGE_MS,
@@ -823,6 +825,16 @@ async function run() {
     await checkAndHeal(db);
   } catch (err) {
     console.warn('  Self-heal check failed:', err.message);
+  }
+
+  // This path is default-off and isolated from the operational probes above.
+  // It uses only the explicitly gated code-health sources and stores static
+  // audit statuses; no request handler performs collection.
+  try {
+    const codeHealth = await runCodeHealthCollection(db, loadCodeHealthRuntimeConfig());
+    if (codeHealth.status !== 'disabled') console.log(`  Code health collection: ${codeHealth.status}`);
+  } catch {
+    console.warn('  Code health collection failed');
   }
 
   db.close();
