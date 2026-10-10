@@ -17,7 +17,11 @@ const LIMITS = Object.freeze({
 const MANIFEST_KEYS = Object.freeze(['contract_version', 'repo_owner', 'repo_name', 'commit_sha', 'snapshots', 'evidence_index']);
 const PRODUCER_AUXILIARY_FILES = Object.freeze({
   'gille-inference': Object.freeze(['evidence/ci/inventory.json', 'evidence/overhead.json']),
-  sagascript: Object.freeze(['evidence/collection-status.json', 'evidence/collection-overhead.json']),
+  sagascript: Object.freeze([
+    'evidence/collection-status.json',
+    'evidence/collection-overhead.json',
+    'evidence/ci-workflow.json',
+  ]),
 });
 
 function sha256(bytes) {
