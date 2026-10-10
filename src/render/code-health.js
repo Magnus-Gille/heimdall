@@ -382,8 +382,8 @@ function buildCodeHealthView({
     objective: sections,
     subjective: summarizeSubjective(subjective, repo.name, resolvedEvidenceRefs, { cohort: selectedCohort }),
     acceptance: {
-      producer: 'No live Hugin capture is connected.',
-      mode: 'Fixture-only UI acceptance; stored evidence is read-only.',
+      producer: 'Read-only stored evidence; no collection is triggered by this view.',
+      mode: 'Stored evidence view; writes are disabled.',
       writesEnabled: false,
     },
   };
@@ -468,12 +468,23 @@ function codeHealthPage(gitVersion, view) {
   const retentionNotice = view.period.olderEvidenceMayBeAbsent ? `<p class="ch-callout">Older records may be absent from this ${view.period.requestedDays}-day requested window; records are retained for ${view.period.retainedMonths} calendar months from collection.</p>` : '';
   const retentionLabel = `${view.period.retainedMonths} calendar month${view.period.retainedMonths === 1 ? '' : 's'}`;
   const collectionNote = view.objectiveCollection.note || view.objectiveCollection.lastError || 'Stored snapshots only; rendering does not collect evidence.';
+  const fixtureNotice = view.subjective.status === 'fixture'
+    ? '<p class="ch-callout">Synthetic fixture data is shown for visual acceptance; no producer is enabled here.</p>'
+    : '<p class="ch-callout">Stored evidence view; writes are disabled. This page does not trigger live collection.</p>';
   const content = `<main class="code-health-page">
     <header class="ch-page-head"><div><p class="ch-eyebrow">Code health · read-only evidence</p><h1>${esc(view.repository.label)}</h1><p>Objective measurements and subjective worker observations remain separate.</p></div><div class="ch-collection-status">${statusBadge(status)}<span>${esc(fresh)}</span></div></header>
     <form class="ch-filters" method="get" action="/code-health"><label>Repository<select name="repo">${repoOptions}</select></label><label>Period<select name="days">${periodOptions}</select></label><label>Module<select name="module">${moduleOptions}</select></label><label>Worker model cohort <span class="ch-muted">(subjective only)</span><select name="cohort">${cohortOptions}</select></label><button type="submit">Apply filters</button></form>
+    <script>
+      document.querySelector('.ch-filters')?.addEventListener('change', (event) => {
+        if (event.target.name !== 'repo') return;
+        const form = event.currentTarget;
+        form.querySelector('select[name="module"]').value = 'all';
+        form.querySelector('select[name="cohort"]').value = 'all';
+      });
+    </script>
     ${retentionNotice}
     <p class="ch-note">${esc(collectionNote)} Last attempt: ${view.objectiveCollection.lastAttemptAt ? esc(view.objectiveCollection.lastAttemptAt) : 'none recorded'}; status: ${esc(STATUS_LABELS[view.objectiveCollection.lastAttemptStatus] || STATUS_LABELS[status] || status)}. Records are retained for ${retentionLabel} from collection.</p>
-    ${view.acceptance.writesEnabled ? '' : '<p class="ch-callout">No live Hugin capture is connected. Fixture-only UI acceptance; no producer is enabled here.</p>'}
+    ${view.acceptance.writesEnabled ? '' : fixtureNotice}
     <div class="ch-objective-grid">${objectiveSections}</div>
     ${subjectiveSection(view.subjective)}
     <footer class="ch-page-foot">As of ${esc(view.period.asOf)} · ${view.period.requestedDays}-day requested window · no score, ranking, or automatic action.</footer>

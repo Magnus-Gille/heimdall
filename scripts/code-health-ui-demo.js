@@ -14,11 +14,14 @@ process.env.GRIMNIR_SERVICES_JSON = path.join(tempRoot, 'no-services.json');
 
 const { openDatabase } = require('../src/db');
 const { EXPECTED_SLOTS } = require('../src/code-health/registry');
+const { loadContract } = require('../src/code-health/contract');
 const { buildApp } = require('../src/server');
 
-const now = new Date();
-const nowIso = now.toISOString();
+const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+const nowIso = now.toISOString().replace(/\.000Z$/, 'Z');
 const commit = 'a'.repeat(40);
+const subjectiveModuleRef = 'ref:slot-rust-complex-functions-v1';
+const agentFixture = require('../src/code-health/contract/tests/fixtures/code-health/agent-positive.json');
 
 function point(metric, scope, { id, at = nowIso, value, status = 'measured', reason = null, series = `${metric}-${scope}-v1` } = {}) {
   const payloads = {
@@ -69,29 +72,33 @@ function history(repoName, days, asOf) {
   };
 }
 
-function subjectiveFixture(repoName, asOf) {
-  const workerObservation = {
-    record_kind: 'observation', record_id: 'ref:demo-observation', repo_name: repoName,
-    occurrence_id: 'ref:demo-occurrence', dimension: 'understand', polarity: 'negative', cause: 'code',
-    module_refs: ['ref:demo-module'], summary: 'The relevant behavior required tracing two related modules.',
-    reporter: { kind: 'worker' }, actual_worker: { observed_model: 'gpt-6-luna' },
-  };
-  const assessment = {
-    record_kind: 'assessment', record_id: 'ref:demo-assessment', repo_name: repoName,
-    applicability: 'applicable', completeness: 'complete', outcome: 'completed',
-    ratings: [
-      { dimension: 'locate', value: 'manageable' },
-      { dimension: 'understand', value: 'difficult' },
-      { dimension: 'verify', value: 'easy' },
-    ], reporter: { kind: 'worker' }, actual_worker: { observed_model: 'gpt-6-luna' },
-  };
+async function subjectiveFixture(repoName, asOf) {
+  const contract = await loadContract();
+  const observedAt = new Date(Math.floor(Date.parse(asOf) / 1000) * 1000).toISOString().replace(/\.000Z$/, 'Z');
+  const records = JSON.parse(JSON.stringify(agentFixture.records)).map((record) => ({
+    ...record,
+    repo_owner: 'Magnus-Gille',
+    repo_name: repoName,
+    observed_at: observedAt,
+    module_refs: [subjectiveModuleRef],
+    actual_worker: { ...record.actual_worker, observed_model: 'gpt-6-luna' },
+  }));
+  const privateObservations = records.filter((record) => record.record_id === 'ref:rec-worker');
+  for (const record of privateObservations) record.summary = 'PRIVATE_DEMO_SUMMARY_MARKER';
+  const contextRecords = records.filter((record) => record.record_kind === 'observation' && record.reporter.kind !== 'worker');
+  const contextIds = new Set(contextRecords.map((record) => record.record_id));
+  const primaryRecords = records.filter((record) => !contextIds.has(record.record_id));
+  const retention = (record) => ({
+    collected_at: observedAt,
+    expires_at: new Date(Date.parse(observedAt) + 180 * 86400000).toISOString().replace(/\.000Z$/, 'Z'),
+    updated_at: observedAt,
+    classification: record.record_id === 'ref:rec-worker' ? 'internal' : 'public',
+  });
   return {
-    records: [{ record: workerObservation }, { record: assessment }],
-    aggregate: {
-      occurrences: [{ repo_name: repoName, occurrence_id: workerObservation.occurrence_id, conflict: false, records: [workerObservation] }],
-      assessment_attempts: [{ repo_name: repoName, applicable: true, not_applicable: false, applicability_conflict: false, rating_conflict: false, records: [assessment] }],
-    },
-    collection: { status: 'fixture', last_attempt_at: asOf, last_success_at: asOf, last_error_code: null },
+    records: primaryRecords.map((record) => ({ record, retention: retention(record) })),
+    contextRecords: contextRecords.map((record) => ({ record, retention: retention(record) })),
+    aggregate: contract.aggregateRecords(primaryRecords, { contextRecords }),
+    collection: { status: 'fixture', last_attempt_at: observedAt, last_success_at: observedAt, last_error_code: null },
   };
 }
 
@@ -102,10 +109,10 @@ const { app } = buildApp(db, {
   now: () => now.getTime(),
   codeHealth: {
     providers: {
-      getObjectiveHistory: async (_db, { repoName, days, asOf }) => history(repoName, days, asOf.toISOString()),
+      getObjectiveHistory: async (_db, { repoName, days, asOf }) => history(repoName, days, asOf.toISOString().replace(/\.000Z$/, 'Z')),
       readObjectiveSourceState: () => ({ status: 'unconfigured', last_attempt_at: null, last_success_at: null, last_error_code: 'authenticated-transport-not-configured' }),
       readSubjectiveEvidence: async (_db, config, { now: at }) => subjectiveFixture(config?.repoName || 'sagascript', at.toISOString()),
-      resolveEvidenceRefs: async () => ({ 'ref:demo-module': 'Task coordination' }),
+      resolveEvidenceRefs: async () => ({ [subjectiveModuleRef]: 'Rust core registered scope' }),
     },
     subjectiveConfigForRepo: (repoName) => ({ enabled: false, repoName }),
   },

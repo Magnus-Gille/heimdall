@@ -337,8 +337,11 @@ describe('code-health read routes', () => {
     assert.equal(page.statusCode, 200);
     assert.match(page.body, /Code health/);
     assert.match(page.body, /href="\/code-health"[^>]*aria-current="page"/);
-    assert.match(page.body, /No live Hugin capture is connected/);
-    assert.match(page.body, /fixture-only UI acceptance/i);
+    assert.match(page.body, /Stored evidence view; writes are disabled/);
+    assert.doesNotMatch(page.body, /No live Hugin capture is connected|Fixture-only UI acceptance|Synthetic fixture data/);
+    assert.match(page.body, /event\.target\.name !== ['"]repo['"]/);
+    assert.match(page.body, /select\[name="module"\][\s\S]*\.value = ['"]all['"]/);
+    assert.match(page.body, /select\[name="cohort"\][\s\S]*\.value = ['"]all['"]/);
     assert.match(page.body, /Core data layer/);
     assert.doesNotMatch(page.body, /onerror=alert|<img src=x|&lt;img src=x/);
 
@@ -358,6 +361,15 @@ describe('code-health read routes', () => {
     const css = await app.inject({ method: 'GET', url: '/css/code-health.css' });
     assert.equal(css.statusCode, 200);
     assert.match(css.headers['content-type'], /css/);
+  });
+
+  it('shows the fixture notice only for injected synthetic subjective evidence', () => {
+    const base = { repoName: REPO, objectiveHistory: { ...historyFixture(), slots: [] }, now: new Date(NOW) };
+    const stored = codeHealthPage('v', buildCodeHealthView({ ...base, subjective: emptySubjective('committed') }));
+    assert.doesNotMatch(stored, /Synthetic fixture data|Fixture-only UI acceptance|No live Hugin capture is connected/);
+
+    const fixture = codeHealthPage('v', buildCodeHealthView({ ...base, subjective: emptySubjective('fixture') }));
+    assert.match(fixture, /Synthetic fixture data is shown for visual acceptance/);
   });
 
   it('rejects unknown repository, period, and module query values', async () => {
