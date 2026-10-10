@@ -474,14 +474,6 @@ function codeHealthPage(gitVersion, view) {
   const content = `<main class="code-health-page">
     <header class="ch-page-head"><div><p class="ch-eyebrow">Code health · read-only evidence</p><h1>${esc(view.repository.label)}</h1><p>Objective measurements and subjective worker observations remain separate.</p></div><div class="ch-collection-status">${statusBadge(status)}<span>${esc(fresh)}</span></div></header>
     <form class="ch-filters" method="get" action="/code-health"><label>Repository<select name="repo">${repoOptions}</select></label><label>Period<select name="days">${periodOptions}</select></label><label>Module<select name="module">${moduleOptions}</select></label><label>Worker model cohort <span class="ch-muted">(subjective only)</span><select name="cohort">${cohortOptions}</select></label><button type="submit">Apply filters</button></form>
-    <script>
-      document.querySelector('.ch-filters')?.addEventListener('change', (event) => {
-        if (event.target.name !== 'repo') return;
-        const form = event.currentTarget;
-        form.querySelector('select[name="module"]').value = 'all';
-        form.querySelector('select[name="cohort"]').value = 'all';
-      });
-    </script>
     ${retentionNotice}
     <p class="ch-note">${esc(collectionNote)} Last attempt: ${view.objectiveCollection.lastAttemptAt ? esc(view.objectiveCollection.lastAttemptAt) : 'none recorded'}; status: ${esc(STATUS_LABELS[view.objectiveCollection.lastAttemptStatus] || STATUS_LABELS[status] || status)}. Records are retained for ${retentionLabel} from collection.</p>
     ${view.acceptance.writesEnabled ? '' : fixtureNotice}

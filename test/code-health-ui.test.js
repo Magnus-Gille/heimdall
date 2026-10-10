@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 
 // server.js reads its runtime env file at import time. Point this test process
 // at an empty fixture home before importing it so no operator config is loaded.
@@ -339,11 +340,33 @@ describe('code-health read routes', () => {
     assert.match(page.body, /href="\/code-health"[^>]*aria-current="page"/);
     assert.match(page.body, /Stored evidence view; writes are disabled/);
     assert.doesNotMatch(page.body, /No live Hugin capture is connected|Fixture-only UI acceptance|Synthetic fixture data/);
-    assert.match(page.body, /event\.target\.name !== ['"]repo['"]/);
-    assert.match(page.body, /select\[name="module"\][\s\S]*\.value = ['"]all['"]/);
-    assert.match(page.body, /select\[name="cohort"\][\s\S]*\.value = ['"]all['"]/);
+    assert.doesNotMatch(page.body, /<script>\s*document\.querySelector\('\.ch-filters'\)/);
+    assert.match(page.body, /<script src="\/app\.js\?v=/);
+    const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const listeners = {};
+    vm.runInNewContext(appJs, {
+      document: {
+        documentElement: { setAttribute() {}, getAttribute() { return null; } },
+        addEventListener(name, handler) { listeners[name] = handler; },
+      },
+      localStorage: { getItem() { return null; }, setItem() {} },
+      window: {},
+    });
+    const moduleSelect = { value: 'rust-core' };
+    const cohortSelect = { value: 'gpt-6-luna' };
+    const form = { querySelector(selector) { return selector.includes('[name="module"]') ? moduleSelect : cohortSelect; } };
+    const repoSelect = {
+      form,
+      matches(selector) { return selector === '.ch-filters select[name="repo"]'; },
+    };
+    listeners.change({ target: repoSelect });
+    assert.equal(moduleSelect.value, 'all');
+    assert.equal(cohortSelect.value, 'all');
     assert.match(page.body, /Core data layer/);
     assert.doesNotMatch(page.body, /onerror=alert|<img src=x|&lt;img src=x/);
+
+    const resetRoute = await app.inject({ method: 'GET', url: '/code-health?repo=gille-inference&days=30&module=all&cohort=all' });
+    assert.equal(resetRoute.statusCode, 200);
 
     const api = await app.inject({ method: 'GET', url: '/api/code-health?repo=sagascript&days=30&module=rust-core' });
     assert.equal(api.statusCode, 200);
