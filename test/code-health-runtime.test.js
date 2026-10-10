@@ -118,6 +118,30 @@ function ghFixture({
 }
 
 describe('code-health runtime configuration', () => {
+  it('accepts an explicitly empty source list as objective-only while enabled', () => {
+    const config = loadCodeHealthRuntimeConfig({
+      env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'objective-only-config' },
+      readConfig: () => ({ sources: [] }),
+    });
+    assert.equal(config.status, 'enabled');
+    assert.equal(config.enabled, true);
+    assert.equal(config.objectiveEnabled, true);
+    assert.deepEqual(config.sources, []);
+    assert.deepEqual(config.subjectiveConfigForRepo('sagascript'), { enabled: false });
+  });
+
+  it('keeps an explicitly empty source list disabled when the gate is off', () => {
+    const config = loadCodeHealthRuntimeConfig({
+      env: { HEIMDALL_CODE_HEALTH_CONFIG: 'objective-only-config' },
+      readConfig: () => ({ sources: [] }),
+    });
+    assert.equal(config.status, 'disabled');
+    assert.equal(config.enabled, false);
+    assert.equal(config.objectiveEnabled, false);
+    assert.deepEqual(config.sources, []);
+    assert.deepEqual(config.subjectiveConfigForRepo('sagascript'), { enabled: false });
+  });
+
   it('keeps collection off by default while retaining valid source identity for reads', () => {
     const source = {
       repoOwner: SOURCE.owner,
@@ -363,7 +387,13 @@ describe('default-off collection runtime', () => {
 
       const rejectedConfig = loadCodeHealthRuntimeConfig({
         env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'bad-config' },
-        readConfig: () => ({ sources: [] }),
+        readConfig: () => ({ sources: [{
+          repoOwner: 'Magnus-Gille',
+          repoName: 'sagascript',
+          namespace: 'grimnir/code-health',
+          producerPrincipalId: 'heimdall-test-producer',
+          extra: true,
+        }] }),
       });
       const rejected = await runCodeHealthCollection(db, rejectedConfig, {
         githubTransport: { listArtifacts: async () => { calls += 1; return []; }, downloadArtifact: async () => { calls += 1; return Buffer.alloc(0); } },

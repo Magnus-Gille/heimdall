@@ -41,7 +41,7 @@ function readBoundedConfigFile(filePath) {
 
 function validateConfigData(value) {
   if (!exactKeys(value, CONFIG_KEYS) || !Array.isArray(value.sources)
-    || value.sources.length < 1 || value.sources.length > REPOSITORIES.length) {
+    || value.sources.length > REPOSITORIES.length) {
     throw new Error('invalid-source-configuration');
   }
   const seen = new Set();

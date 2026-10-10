@@ -122,6 +122,7 @@ function objectiveFor(repoName, runId, attempt, scopeName, { snapshotId, observe
 
 function makeObjectiveArchive(repoName, runId = 731, attempt = 1, {
   scopeNames: requestedScopes, observedAt, snapshotId, supersedesRef, correctionRef, auxiliaryFiles = [],
+  referencedArtifactFiles = [],
 } = {}) {
   const scopeNames = requestedScopes ?? (repoName === 'sagascript'
     ? sagaRegistry.scopes.map((scope) => scope.name)
@@ -142,7 +143,7 @@ function makeObjectiveArchive(repoName, runId = 731, attempt = 1, {
     evidence_index: 'evidence-index.json',
   };
   const refs = {};
-  for (const [index, snapshot] of snapshots.entries()) {
+  for (const [, snapshot] of snapshots.entries()) {
     const snapshotRefs = new Set();
     for (const [key, value] of Object.entries(snapshot)) {
       if (key !== 'snapshot_id') walkRefs(value, snapshotRefs);
@@ -156,6 +157,9 @@ function makeObjectiveArchive(repoName, runId = 731, attempt = 1, {
           : { kind: 'artifact-file', path: 'evidence/collector-run.json' };
       } else refs[ref] = { kind: 'source', path: 'src/synthetic.ts', line: 1 };
     }
+  }
+  for (const [index, file] of referencedArtifactFiles.entries()) {
+    refs[`ref:synthetic-artifact-${index}`] = { kind: 'artifact-file', path: file };
   }
   const entries = [
     ['manifest.json', JSON.stringify(manifest)],
@@ -382,6 +386,51 @@ describe('code-health objective backend', () => {
       ...provenance, repositoryName: 'sagascript',
     });
     assert.equal(saga.snapshots.length, sagaRegistry.scopes.length);
+  });
+
+  it('admits the full static Saga producer shape and rejects arbitrary extra files', async () => {
+    const staticEvidenceFiles = [
+      'evidence/inventory-rust-core.json',
+      'evidence/functions-rust-core.json',
+      'evidence/inventory-rust-cli.json',
+      'evidence/functions-rust-cli.json',
+      'evidence/inventory-rust-core-no-default.json',
+      'evidence/profile-rust-core-no-default-inline.json',
+      'evidence/inventory-swift-coreml-source-only.json',
+      'evidence/profile-swift-coreml-source-only.json',
+      'evidence/knip-candidates-typescript.json',
+      'evidence/inventory-knip-typescript.json',
+      'evidence/knip-candidates-svelte.json',
+      'evidence/inventory-knip-svelte.json',
+    ];
+    const staticFiles = [
+      ...staticEvidenceFiles,
+      'evidence/collection-status.json',
+      'evidence/collection-overhead.json',
+      'evidence/ci-workflow.json',
+    ];
+    const staticArchive = makeObjectiveArchive('sagascript', 814, 1, {
+      referencedArtifactFiles: staticEvidenceFiles,
+      auxiliaryFiles: staticFiles.map((file) => [file, '{}']),
+    });
+    assert.equal(parseZipArchive(staticArchive).files.size, 24);
+    const parsed = await parseObjectiveArtifact(staticArchive, {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId: 814, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    });
+    assert.equal(parsed.snapshots.length, sagaRegistry.scopes.length);
+
+    const withUnknownExtra = makeObjectiveArchive('sagascript', 815, 1, {
+      referencedArtifactFiles: staticEvidenceFiles,
+      auxiliaryFiles: [
+        ...staticFiles.map((file) => [file, '{}']),
+        ['evidence/not-registered.json', '{}'],
+      ],
+    });
+    await assert.rejects(parseObjectiveArtifact(withUnknownExtra, {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId: 815, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    }), /artifact contains an unknown file: evidence\/not-registered\.json/);
   });
 
   it('fails closed on duplicate and traversing archive entries', () => {
@@ -732,6 +781,47 @@ describe('code-health local retention and boundaries', () => {
 });
 
 describe('code-health runtime integration', () => {
+  it('runs objective-only collection without invoking Munin', async () => {
+    const runtimeConfig = loadCodeHealthRuntimeConfig({
+      env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'objective-only-config' },
+      readConfig: () => ({ sources: [] }),
+    });
+    const db = memoryDb();
+    let muninCalls = 0;
+    try {
+      const result = await runCodeHealthCollection(db, runtimeConfig, {
+        clock: () => new Date(NOW),
+        githubTransport: {
+          listArtifacts: async () => ({ candidates: [], incomplete: false }),
+          downloadArtifact: async () => { throw new Error('download should not be called without candidates'); },
+        },
+        muninRpc: async () => { muninCalls += 1; },
+      });
+      assert.equal(result.status, 'completed');
+      assert.equal(result.objective.status, 'no-artifacts');
+      assert.deepEqual(result.subjective, []);
+      assert.equal(muninCalls, 0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the subjective reader disabled for objective-only configuration', async () => {
+    const runtimeConfig = loadCodeHealthRuntimeConfig({
+      env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'objective-only-config' },
+      readConfig: () => ({ sources: [] }),
+    });
+    const db = memoryDb();
+    try {
+      const subjective = await readSubjectiveEvidence(db, runtimeConfig.subjectiveConfigForRepo('sagascript'), { now: NOW });
+      assert.equal(subjective.collection.status, 'unconfigured');
+      assert.equal(subjective.records.length, 0);
+      assert.equal(subjective.contextRecords.length, 0);
+    } finally {
+      db.close();
+    }
+  });
+
   it('collects injected producer and Munin fixtures, then serves stored rows through the normal app', async () => {
     const sourceConfig = subjectiveConfig();
     const runtimeConfig = loadCodeHealthRuntimeConfig({
@@ -799,7 +889,13 @@ describe('code-health runtime integration', () => {
       app = null;
       const rejectedConfig = loadCodeHealthRuntimeConfig({
         env: { HEIMDALL_CODE_HEALTH: 'on', HEIMDALL_CODE_HEALTH_CONFIG: 'fixture-only' },
-        readConfig: () => ({ sources: [] }),
+        readConfig: () => ({ sources: [{
+          repoOwner: 'Magnus-Gille',
+          repoName: 'gille-inference',
+          namespace: 'grimnir/code-health',
+          producerPrincipalId: 'heimdall-producer',
+          extra: true,
+        }] }),
       });
       app = buildApp(db, {
         runtimeRoot: path.resolve(__dirname, '..'),
