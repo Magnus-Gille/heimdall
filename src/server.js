@@ -4,6 +4,7 @@ const Fastify = require('fastify');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 // Load env file so runtime config (HEIMDALL_BIND, HEIMDALL_NOTIFY_CHAT_ID, etc.) is available
 const ENV_FILE = path.join(os.homedir(), '.heimdall', 'env');
@@ -66,6 +67,10 @@ const { getPlugin } = require('./plugins');
 const { panelAliasOwnerOf, panelServiceIdsFor } = require('./plugins/known-panels');
 const { m5Snapshot } = require('./plugins/inference');
 const { mcpSnapshot } = require('./mcp-probe');
+const { getObjectiveHistory, readObjectiveSourceState } = require('./code-health/store');
+const { DEFAULT_SUBJECTIVE_SOURCE_CONFIG, readSubjectiveEvidence, filterSubjectiveEvidence } = require('./code-health/munin-export');
+const { loadCodeHealthRuntimeConfig } = require('./code-health/runtime-config');
+const { buildCodeHealthView, codeHealthPage, registeredRepositories } = require('./render/code-health');
 
 // Service names of the synthetic snapshots written outside the polled registry:
 // selfSnapshot → 'heimdall', m5Snapshot → 'm5-gateway', mcpSnapshot → 'munin-mcp'.
@@ -94,6 +99,14 @@ app.register(require('@fastify/rate-limit'), {
 });
 
 const db = injectedDb || openDatabase();
+const codeHealthOptions = options.codeHealth || loadCodeHealthRuntimeConfig();
+const codeHealthProviders = codeHealthOptions.providers || {};
+const codeHealthRead = {
+  getObjectiveHistory: codeHealthProviders.getObjectiveHistory || getObjectiveHistory,
+  readObjectiveSourceState: codeHealthProviders.readObjectiveSourceState || readObjectiveSourceState,
+  readSubjectiveEvidence: codeHealthProviders.readSubjectiveEvidence || readSubjectiveEvidence,
+  resolveEvidenceRefs: codeHealthProviders.resolveEvidenceRefs || (() => ({})),
+};
 
 // Reconcile fleet membership from Grimnir's canonical node registry. Observed-
 // only rows stay in SQLite as historical telemetry and are marked retired
@@ -157,6 +170,7 @@ const STATIC_FILES = {
   '/css/supervision.css': { file: 'css/supervision.css', ct: 'text/css; charset=utf-8' },
   '/css/reliability.css': { file: 'css/reliability.css', ct: 'text/css; charset=utf-8' },
   '/css/timeline.css': { file: 'css/timeline.css', ct: 'text/css; charset=utf-8' },
+  '/css/code-health.css': { file: 'css/code-health.css', ct: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', ct: 'application/javascript; charset=utf-8' },
   '/reader.js': { file: 'reader.js', ct: 'application/javascript; charset=utf-8' },
 };
@@ -629,6 +643,137 @@ app.get('/api/insights/trend', async () => {
   } catch {
     return [];
   }
+});
+
+// Code health is a stored-evidence view. These GET routes never call a source
+// collector, Munin RPC, or credential loader; the gated collector is the only
+// source activation path.
+async function loadCodeHealthView(query = {}) {
+  const repositories = registeredRepositories();
+  const requestedRepo = query.repo == null ? 'sagascript' : query.repo;
+  const repo = typeof requestedRepo === 'string' ? repositories.find((item) => item.name === requestedRepo) : null;
+  if (!repo) return { error: 'invalid repository', statusCode: 400 };
+
+  const requestedDays = query.days == null ? '90' : query.days;
+  if (typeof requestedDays !== 'string' || !['30', '90', '365'].includes(requestedDays)) {
+    return { error: 'invalid period (use 30, 90, or 365)', statusCode: 400 };
+  }
+  const days = Number(requestedDays);
+  const at = now();
+  const asOf = new Date(at);
+  const [objectiveHistory, loadedObjectiveSource] = await Promise.all([
+    codeHealthRead.getObjectiveHistory(db, { repoOwner: repo.owner, repoName: repo.name, days, asOf }),
+    Promise.resolve(codeHealthRead.readObjectiveSourceState(db, {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      enabled: codeHealthOptions.objectiveEnabled === true,
+      configured: codeHealthOptions.objectiveConfigured === true,
+    })),
+  ]);
+  const objectiveSource = { ...loadedObjectiveSource };
+  if (codeHealthOptions.status === 'rejected' && codeHealthOptions.gateEnabled === true) {
+    objectiveSource.status = 'rejected';
+    objectiveSource.last_error_code = 'invalid-source-configuration';
+  }
+  const subjectiveConfig = typeof codeHealthOptions.subjectiveConfigForRepo === 'function'
+    ? codeHealthOptions.subjectiveConfigForRepo(repo.name)
+    : codeHealthOptions.subjectiveConfig || DEFAULT_SUBJECTIVE_SOURCE_CONFIG;
+  const subjectiveRaw = await codeHealthRead.readSubjectiveEvidence(db, subjectiveConfig, { now: asOf });
+  const slots = Array.isArray(objectiveHistory?.slots) ? objectiveHistory.slots : [];
+  const modules = new Set(slots.map((slot) => slot.scope || 'repository'));
+  const requestedModule = query.module == null ? 'all' : query.module;
+  if (typeof requestedModule !== 'string') {
+    return { error: 'invalid module filter', statusCode: 400 };
+  }
+
+  const moduleRefs = [...new Set((subjectiveRaw?.records || [])
+    .filter((item) => item?.record?.repo_name === repo.name && item.record?.reporter?.kind === 'worker')
+    .flatMap((item) => Array.isArray(item.record.module_refs) ? item.record.module_refs : []))].slice(0, 64);
+  let resolvedEvidenceRefs = {};
+  if (moduleRefs.length) {
+    const resolved = await codeHealthRead.resolveEvidenceRefs(db, moduleRefs, { repoOwner: repo.owner, repoName: repo.name });
+    if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+      for (const ref of moduleRefs) {
+        const label = resolved[ref];
+        if (typeof label === 'string' && label.trim() && label.length <= 80
+          && !/(?:https?|file|ssh|ftp):\/\/|^(?:~\/|\/|[A-Za-z]:\\)/iu.test(label)) {
+          resolvedEvidenceRefs[ref] = label.trim();
+        }
+      }
+    }
+  }
+  const subjectiveModuleLabels = {};
+  const subjectiveModuleRefsByToken = {};
+  for (const [ref, label] of Object.entries(resolvedEvidenceRefs)) {
+    if (!/^ref:[A-Za-z0-9][A-Za-z0-9:_./-]{0,255}$/.test(ref)) continue;
+    const token = `subjective:${crypto.createHash('sha256').update(ref).digest('hex').slice(0, 24)}`;
+    subjectiveModuleLabels[token] = label;
+    subjectiveModuleRefsByToken[token] = ref;
+  }
+  const subjectiveModuleRefsByScope = {};
+  for (const scope of modules) {
+    subjectiveModuleRefsByScope[scope] = [...new Set(slots
+      .filter((slot) => (slot.scope || 'repository') === scope)
+      .flatMap((slot) => [slot.slot_ref, ...(Array.isArray(slot.feature_refs) ? slot.feature_refs : [])])
+      .filter((ref) => typeof ref === 'string'))];
+  }
+  const validModule = requestedModule === 'all' || modules.has(requestedModule) || Object.hasOwn(subjectiveModuleRefsByToken, requestedModule);
+  if (!validModule) return { error: 'invalid module filter', statusCode: 400 };
+
+  const cohortValues = [...new Set((subjectiveRaw?.records || [])
+    .filter((item) => item?.record?.repo_name === repo.name && item.record?.reporter?.kind === 'worker')
+    .map((item) => {
+      const model = item.record.actual_worker?.observed_model;
+      return typeof model === 'string' && model ? model : 'unknown';
+    }))].filter((model) => model.length <= 160).sort();
+  const requestedCohort = query.cohort == null ? 'all' : query.cohort;
+  if (typeof requestedCohort !== 'string' || (requestedCohort !== 'all' && !cohortValues.includes(requestedCohort))) {
+    return { error: 'invalid cohort filter', statusCode: 400 };
+  }
+  const selectedModuleRefs = requestedModule === 'all'
+    ? null
+    : Object.hasOwn(subjectiveModuleRefsByToken, requestedModule)
+      ? [subjectiveModuleRefsByToken[requestedModule]]
+      : subjectiveModuleRefsByScope[requestedModule] || [];
+  const subjective = await filterSubjectiveEvidence(subjectiveRaw, {
+    repoName: repo.name,
+    days,
+    asOf,
+    moduleRefs: selectedModuleRefs,
+    cohort: requestedCohort,
+  });
+  const sprintMarkers = typeof codeHealthProviders.getSprintMarkers === 'function'
+    ? await codeHealthProviders.getSprintMarkers(db, { repoOwner: repo.owner, repoName: repo.name }) : [];
+  return {
+    view: buildCodeHealthView({
+      repoName: repo.name,
+      days,
+      module: requestedModule,
+      cohort: requestedCohort,
+      objectiveHistory,
+      objectiveSource,
+      subjective,
+      sprintMarkers,
+      resolvedEvidenceRefs,
+      subjectiveModuleLabels,
+      subjectiveCohorts: cohortValues,
+      now: asOf,
+    }),
+  };
+}
+
+app.get('/code-health', async (request, reply) => {
+  const result = await loadCodeHealthView(request.query || {});
+  if (result.error) return reply.code(result.statusCode).type('text/plain; charset=utf-8').send(result.error);
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .header('Cache-Control', 'private, no-store')
+    .send(codeHealthPage(gitVersion, result.view));
+});
+
+app.get('/api/code-health', async (request, reply) => {
+  const result = await loadCodeHealthView(request.query || {});
+  if (result.error) return reply.code(result.statusCode).send({ error: result.error });
+  reply.header('Cache-Control', 'private, no-store').send(result.view);
 });
 
 // ── M5 — "What We've Learned" page cards ───────────────────────────────────────────────────

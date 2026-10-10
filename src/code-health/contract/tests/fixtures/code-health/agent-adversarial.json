@@ -1,0 +1,253 @@
+{
+  "patch_cases": [
+    {
+      "name": "bad UTC date",
+      "record_id": "ref:rec-worker",
+      "patch": {
+        "observed_at": "2026-99-99T25:00:00Z"
+      }
+    },
+    {
+      "name": "unknown field",
+      "record_id": "ref:rec-worker",
+      "patch": {
+        "unexpected": "synthetic"
+      }
+    },
+    {
+      "name": "URL used as an opaque evidence reference",
+      "record_id": "ref:rec-worker",
+      "patch": {
+        "supporting_refs": [
+          "https://private.example/internal"
+        ]
+      }
+    },
+    {
+      "name": "private locator in summary",
+      "record_id": "ref:rec-worker",
+      "patch": {
+        "summary": "Inspect https://private.example/internal"
+      }
+    },
+    {
+      "name": "partial outcome marked complete",
+      "record_id": "ref:assess-partial",
+      "patch": {
+        "completeness": "complete"
+      }
+    },
+    {
+      "name": "duplicate rubric dimension",
+      "record_id": "ref:assess-main",
+      "patch": {
+        "ratings": [
+          {
+            "dimension": "locate",
+            "value": "difficult",
+            "reason": "grounded",
+            "evidence_refs": [
+              "ref:rating-location"
+            ]
+          },
+          {
+            "dimension": "understand",
+            "value": "manageable",
+            "reason": "grounded",
+            "evidence_refs": [
+              "ref:rating-understanding"
+            ]
+          },
+          {
+            "dimension": "locate",
+            "value": "easy",
+            "reason": "grounded",
+            "evidence_refs": [
+              "ref:rating-verification"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "QA marked applicable",
+      "record_id": "ref:assess-qa",
+      "patch": {
+        "applicability": "applicable"
+      }
+    },
+    {
+      "name": "correction link pair is incomplete",
+      "record_id": "ref:assess-main-corrected",
+      "patch": {
+        "correction_ref": null
+      }
+    },
+    {
+      "name": "occurrence and record IDs must differ",
+      "record_id": "ref:rec-worker",
+      "patch": {
+        "occurrence_id": "ref:rec-worker"
+      }
+    },
+    {
+      "name": "parent substitutes its own worker identity",
+      "record_id": "ref:rec-close",
+      "patch": {
+        "actual_worker": {
+          "id": "ref:worker-substitute",
+          "kind": "worker",
+          "requested_model": null,
+          "observed_model": null,
+          "observed_effort": null
+        }
+      }
+    },
+    {
+      "name": "source report predates its worker observation",
+      "record_id": "ref:rec-close",
+      "patch": {
+        "observed_at": "2026-10-08T10:15:30Z"
+      }
+    },
+    {
+      "name": "correction changes record kind",
+      "record_id": "ref:assess-main-corrected",
+      "patch": {
+        "supersedes_record_id": "ref:rec-close"
+      }
+    },
+    {
+      "name": "correction predates the superseded record",
+      "record_id": "ref:assess-main-corrected",
+      "patch": {
+        "observed_at": "2026-10-08T10:15:30Z"
+      }
+    }
+  ],
+  "batch_cases": [
+    {
+      "name": "record ID collision",
+      "mutations": [
+        {
+          "record_id": "ref:rec-worker",
+          "patch": {
+            "summary": "Different payload with the same stable record ID."
+          },
+          "duplicate": true
+        }
+      ]
+    },
+    {
+      "name": "dangling close source",
+      "mutations": [
+        {
+          "record_id": "ref:rec-close",
+          "patch": {
+            "source_observation_ref": "ref:missing-observation"
+          }
+        }
+      ]
+    },
+    {
+      "name": "observation source cycle",
+      "mutations": [
+        {
+          "record_id": "ref:rec-worker",
+          "patch": {
+            "reporter": {
+              "id": "ref:report-worker",
+              "kind": "parent",
+              "requested_model": null,
+              "observed_model": null,
+              "observed_effort": null
+            },
+            "source_observation_ref": "ref:rec-close"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dangling assessment observation",
+      "mutations": [
+        {
+          "record_id": "ref:assess-main",
+          "patch": {
+            "observation_refs": [
+              "ref:missing-observation"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "assessment references another task",
+      "mutations": [
+        {
+          "record_id": "ref:assess-main",
+          "patch": {
+            "observation_refs": [
+              "ref:rec-env-code"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "correction target absent",
+      "mutations": [
+        {
+          "record_id": "ref:assess-main-corrected",
+          "patch": {
+            "supersedes_record_id": "ref:missing-assessment"
+          }
+        }
+      ]
+    },
+    {
+      "name": "correction target has another attempt",
+      "mutations": [
+        {
+          "record_id": "ref:assess-main-corrected",
+          "patch": {
+            "supersedes_record_id": "ref:rec-worker"
+          }
+        }
+      ]
+    },
+    {
+      "name": "correction cycle",
+      "mutations": [
+        {
+          "record_id": "ref:assess-main",
+          "patch": {
+            "supersedes_record_id": "ref:assess-main-corrected",
+            "correction_ref": "ref:correction-backwards"
+          }
+        }
+      ]
+    },
+    {
+      "name": "child lineage mismatch",
+      "mutations": [
+        {
+          "record_id": "ref:rec-worker",
+          "patch": {
+            "parent_attempt_id": "unlisted-parent"
+          }
+        }
+      ]
+    },
+    {
+      "name": "attempt ancestry cycle",
+      "mutations": [
+        {
+          "record_id": "ref:assess-main",
+          "patch": {
+            "parent_attempt_id": "child-attempt"
+          }
+        }
+      ]
+    }
+  ]
+}

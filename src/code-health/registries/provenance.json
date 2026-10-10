@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "repository": "Magnus-Gille/gille-inference",
+      "revision": "ee1826f3815b10ce799704cc1300a56b48591751",
+      "source_path": "research/code-health-402/slots.json",
+      "local_path": "registries/gille-inference/slots.json",
+      "source_git_blob": "4874e7c68eb9b3edf14bbd6dfe8a8d805ecd9c8a",
+      "sha256": "3e70f6acbdc4c03c017900d55240d1b6463555d190af15a0c53a0db5ced703f1"
+    },
+    {
+      "repository": "Magnus-Gille/sagascript",
+      "revision": "f4bda5d9fb6a2a050291f6f46eabc29dcb7531b9",
+      "source_path": "docs/code-health-producer-v1.json",
+      "local_path": "registries/sagascript/code-health-producer-v1.json",
+      "source_git_blob": "1c7d4a56563d7586bb0fa12bccaae0d3dd74cff8",
+      "sha256": "8e64b21fc5654b8f846449ac68de5d8a42ecaf81d3c0750a288bbcfc2e07107d"
+    }
+  ]
+}

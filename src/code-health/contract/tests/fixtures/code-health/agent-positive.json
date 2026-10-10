@@ -1,0 +1,866 @@
+{
+  "records": [
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "child-attempt",
+      "parent_attempt_id": "parent-attempt",
+      "record_id": "ref:rec-worker",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-worker",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-child",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-main",
+      "dimension": "locate",
+      "polarity": "negative",
+      "cause": "code",
+      "supporting_refs": [
+        "ref:source-file"
+      ],
+      "counter_refs": [],
+      "summary": "A short synthetic observation about the task.",
+      "source_observation_ref": null,
+      "rubric_version": "changeability-1.0"
+    },
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "parent-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:rec-close",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-close",
+        "kind": "close",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-child",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-main",
+      "dimension": "locate",
+      "polarity": "negative",
+      "cause": "code",
+      "supporting_refs": [
+        "ref:source-file"
+      ],
+      "counter_refs": [],
+      "summary": "A short synthetic observation about the task.",
+      "source_observation_ref": "ref:rec-worker",
+      "rubric_version": "changeability-1.0"
+    },
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "parent-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:rec-close-conflict",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-close-2",
+        "kind": "close",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-child",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-main",
+      "dimension": "locate",
+      "polarity": "positive",
+      "cause": "code",
+      "supporting_refs": [
+        "ref:counter-source"
+      ],
+      "counter_refs": [],
+      "summary": "A short synthetic observation about the task.",
+      "source_observation_ref": "ref:rec-worker",
+      "rubric_version": "changeability-1.0"
+    },
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "parent-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:rec-close-conflict-2",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-close-3",
+        "kind": "close",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-child",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-main",
+      "dimension": "understand",
+      "polarity": "negative",
+      "cause": "mixed",
+      "supporting_refs": [
+        "ref:counter-source-2"
+      ],
+      "counter_refs": [],
+      "summary": "A second synthetic parent observation adds a different dimension and cause.",
+      "source_observation_ref": "ref:rec-worker",
+      "rubric_version": "changeability-1.0"
+    },
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "retry-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:rec-retry",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-rec-retry",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-retry-attempt",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-retry",
+      "dimension": "locate",
+      "polarity": "positive",
+      "cause": "environment",
+      "supporting_refs": [
+        "ref:retry-log"
+      ],
+      "counter_refs": [],
+      "summary": "A distinct retry occurrence completed the lookup.",
+      "source_observation_ref": null,
+      "rubric_version": "changeability-1.0"
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "parent-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-main",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-parent",
+        "kind": "parent",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "actual_worker": {
+        "id": "ref:worker-parent",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [
+        "child-attempt"
+      ],
+      "rubric_version": "changeability-1.0",
+      "applicability": "applicable",
+      "outcome": "completed",
+      "completeness": "complete",
+      "environment": "available",
+      "observation_refs": [
+        "ref:rec-worker",
+        "ref:rec-close"
+      ],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "difficult",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:rating-location"
+          ]
+        },
+        {
+          "dimension": "understand",
+          "value": "manageable",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:rating-understanding"
+          ]
+        },
+        {
+          "dimension": "verify",
+          "value": "easy",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:rating-verification"
+          ]
+        }
+      ],
+      "overhead": {
+        "elapsed_ms": 90000,
+        "tokens": null
+      }
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "parent-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-main-corrected",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-parent",
+        "kind": "parent",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "actual_worker": {
+        "id": "ref:worker-parent",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": "ref:assess-main",
+      "correction_ref": "ref:correction-main",
+      "child_attempt_ids": [
+        "child-attempt"
+      ],
+      "rubric_version": "changeability-1.0",
+      "applicability": "applicable",
+      "outcome": "completed",
+      "completeness": "complete",
+      "environment": "available",
+      "observation_refs": [
+        "ref:rec-worker",
+        "ref:rec-close"
+      ],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "difficult",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:rating-location"
+          ]
+        },
+        {
+          "dimension": "understand",
+          "value": "manageable",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:rating-understanding"
+          ]
+        },
+        {
+          "dimension": "verify",
+          "value": "manageable",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:rating-verification-review"
+          ]
+        }
+      ],
+      "overhead": {
+        "elapsed_ms": 90000,
+        "tokens": null
+      }
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-qa",
+      "task_class": "qa",
+      "attempt_id": "qa-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-qa",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-qa",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-qa",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [],
+      "rubric_version": "changeability-1.0",
+      "applicability": "not_applicable",
+      "outcome": "completed",
+      "completeness": "complete",
+      "environment": "unknown",
+      "observation_refs": [],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "not-assessable",
+          "reason": "not_applicable",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "understand",
+          "value": "not-assessable",
+          "reason": "not_applicable",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "verify",
+          "value": "not-assessable",
+          "reason": "not_applicable",
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-env",
+      "task_class": "implementation",
+      "attempt_id": "env-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:rec-env-code",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-rec-env-code",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-env-attempt",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-env",
+      "dimension": "understand",
+      "polarity": "positive",
+      "cause": "code",
+      "supporting_refs": [
+        "ref:code-review"
+      ],
+      "counter_refs": [],
+      "summary": "A short synthetic observation about the task.",
+      "source_observation_ref": null,
+      "rubric_version": "changeability-1.0"
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-env",
+      "task_class": "implementation",
+      "attempt_id": "env-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-env",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-env",
+        "kind": "parent",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-env",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [],
+      "rubric_version": "changeability-1.0",
+      "applicability": "applicable",
+      "outcome": "completed",
+      "completeness": "complete",
+      "environment": "unavailable",
+      "observation_refs": [
+        "ref:rec-env-code"
+      ],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "easy",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:repo-index"
+          ]
+        },
+        {
+          "dimension": "understand",
+          "value": "manageable",
+          "reason": "grounded",
+          "evidence_refs": [
+            "ref:code-review"
+          ]
+        },
+        {
+          "dimension": "verify",
+          "value": "not-assessable",
+          "reason": "environment_unavailable",
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-partial",
+      "task_class": "test",
+      "attempt_id": "partial-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-partial",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-assess-partial",
+        "kind": "parent",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-partial-attempt",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [],
+      "rubric_version": "changeability-1.0",
+      "applicability": "applicable",
+      "outcome": "partial",
+      "completeness": "partial",
+      "environment": "unknown",
+      "observation_refs": [],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "understand",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "verify",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-shared-a",
+      "task_class": "test",
+      "attempt_id": "shared-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-shared-a",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-shared-a",
+        "kind": "parent",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-shared-a",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [],
+      "rubric_version": "changeability-1.0",
+      "applicability": "applicable",
+      "outcome": "partial",
+      "completeness": "partial",
+      "environment": "unknown",
+      "observation_refs": [],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "understand",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "verify",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "other-org",
+      "repo_name": "other-project",
+      "task_id": "task-shared-b",
+      "task_class": "test",
+      "attempt_id": "shared-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-shared-b",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-shared-b",
+        "kind": "parent",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-shared-b",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [],
+      "rubric_version": "changeability-1.0",
+      "applicability": "applicable",
+      "outcome": "partial",
+      "completeness": "partial",
+      "environment": "unknown",
+      "observation_refs": [],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "understand",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "verify",
+          "value": "not-assessable",
+          "reason": "insufficient_evidence",
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "record_kind": "assessment",
+      "version": "1.0",
+      "repo_owner": "qa-org",
+      "repo_name": "sample-project",
+      "task_id": "task-shared-qa",
+      "task_class": "qa",
+      "attempt_id": "shared-attempt",
+      "parent_attempt_id": null,
+      "record_id": "ref:assess-shared-qa",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-shared-qa",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-shared-qa",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "child_attempt_ids": [],
+      "rubric_version": "changeability-1.0",
+      "applicability": "not_applicable",
+      "outcome": "completed",
+      "completeness": "complete",
+      "environment": "unknown",
+      "observation_refs": [],
+      "ratings": [
+        {
+          "dimension": "locate",
+          "value": "not-assessable",
+          "reason": "not_applicable",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "understand",
+          "value": "not-assessable",
+          "reason": "not_applicable",
+          "evidence_refs": []
+        },
+        {
+          "dimension": "verify",
+          "value": "not-assessable",
+          "reason": "not_applicable",
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "record_kind": "observation",
+      "version": "1.0",
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "task_class": "implementation",
+      "attempt_id": "child-attempt",
+      "parent_attempt_id": "parent-attempt",
+      "record_id": "ref:rec-worker",
+      "observed_at": "2026-10-09T10:15:30Z",
+      "before_sha": null,
+      "after_sha": null,
+      "module_refs": [
+        "ref:module-core"
+      ],
+      "reporter": {
+        "id": "ref:report-worker",
+        "kind": "worker",
+        "requested_model": null,
+        "observed_model": null,
+        "observed_effort": null
+      },
+      "actual_worker": {
+        "id": "ref:worker-child",
+        "kind": "worker",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": null,
+        "observed_effort": "high"
+      },
+      "supersedes_record_id": null,
+      "correction_ref": null,
+      "occurrence_id": "ref:occurrence-main",
+      "dimension": "locate",
+      "polarity": "negative",
+      "cause": "code",
+      "supporting_refs": [
+        "ref:source-file"
+      ],
+      "counter_refs": [],
+      "summary": "A short synthetic observation about the task.",
+      "source_observation_ref": null,
+      "rubric_version": "changeability-1.0"
+    }
+  ],
+  "coverage_expected_attempts": [
+    {
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-main",
+      "attempt_id": "parent-attempt"
+    },
+    {
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-env",
+      "attempt_id": "env-attempt"
+    },
+    {
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-partial",
+      "attempt_id": "partial-attempt"
+    },
+    {
+      "repo_owner": "example-org",
+      "repo_name": "sample-project",
+      "task_id": "task-shared-a",
+      "attempt_id": "shared-attempt"
+    },
+    {
+      "repo_owner": "other-org",
+      "repo_name": "other-project",
+      "task_id": "task-shared-b",
+      "attempt_id": "shared-attempt"
+    },
+    {
+      "repo_owner": "third-org",
+      "repo_name": "third-project",
+      "task_id": "task-uncollected",
+      "attempt_id": "shared-attempt"
+    }
+  ]
+}

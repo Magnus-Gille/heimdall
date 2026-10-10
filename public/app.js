@@ -31,6 +31,20 @@
     try { localStorage.setItem('heimdall-theme', next); } catch (e) { /* ignore */ }
   });
 
+  // Repository changes invalidate the module and worker-model selections on
+  // the code-health page. Keep this in the CSP-approved external bundle so a
+  // stale combination cannot produce a 400 after the user changes repo.
+  document.addEventListener('change', function (ev) {
+    var repo = ev.target;
+    if (!repo.matches || !repo.matches('.ch-filters select[name="repo"]')) return;
+    var form = repo.form || (repo.closest && repo.closest('form'));
+    if (!form) return;
+    var module = form.querySelector('select[name="module"]');
+    var cohort = form.querySelector('select[name="cohort"]');
+    if (module) module.value = 'all';
+    if (cohort) cohort.value = 'all';
+  });
+
   // Preserve expanded project cards across the /projects HTMX auto-refresh
   // (the project tree reloads every 300s). Re-ported from the v1 dashboard
   // during the v2 cutover (heimdall#54); CSP-safe here instead of inline.

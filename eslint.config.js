@@ -59,6 +59,7 @@ module.exports = [
       'public/chart.umd.min.js',
       'public/htmx.min.js',
       'data/**',
+      'src/code-health/contract/**',
     ],
   },
   {
