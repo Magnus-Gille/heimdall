@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimnir.gille.ai/contracts/code-health-agent/v1/schema.json",
+  "title": "Grimnir code health agent evidence v1",
+  "description": "Closed, qualitative agent observations and assessments. Summaries must be sanitized paraphrases; this contract cannot prove that code, transcripts, or private locators were removed.",
+  "oneOf": [
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/assessment" }
+  ],
+  "$defs": {
+    "ref": {
+      "type": "string",
+      "pattern": "^ref:[a-z0-9][a-z0-9-]{0,95}$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"
+    },
+    "task-id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$"
+    },
+    "attempt-id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$"
+    },
+    "sha-or-unknown": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        { "type": "null" }
+      ]
+    },
+    "model-or-unknown": {
+      "oneOf": [
+        { "$ref": "#/$defs/token" },
+        { "type": "null" }
+      ]
+    },
+    "reporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "requested_model", "observed_model", "observed_effort"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ref" },
+        "kind": { "enum": ["worker", "parent", "close"] },
+        "requested_model": { "$ref": "#/$defs/model-or-unknown" },
+        "observed_model": { "$ref": "#/$defs/model-or-unknown" },
+        "observed_effort": { "$ref": "#/$defs/model-or-unknown" }
+      }
+    },
+    "actual-worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "requested_model", "observed_model", "observed_effort"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ref" },
+        "kind": { "const": "worker" },
+        "requested_model": { "$ref": "#/$defs/model-or-unknown" },
+        "observed_model": { "$ref": "#/$defs/model-or-unknown" },
+        "observed_effort": { "$ref": "#/$defs/model-or-unknown" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_kind", "version", "repo_owner", "repo_name", "task_id", "task_class",
+        "attempt_id", "parent_attempt_id", "record_id", "observed_at", "before_sha", "after_sha",
+        "module_refs", "reporter", "actual_worker", "occurrence_id", "dimension", "polarity",
+        "cause", "supporting_refs", "counter_refs", "source_observation_ref", "rubric_version",
+        "supersedes_record_id", "correction_ref"
+      ],
+      "properties": {
+        "record_kind": { "const": "observation" },
+        "rubric_version": { "const": "changeability-1.0" },
+        "version": { "const": "1.0" },
+        "repo_owner": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$" },
+        "repo_name": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,97}[A-Za-z0-9])?$" },
+        "task_id": { "$ref": "#/$defs/task-id" },
+        "task_class": { "enum": ["implementation", "refactor", "test", "docs", "investigation", "qa"] },
+        "attempt_id": { "$ref": "#/$defs/attempt-id" },
+        "parent_attempt_id": { "oneOf": [{ "$ref": "#/$defs/attempt-id" }, { "type": "null" }] },
+        "record_id": { "$ref": "#/$defs/ref" },
+        "observed_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:[0-5]\\dZ$" },
+        "before_sha": { "$ref": "#/$defs/sha-or-unknown" },
+        "after_sha": { "$ref": "#/$defs/sha-or-unknown" },
+        "module_refs": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/ref" } },
+        "reporter": { "$ref": "#/$defs/reporter" },
+        "actual_worker": { "$ref": "#/$defs/actual-worker" },
+        "supersedes_record_id": { "oneOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "correction_ref": { "oneOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "occurrence_id": { "$ref": "#/$defs/ref" },
+        "dimension": { "enum": ["locate", "understand", "verify"] },
+        "polarity": { "enum": ["positive", "negative"] },
+        "cause": { "enum": ["code", "environment", "mixed"] },
+        "supporting_refs": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/ref" } },
+        "counter_refs": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/ref" } },
+        "summary": { "type": "string", "maxLength": 280, "description": "Optional sanitized paraphrase. Do not include copied code, transcripts, or private locators; redaction cannot be proven mechanically." },
+        "source_observation_ref": {
+          "oneOf": [
+            { "$ref": "#/$defs/ref" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "rating": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "value", "reason", "evidence_refs"],
+      "properties": {
+        "dimension": { "enum": ["locate", "understand", "verify"] },
+        "value": { "enum": ["easy", "manageable", "difficult", "not-assessable"] },
+        "reason": { "enum": ["grounded", "environment_unavailable", "insufficient_evidence", "not_applicable"] },
+        "evidence_refs": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/ref" } }
+      }
+    },
+    "overhead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elapsed_ms", "tokens"],
+      "properties": {
+        "elapsed_ms": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "tokens": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_kind", "version", "repo_owner", "repo_name", "task_id", "task_class",
+        "attempt_id", "parent_attempt_id", "child_attempt_ids", "record_id", "observed_at",
+        "before_sha", "after_sha", "module_refs", "reporter", "actual_worker", "rubric_version",
+        "applicability", "outcome", "completeness", "environment", "observation_refs", "ratings",
+        "supersedes_record_id", "correction_ref"
+      ],
+      "properties": {
+        "record_kind": { "const": "assessment" },
+        "version": { "const": "1.0" },
+        "repo_owner": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$" },
+        "repo_name": { "type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,97}[A-Za-z0-9])?$" },
+        "task_id": { "$ref": "#/$defs/task-id" },
+        "task_class": { "enum": ["implementation", "refactor", "test", "docs", "investigation", "qa"] },
+        "attempt_id": { "$ref": "#/$defs/attempt-id" },
+        "parent_attempt_id": { "oneOf": [{ "$ref": "#/$defs/attempt-id" }, { "type": "null" }] },
+        "child_attempt_ids": { "type": "array", "maxItems": 128, "uniqueItems": true, "items": { "$ref": "#/$defs/attempt-id" } },
+        "record_id": { "$ref": "#/$defs/ref" },
+        "observed_at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:[0-5]\\dZ$" },
+        "before_sha": { "$ref": "#/$defs/sha-or-unknown" },
+        "after_sha": { "$ref": "#/$defs/sha-or-unknown" },
+        "module_refs": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/ref" } },
+        "reporter": { "$ref": "#/$defs/reporter" },
+        "actual_worker": { "$ref": "#/$defs/actual-worker" },
+        "supersedes_record_id": { "oneOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "correction_ref": { "oneOf": [{ "$ref": "#/$defs/ref" }, { "type": "null" }] },
+        "rubric_version": { "const": "changeability-1.0" },
+        "applicability": { "enum": ["applicable", "not_applicable"] },
+        "outcome": { "enum": ["completed", "partial", "failed", "aborted"] },
+        "completeness": { "enum": ["complete", "partial"] },
+        "environment": { "enum": ["available", "unavailable", "unknown"] },
+        "observation_refs": { "type": "array", "maxItems": 3, "uniqueItems": true, "items": { "$ref": "#/$defs/ref" } },
+        "ratings": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/rating" } },
+        "overhead": { "$ref": "#/$defs/overhead" }
+      }
+    }
+  }
+}

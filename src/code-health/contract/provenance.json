@@ -1,0 +1,58 @@
+{
+  "source_repository": "Magnus-Gille/grimnir",
+  "source_revision": "7df005ce952a52816597d9888da977d689a631fd",
+  "source_tree": "768d661f090a9db5e96e2e1b8f2975a9490936bc",
+  "contract_version": "1.0",
+  "files": [
+    {
+      "path": "docs/code-health-agent-v1.schema.json",
+      "source_git_blob": "fad784b1337266147d8a6eb030b8e463e216ceeb",
+      "sha256": "c329c167c9537382613dbc93950ecb7c82e8b4e42b66562a5821abc9d76e3bea"
+    },
+    {
+      "path": "docs/code-health-objective-v1.schema.json",
+      "source_git_blob": "2341049d20fe9a09f28489fcb4bea8d5087f3da3",
+      "sha256": "a483c9207e2c973061f69b952e1cbc6529e4015bdeb55f5d616f156ad1fc6cae"
+    },
+    {
+      "path": "scripts/lib/code-health-agent.mjs",
+      "source_git_blob": "e343dfb0b0b4e9029370738883e991d429539a5c",
+      "sha256": "9d887baea538e9801785122448b098e37a803ead244fea3f167a338d79ccb258"
+    },
+    {
+      "path": "scripts/lib/code-health-objective.mjs",
+      "source_git_blob": "f9308750aad0f3c02834b003a9a70cf7be7f5b99",
+      "sha256": "17014fa874d80f03e9e6c5cb01cf3275439abda5f33aa13d4b5a34ab7645b465"
+    },
+    {
+      "path": "scripts/lib/code-health-policy.mjs",
+      "source_git_blob": "e7870edaaf4f8f6bb1bf610c2d8b9b474534cb74",
+      "sha256": "f97400ab0f8c2917f9da03746afccf1d0ce8bd2b4783575aebcc15a31e227f53"
+    },
+    {
+      "path": "scripts/lib/code-health-schema.mjs",
+      "source_git_blob": "225af390d3e4c5ac62615ef0dc56104f9f02a34a",
+      "sha256": "0bf6801120221ea0a21b64b8a0d15efe96e6f51a8858f4be042878f36885eb59"
+    },
+    {
+      "path": "tests/fixtures/code-health/agent-adversarial.json",
+      "source_git_blob": "948327523193f62b2eb7dfd15eef37ed997dd4f5",
+      "sha256": "2f758198a1aa1eccaf342dc86656f02ac4dcca7860b761e6330b134e75277b17"
+    },
+    {
+      "path": "tests/fixtures/code-health/agent-positive.json",
+      "source_git_blob": "5dd73d4e12559e7acdf089f2337e036011a06b52",
+      "sha256": "67864271b8a18bdc5f6249e4017075c2d0a0152857e9c858eaf17e9463b68ffd"
+    },
+    {
+      "path": "tests/fixtures/code-health/objective-cases.json",
+      "source_git_blob": "f63a0d8cac615873a6f17aba36a6a4c7862cc38f",
+      "sha256": "c2669b59d7a922debbd0a3857bf58f0ea08b13147131acbccafce7e4d6995b93"
+    },
+    {
+      "path": "tests/fixtures/code-health/objective-positive.json",
+      "source_git_blob": "583aadd39501899e7cc6474d05d41c4ea9cff26f",
+      "sha256": "e48269b272f463be5d3aebd408ac31f3b70902f953c789c97845f4c2cc72510b"
+    }
+  ]
+}

@@ -335,6 +335,102 @@ const MIGRATIONS = [
         ON synthetic_journeys(journey_id, observed_at DESC, attempt_id DESC);
     `,
   },
+  {
+    // Code-health evidence is an additive local history store. Objective
+    // snapshots retain for six calendar months; subjective records carry the
+    // authoritative Munin expiry and are removed locally at that boundary.
+    // Raw producer archives are parsed in memory and are never stored here.
+    version: 15,
+    sql: `
+      CREATE TABLE IF NOT EXISTS code_health_objective_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        commit_sha TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        collected_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        source_run_id INTEGER NOT NULL CHECK (source_run_id > 0),
+        source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
+        artifact_sha256 TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        supersedes_ref TEXT,
+        correction_ref TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_health_objective_repo_time
+        ON code_health_objective_snapshots(repo_owner, repo_name, observed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_code_health_objective_expiry
+        ON code_health_objective_snapshots(expires_at);
+      CREATE TABLE IF NOT EXISTS code_health_objective_gaps (
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        source_run_id INTEGER NOT NULL CHECK (source_run_id > 0),
+        source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
+        slot_ref TEXT NOT NULL,
+        gap_at TEXT NOT NULL,
+        collected_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        reason TEXT NOT NULL CHECK (reason IN ('missing-expected-slot', 'artifact-missing')),
+        PRIMARY KEY (repo_owner, repo_name, source_run_id, source_attempt, slot_ref)
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_health_objective_gaps_expiry
+        ON code_health_objective_gaps(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_code_health_objective_gaps_repo_time
+        ON code_health_objective_gaps(repo_owner, repo_name, gap_at DESC);
+
+      CREATE TABLE IF NOT EXISTS code_health_subjective_sources (
+        source_id TEXT PRIMARY KEY,
+        namespace TEXT NOT NULL,
+        producer_principal_id TEXT NOT NULL,
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        rubric_version TEXT NOT NULL,
+        watermark TEXT NOT NULL,
+        total_records INTEGER NOT NULL CHECK (total_records >= 0),
+        reconciled_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS code_health_subjective_records (
+        source_id TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        record_kind TEXT NOT NULL CHECK (record_kind IN ('observation', 'assessment')),
+        record_role TEXT NOT NULL CHECK (record_role IN ('record', 'context')),
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        collected_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        classification TEXT NOT NULL CHECK (classification IN ('public', 'internal', 'client-confidential', 'client-restricted')),
+        payload_sha256 TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (source_id, record_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_health_subjective_repo_task
+        ON code_health_subjective_records(source_id, repo_owner, repo_name, task_id, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_code_health_subjective_expiry
+        ON code_health_subjective_records(expires_at);
+
+      CREATE TABLE IF NOT EXISTS code_health_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_at TEXT NOT NULL,
+        source_id TEXT,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('objective', 'subjective', 'retention')),
+        operation TEXT NOT NULL CHECK (operation IN ('admit', 'reconcile', 'expire')),
+        status TEXT NOT NULL CHECK (status IN ('committed', 'rejected', 'unavailable', 'disabled', 'unconfigured', 'incomplete', 'no-artifacts')),
+        repo_owner TEXT,
+        repo_name TEXT,
+        record_count INTEGER NOT NULL DEFAULT 0 CHECK (record_count >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_health_audit_time
+        ON code_health_audit(event_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_code_health_audit_source
+        ON code_health_audit(source_id, id DESC);
+    `,
+  },
 ];
 
 function openDatabase(dbPath) {

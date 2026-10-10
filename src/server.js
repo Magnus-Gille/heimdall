@@ -66,6 +66,9 @@ const { getPlugin } = require('./plugins');
 const { panelAliasOwnerOf, panelServiceIdsFor } = require('./plugins/known-panels');
 const { m5Snapshot } = require('./plugins/inference');
 const { mcpSnapshot } = require('./mcp-probe');
+const { getObjectiveHistory, readObjectiveSourceState } = require('./code-health/store');
+const { DEFAULT_SUBJECTIVE_SOURCE_CONFIG, readSubjectiveEvidence } = require('./code-health/munin-export');
+const { buildCodeHealthView, codeHealthPage, registeredRepositories } = require('./render/code-health');
 
 // Service names of the synthetic snapshots written outside the polled registry:
 // selfSnapshot → 'heimdall', m5Snapshot → 'm5-gateway', mcpSnapshot → 'munin-mcp'.
@@ -94,6 +97,14 @@ app.register(require('@fastify/rate-limit'), {
 });
 
 const db = injectedDb || openDatabase();
+const codeHealthOptions = options.codeHealth || {};
+const codeHealthProviders = codeHealthOptions.providers || {};
+const codeHealthRead = {
+  getObjectiveHistory: codeHealthProviders.getObjectiveHistory || getObjectiveHistory,
+  readObjectiveSourceState: codeHealthProviders.readObjectiveSourceState || readObjectiveSourceState,
+  readSubjectiveEvidence: codeHealthProviders.readSubjectiveEvidence || readSubjectiveEvidence,
+  resolveEvidenceRefs: codeHealthProviders.resolveEvidenceRefs || (() => ({})),
+};
 
 // Reconcile fleet membership from Grimnir's canonical node registry. Observed-
 // only rows stay in SQLite as historical telemetry and are marked retired
@@ -157,6 +168,7 @@ const STATIC_FILES = {
   '/css/supervision.css': { file: 'css/supervision.css', ct: 'text/css; charset=utf-8' },
   '/css/reliability.css': { file: 'css/reliability.css', ct: 'text/css; charset=utf-8' },
   '/css/timeline.css': { file: 'css/timeline.css', ct: 'text/css; charset=utf-8' },
+  '/css/code-health.css': { file: 'css/code-health.css', ct: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', ct: 'application/javascript; charset=utf-8' },
   '/reader.js': { file: 'reader.js', ct: 'application/javascript; charset=utf-8' },
 };
@@ -629,6 +641,89 @@ app.get('/api/insights/trend', async () => {
   } catch {
     return [];
   }
+});
+
+// Code health is a stored-evidence view. These GET routes never call a source
+// collector, Munin RPC, or credential loader; source activation remains an
+// explicit future integration decision.
+async function loadCodeHealthView(query = {}) {
+  const repositories = registeredRepositories();
+  const requestedRepo = query.repo == null ? 'sagascript' : query.repo;
+  const repo = typeof requestedRepo === 'string' ? repositories.find((item) => item.name === requestedRepo) : null;
+  if (!repo) return { error: 'invalid repository', statusCode: 400 };
+
+  const requestedDays = query.days == null ? '90' : query.days;
+  if (typeof requestedDays !== 'string' || !['30', '90', '365'].includes(requestedDays)) {
+    return { error: 'invalid period (use 30, 90, or 365)', statusCode: 400 };
+  }
+  const days = Number(requestedDays);
+  const at = now();
+  const asOf = new Date(at);
+  const [objectiveHistory, objectiveSource] = await Promise.all([
+    codeHealthRead.getObjectiveHistory(db, { repoOwner: repo.owner, repoName: repo.name, days, asOf }),
+    Promise.resolve(codeHealthRead.readObjectiveSourceState(db, {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      enabled: codeHealthOptions.objectiveEnabled === true,
+      configured: codeHealthOptions.objectiveConfigured === true,
+    })),
+  ]);
+  const subjectiveConfig = typeof codeHealthOptions.subjectiveConfigForRepo === 'function'
+    ? codeHealthOptions.subjectiveConfigForRepo(repo.name)
+    : codeHealthOptions.subjectiveConfig || DEFAULT_SUBJECTIVE_SOURCE_CONFIG;
+  const subjective = await codeHealthRead.readSubjectiveEvidence(db, subjectiveConfig, { now: asOf });
+  const slots = Array.isArray(objectiveHistory?.slots) ? objectiveHistory.slots : [];
+  const modules = new Set(slots.map((slot) => slot.scope || 'repository'));
+  const requestedModule = query.module == null ? 'all' : query.module;
+  if (typeof requestedModule !== 'string' || (requestedModule !== 'all' && !modules.has(requestedModule))) {
+    return { error: 'invalid module filter', statusCode: 400 };
+  }
+
+  const moduleRefs = [...new Set((subjective?.records || [])
+    .filter((item) => item?.record?.repo_name === repo.name && item.record?.reporter?.kind === 'worker')
+    .flatMap((item) => Array.isArray(item.record.module_refs) ? item.record.module_refs : []))].slice(0, 64);
+  let resolvedEvidenceRefs = {};
+  if (moduleRefs.length) {
+    const resolved = await codeHealthRead.resolveEvidenceRefs(db, moduleRefs, { repoOwner: repo.owner, repoName: repo.name });
+    if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+      for (const ref of moduleRefs) {
+        const label = resolved[ref];
+        if (typeof label === 'string' && label.trim() && label.length <= 80
+          && !/(?:https?|file|ssh|ftp):\/\/|^(?:~\/|\/|[A-Za-z]:\\)/iu.test(label)) {
+          resolvedEvidenceRefs[ref] = label.trim();
+        }
+      }
+    }
+  }
+  const sprintMarkers = typeof codeHealthProviders.getSprintMarkers === 'function'
+    ? await codeHealthProviders.getSprintMarkers(db, { repoOwner: repo.owner, repoName: repo.name }) : [];
+  return {
+    view: buildCodeHealthView({
+      repoName: repo.name,
+      days,
+      module: requestedModule,
+      objectiveHistory,
+      objectiveSource,
+      subjective,
+      sprintMarkers,
+      resolvedEvidenceRefs,
+      now: asOf,
+    }),
+  };
+}
+
+app.get('/code-health', async (request, reply) => {
+  const result = await loadCodeHealthView(request.query || {});
+  if (result.error) return reply.code(result.statusCode).type('text/plain; charset=utf-8').send(result.error);
+  reply.header('Content-Type', 'text/html; charset=utf-8')
+    .header('Cache-Control', 'private, no-store')
+    .send(codeHealthPage(gitVersion, result.view));
+});
+
+app.get('/api/code-health', async (request, reply) => {
+  const result = await loadCodeHealthView(request.query || {});
+  if (result.error) return reply.code(result.statusCode).send({ error: result.error });
+  reply.header('Cache-Control', 'private, no-store').send(result.view);
 });
 
 // ── M5 — "What We've Learned" page cards ───────────────────────────────────────────────────
