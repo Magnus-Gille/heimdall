@@ -195,12 +195,18 @@ function normalizeObjectiveSlot(slot, metric, nowIso, sprintMarkers) {
   };
 }
 
-function chooseWorkerRecord(records) {
-  return records.find((record) => record?.reporter?.kind === 'worker') || null;
+function chooseWorkerRecord(records, retentionById = new Map()) {
+  const workers = records.filter((record) => record?.reporter?.kind === 'worker');
+  return workers.find((record) => retentionById.get(record.record_id)?.classification === 'public')
+    || workers[0] || null;
 }
 
-function summarizeSubjective(source, repoName, resolvedRefs = {}) {
+function summarizeSubjective(source, repoName, resolvedRefs = {}, { cohort = 'all' } = {}) {
   const records = Array.isArray(source?.records) ? source.records : [];
+  const contextRecords = Array.isArray(source?.contextRecords) ? source.contextRecords : [];
+  const retentionById = new Map([...records, ...contextRecords]
+    .filter((item) => item?.record?.record_id)
+    .map((item) => [item.record.record_id, item.retention || {}]));
   const workerRecords = records.filter((item) => item?.record?.repo_name === repoName && item.record?.reporter?.kind === 'worker').map((item) => item.record);
   const aggregate = source?.aggregate || {};
   const occurrences = (Array.isArray(aggregate.occurrences) ? aggregate.occurrences : []).filter((group) => group?.repo_name === repoName);
@@ -222,7 +228,7 @@ function summarizeSubjective(source, repoName, resolvedRefs = {}) {
     const [dimension] = dimensions;
     const [polarity] = polarities;
     if (counts[dimension]) counts[dimension][polarity === 'positive' ? 'helpful' : 'friction'] += 1;
-    const representative = chooseWorkerRecord(workerRows);
+    const representative = chooseWorkerRecord(workerRows, retentionById);
     for (const ref of representative.module_refs || []) {
       const label = resolvedRefs[ref];
       if (typeof label !== 'string' || !label.trim()) continue;
@@ -234,7 +240,8 @@ function summarizeSubjective(source, repoName, resolvedRefs = {}) {
         dimension,
         polarity: polarity === 'positive' ? 'helpful' : 'friction',
         cause: [...causes][0],
-        summary: typeof representative.summary === 'string' ? representative.summary.slice(0, 180) : null,
+        summary: retentionById.get(representative.record_id)?.classification === 'public'
+          && typeof representative.summary === 'string' ? representative.summary.slice(0, 180) : null,
       });
     }
   }
@@ -295,6 +302,9 @@ function summarizeSubjective(source, repoName, resolvedRefs = {}) {
     unresolvedModuleRefs: workerRecords.reduce((sum, record) => sum + (record.module_refs || []).filter((ref) => !resolvedRefs[ref]).length, 0),
     cohorts: [...cohorts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12).map(([model, count]) => ({ model, count })),
     evidence: occurrenceEvidence,
+    cohortFilter: cohort,
+    cohortNote: 'Cohort filtering applies to subjective evidence only and uses the worker model observed by the producer.',
+    summaryNote: 'Summary text is shown only for records retained as public; all other or unknown classifications are redacted.',
     retentionMonths: 6,
     sampleNote: 'Worker observations are counted by occurrence. Parent and Close records are context and do not add occurrences.',
   };
@@ -304,11 +314,14 @@ function buildCodeHealthView({
   repoName,
   days = 90,
   module = 'all',
+  cohort = 'all',
   objectiveHistory = {},
   objectiveSource = {},
   subjective = {},
   sprintMarkers = [],
   resolvedEvidenceRefs = {},
+  subjectiveModuleLabels = {},
+  subjectiveCohorts = [],
   now = new Date(),
 } = {}) {
   const repo = registeredRepositories().find((item) => item.name === repoName);
@@ -316,7 +329,11 @@ function buildCodeHealthView({
   if (![30, 90, 365].includes(days)) throw new TypeError('period must be 30, 90, or 365 days');
   const slots = Array.isArray(objectiveHistory.slots) ? objectiveHistory.slots : [];
   const modules = [...new Set(slots.map((slot) => typeof slot.scope === 'string' && slot.scope ? slot.scope : 'repository'))].sort();
-  const selectedModule = module === 'all' || modules.includes(module) ? module : 'all';
+  const extraModules = Object.keys(subjectiveModuleLabels).filter((ref) => /^subjective:[a-f0-9]{24}$/.test(ref));
+  const filterModules = [...new Set([...modules, ...extraModules])].sort();
+  const selectedModule = module === 'all' || filterModules.includes(module) ? module : 'all';
+  const cohortOptions = [...new Set(subjectiveCohorts.filter((item) => typeof item === 'string' && item.length <= 160))].sort();
+  const selectedCohort = cohort === 'all' || cohortOptions.includes(cohort) ? cohort : 'all';
   const scopeSlots = selectedModule === 'all' ? slots : slots.filter((slot) => (slot.scope || 'repository') === selectedModule);
   const nowDate = now instanceof Date ? now : new Date(now);
   const asOf = compactTime(objectiveHistory.as_of) || compactTime(nowDate.toISOString()) || new Date().toISOString();
@@ -346,7 +363,10 @@ function buildCodeHealthView({
       repository: repo.name,
       period: days,
       module: selectedModule,
-      modules,
+      modules: filterModules,
+      moduleLabels: Object.fromEntries(extraModules.map((ref) => [ref, String(subjectiveModuleLabels[ref]).slice(0, 80)])),
+      cohort: selectedCohort,
+      cohorts: cohortOptions,
       periods: [30, 90, 365],
     },
     objectiveCollection: {
@@ -360,7 +380,7 @@ function buildCodeHealthView({
           : null,
     },
     objective: sections,
-    subjective: summarizeSubjective(subjective, repo.name, resolvedEvidenceRefs),
+    subjective: summarizeSubjective(subjective, repo.name, resolvedEvidenceRefs, { cohort: selectedCohort }),
     acceptance: {
       producer: 'No live Hugin capture is connected.',
       mode: 'Fixture-only UI acceptance; stored evidence is read-only.',
@@ -428,6 +448,8 @@ function subjectiveSection(subjective) {
     <div class="ch-subjective-grid"><div><h3>Helpful and friction occurrences</h3><div class="ch-table-wrap"><table><thead><tr><th>Dimension</th><th>Helpful</th><th>Friction</th><th>Assessment ratings</th></tr></thead><tbody>${dimensionRows}</tbody></table></div></div>
       <div class="ch-subjective-breakdown"><h3>Completeness</h3>${countList(subjective.completeness)}<h3>Outcomes</h3>${countList(subjective.outcomes)}<h3>Worker model cohort</h3>${countList(Object.fromEntries(subjective.cohorts.map((item) => [item.model, item.count])))}</div></div>
     <div class="ch-subjective-grid"><div><h3>Recurrent registered modules</h3>${subjective.recurrentModules.length ? `<ul>${subjective.recurrentModules.map((item) => `<li>${esc(item.label)} <strong>${item.count}</strong></li>`).join('')}</ul>` : `<p class="ch-muted">No module references resolved through a registered artifact.${subjective.unresolvedModuleRefs ? ` ${subjective.unresolvedModuleRefs} module reference(s) remain unresolved.` : ''}</p>`}</div><div><h3>Bounded examples</h3>${evidence}</div></div>
+    <p class="ch-muted">${esc(subjective.cohortNote || 'Cohort filtering applies to subjective evidence only and uses the worker model observed by the producer.')}</p>
+    <p class="ch-muted">${esc(subjective.summaryNote || 'Summary text is shown only for records retained as public; all other or unknown classifications are redacted.')}</p>
     <p class="ch-muted">Expected eligible task identities are not supplied, so no participation percentage is shown. Parent and Close observations provide context and do not increase occurrence counts.</p>
   </section>`;
 }
@@ -435,7 +457,11 @@ function subjectiveSection(subjective) {
 function codeHealthPage(gitVersion, view) {
   const repoOptions = registeredRepositories().map((repo) => `<option value="${esc(repo.name)}"${repo.name === view.repository.name ? ' selected' : ''}>${esc(repo.label)}</option>`).join('');
   const periodOptions = view.filters.periods.map((days) => `<option value="${days}"${days === view.period.requestedDays ? ' selected' : ''}>${days} days</option>`).join('');
-  const moduleOptions = ['all', ...view.filters.modules].map((module) => `<option value="${esc(module)}"${module === view.filters.module ? ' selected' : ''}>${esc(module === 'all' ? 'All modules' : module === 'repository' ? 'Repository scope' : module)}</option>`).join('');
+  const moduleOptions = ['all', ...view.filters.modules].map((module) => {
+    const label = module === 'all' ? 'All modules' : module === 'repository' ? 'Repository scope' : view.filters.moduleLabels?.[module] || module;
+    return `<option value="${esc(module)}"${module === view.filters.module ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+  const cohortOptions = ['all', ...view.filters.cohorts].map((cohort) => `<option value="${esc(cohort)}"${cohort === view.filters.cohort ? ' selected' : ''}>${esc(cohort === 'all' ? 'All worker models' : cohort)}</option>`).join('');
   const objectiveSections = view.objective.map((metric) => objectiveCard(metric, view)).join('');
   const status = view.objectiveCollection.status;
   const fresh = view.objectiveCollection.lastSuccessAt ? `Last stored success ${view.objectiveCollection.lastSuccessAt}` : 'No stored successful collection';
@@ -444,7 +470,7 @@ function codeHealthPage(gitVersion, view) {
   const collectionNote = view.objectiveCollection.note || view.objectiveCollection.lastError || 'Stored snapshots only; rendering does not collect evidence.';
   const content = `<main class="code-health-page">
     <header class="ch-page-head"><div><p class="ch-eyebrow">Code health · read-only evidence</p><h1>${esc(view.repository.label)}</h1><p>Objective measurements and subjective worker observations remain separate.</p></div><div class="ch-collection-status">${statusBadge(status)}<span>${esc(fresh)}</span></div></header>
-    <form class="ch-filters" method="get" action="/code-health"><label>Repository<select name="repo">${repoOptions}</select></label><label>Period<select name="days">${periodOptions}</select></label><label>Module<select name="module">${moduleOptions}</select></label><button type="submit">Apply filters</button></form>
+    <form class="ch-filters" method="get" action="/code-health"><label>Repository<select name="repo">${repoOptions}</select></label><label>Period<select name="days">${periodOptions}</select></label><label>Module<select name="module">${moduleOptions}</select></label><label>Worker model cohort <span class="ch-muted">(subjective only)</span><select name="cohort">${cohortOptions}</select></label><button type="submit">Apply filters</button></form>
     ${retentionNotice}
     <p class="ch-note">${esc(collectionNote)} Last attempt: ${view.objectiveCollection.lastAttemptAt ? esc(view.objectiveCollection.lastAttemptAt) : 'none recorded'}; status: ${esc(STATUS_LABELS[view.objectiveCollection.lastAttemptStatus] || STATUS_LABELS[status] || status)}. Records are retained for ${retentionLabel} from collection.</p>
     ${view.acceptance.writesEnabled ? '' : '<p class="ch-callout">No live Hugin capture is connected. Fixture-only UI acceptance; no producer is enabled here.</p>'}

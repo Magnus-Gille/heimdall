@@ -17,6 +17,7 @@ const { buildApp } = require('../src/server');
 const { openDatabase } = require('../src/db');
 const { getObjectiveHistory } = require('../src/code-health/store');
 const { buildCodeHealthView, codeHealthPage, summarizeSubjective } = require('../src/render/code-health');
+const { filterSubjectiveEvidence } = require('../src/code-health/munin-export');
 
 const NOW = '2026-10-10T12:00:00Z';
 const OWNER = 'Magnus-Gille';
@@ -212,7 +213,7 @@ describe('code-health renderer', () => {
     assert.doesNotMatch(html, /0 above threshold|0 candidates|0 confirmed/);
   });
 
-  it('keeps subjective counts deduplicated to worker occurrences and escapes the bounded summary', () => {
+  it('keeps subjective counts deduplicated and redacts summaries without public retention', () => {
     const source = sampleSubjective();
     const summary = summarizeSubjective(source, REPO, { 'ref:module-private': 'Core data layer' });
     assert.equal(summary.workerSamples, 3, 'parent context is not a worker sample');
@@ -224,9 +225,46 @@ describe('code-health renderer', () => {
     assert.equal(summary.participation, null);
     assert.equal(summary.recurrentModules[0].label, 'Core data layer');
     const html = codeHealthPage('v', buildCodeHealthView({ repoName: REPO, objectiveHistory: historyFixture(), subjective: source, resolvedEvidenceRefs: { 'ref:module-private': 'Core data layer' }, now: new Date(NOW) }));
-    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
-    assert.doesNotMatch(html, /<img src=x/);
+    assert.equal(summary.evidence[0].summary, null);
+    assert.doesNotMatch(html, /onerror=alert|<img src=x|&lt;img src=x/);
+    const publicSource = sampleSubjective();
+    for (const item of publicSource.records) item.retention = { classification: 'public' };
+    const publicHtml = codeHealthPage('v', buildCodeHealthView({ repoName: REPO, objectiveHistory: historyFixture(), subjective: publicSource, resolvedEvidenceRefs: { 'ref:module-private': 'Core data layer' }, now: new Date(NOW) }));
+    assert.match(publicHtml, /&lt;img src=x onerror=alert\(1\)&gt;/);
     assert.match(html, /participation rate is unavailable/);
+  });
+
+  it('filters subjective aggregates before rendering', async () => {
+    const contract = await require('../src/code-health/contract').loadContract();
+    const fixture = require('../src/code-health/contract/tests/fixtures/code-health/agent-positive.json');
+    const records = JSON.parse(JSON.stringify(fixture.records));
+    for (const record of records) {
+      record.module_refs = ['ref:module-other'];
+      record.actual_worker = { ...(record.actual_worker || {}), observed_model: 'worker-core' };
+    }
+    records.find((record) => record.record_id === 'ref:assess-main-corrected').module_refs = ['ref:module-core'];
+    const oldRecord = records.find((record) => record.record_id === 'ref:assess-partial');
+    oldRecord.observed_at = '2026-01-01T10:00:00Z';
+    oldRecord.actual_worker.observed_model = 'worker-other';
+    const source = {
+      records: records.map((record) => ({ record, retention: { classification: 'public' } })),
+      contextRecords: [],
+      aggregate: contract.aggregateRecords(records),
+      collection: { status: 'committed' },
+    };
+    const filtered = await filterSubjectiveEvidence(source, {
+      repoName: 'sample-project',
+      days: 30,
+      asOf: NOW,
+      moduleRefs: ['ref:module-core'],
+      cohort: 'worker-core',
+    });
+    assert.deepEqual(filtered.records.map(({ record }) => record.record_id), ['ref:assess-main-corrected']);
+    assert.deepEqual(filtered.contextRecords.map(({ record }) => record.record_id).sort(), ['ref:assess-main', 'ref:rec-close', 'ref:rec-worker']);
+    assert.equal(filtered.aggregate.assessment_attempts.length, 1);
+    assert.equal(filtered.aggregate.occurrences.length, 0);
+    assert.ok(source.aggregate.occurrences.length > 0);
+    assert.ok(source.aggregate.assessment_attempts.length > filtered.aggregate.assessment_attempts.length);
   });
 
   it('renders registered source provenance without outputting opaque reference IDs', async () => {
@@ -302,7 +340,7 @@ describe('code-health read routes', () => {
     assert.match(page.body, /No live Hugin capture is connected/);
     assert.match(page.body, /fixture-only UI acceptance/i);
     assert.match(page.body, /Core data layer/);
-    assert.match(page.body, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.doesNotMatch(page.body, /onerror=alert|<img src=x|&lt;img src=x/);
 
     const api = await app.inject({ method: 'GET', url: '/api/code-health?repo=sagascript&days=30&module=rust-core' });
     assert.equal(api.statusCode, 200);
@@ -326,5 +364,6 @@ describe('code-health read routes', () => {
     assert.equal((await app.inject({ method: 'GET', url: '/api/code-health?repo=other' })).statusCode, 400);
     assert.equal((await app.inject({ method: 'GET', url: '/api/code-health?days=31' })).statusCode, 400);
     assert.equal((await app.inject({ method: 'GET', url: '/api/code-health?module=not-registered' })).statusCode, 400);
+    assert.equal((await app.inject({ method: 'GET', url: '/api/code-health?cohort=not-observed' })).statusCode, 400);
   });
 });

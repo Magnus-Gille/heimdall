@@ -333,7 +333,7 @@ async function reconcileSubjectiveEvidence(db, config, { rpc: rpcFn, now: nowVal
   }
 }
 
-async function readSubjectiveEvidence(db, config = DEFAULT_SUBJECTIVE_SOURCE_CONFIG, { now: nowValue = new Date() } = {}) {
+async function readSubjectiveEvidence(db, config = DEFAULT_SUBJECTIVE_SOURCE_CONFIG, { now: nowValue = new Date(), filter = null } = {}) {
   let validConfig = false;
   try { validateSourceConfig({ ...config, enabled: true }); validConfig = true; } catch { /* Surface the source state without exposing config-validation text. */ }
   const sourceId = config && typeof config === 'object' && !Array.isArray(config) ? sourceIdentity(config) : null;
@@ -372,7 +372,7 @@ async function readSubjectiveEvidence(db, config = DEFAULT_SUBJECTIVE_SOURCE_CON
   const status = !validConfig ? (config?.enabled === true ? 'rejected' : 'unconfigured')
     : config.enabled !== true ? 'disabled'
       : lastAttempt?.status ?? 'not-collected';
-  return {
+  const result = {
     source,
     records,
     contextRecords,
@@ -385,6 +385,86 @@ async function readSubjectiveEvidence(db, config = DEFAULT_SUBJECTIVE_SOURCE_CON
       last_error_code: !validConfig ? 'invalid-source-configuration' : errorCodes[lastAttempt?.status] ?? null,
     },
   };
+  return filter ? filterSubjectiveEvidence(result, filter) : result;
+}
+
+function observedModel(record) {
+  const model = record?.actual_worker?.observed_model;
+  return typeof model === 'string' && model ? model : 'unknown';
+}
+
+function instantInWindow(record, asOf, days) {
+  if (!record || typeof record.observed_at !== 'string') return false;
+  const observed = Date.parse(record.observed_at);
+  if (!Number.isFinite(observed)) return false;
+  return observed >= asOf - (days * 86400000) && observed <= asOf;
+}
+
+function normalizedModuleRefs(filter) {
+  if (!Array.isArray(filter?.moduleRefs)) return null;
+  return new Set(filter.moduleRefs.filter((ref) => typeof ref === 'string' && ref.length <= 256));
+}
+
+function recordMatchesSubjectiveFilter(record, filter, asOf, moduleRefs) {
+  if (!record || (filter?.repoName && record.repo_name !== filter.repoName)) return false;
+  if (Number.isSafeInteger(filter?.days) && !instantInWindow(record, asOf, filter.days)) return false;
+  if (moduleRefs) {
+    const refs = Array.isArray(record.module_refs) ? record.module_refs : [];
+    if (!refs.some((ref) => moduleRefs.has(ref))) return false;
+  }
+  if (typeof filter?.cohort === 'string' && filter.cohort !== 'all' && observedModel(record) !== filter.cohort) return false;
+  return true;
+}
+
+function referencedRecordIds(record) {
+  return subjectiveReferences(record);
+}
+
+async function filterSubjectiveEvidence(source, filter = {}) {
+  if (!source || typeof source !== 'object') return source;
+  const asOfValue = filter.asOf instanceof Date ? filter.asOf.getTime() : Date.parse(filter.asOf);
+  const asOf = Number.isFinite(asOfValue) ? asOfValue : Date.now();
+  const moduleRefs = normalizedModuleRefs(filter);
+  const primary = Array.isArray(source.records) ? source.records : [];
+  const context = Array.isArray(source.contextRecords) ? source.contextRecords : [];
+  if (!filter || (!filter.repoName && !Number.isSafeInteger(filter.days) && !moduleRefs && (!filter.cohort || filter.cohort === 'all'))) {
+    return source;
+  }
+
+  const allRows = [...primary, ...context];
+  const byId = new Map(allRows
+    .filter((item) => item?.record && typeof item.record.record_id === 'string')
+    .map((item) => [item.record.record_id, item]));
+  const selected = new Map();
+  for (const item of primary) {
+    if (recordMatchesSubjectiveFilter(item?.record, filter, asOf, moduleRefs)) selected.set(item.record.record_id, item);
+  }
+
+  // Keep correction/source/assessment context even when it falls outside the
+  // requested window or module. The contract validator then resolves the
+  // selected set with the same semantics as the unfiltered export.
+  const neededContext = new Set();
+  const queue = [...selected.values()].flatMap((item) => referencedRecordIds(item.record));
+  while (queue.length) {
+    const recordId = queue.shift();
+    if (neededContext.has(recordId) || selected.has(recordId)) continue;
+    const item = byId.get(recordId);
+    if (!item) continue;
+    neededContext.add(recordId);
+    queue.push(...referencedRecordIds(item.record));
+  }
+  const selectedRecords = [...selected.values()];
+  const selectedContext = [...neededContext].map((recordId) => byId.get(recordId)).filter(Boolean);
+  const contract = await loadContract();
+  const aggregate = contract.aggregateRecords(selectedRecords.map(({ record }) => record), {
+    contextRecords: selectedContext.map(({ record }) => record),
+  });
+  return {
+    ...source,
+    records: selectedRecords,
+    contextRecords: selectedContext,
+    aggregate,
+  };
 }
 
 module.exports = {
@@ -396,4 +476,5 @@ module.exports = {
   fetchCompleteExport,
   reconcileSubjectiveEvidence,
   readSubjectiveEvidence,
+  filterSubjectiveEvidence,
 };

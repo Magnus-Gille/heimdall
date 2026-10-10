@@ -4,6 +4,7 @@ const Fastify = require('fastify');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 // Load env file so runtime config (HEIMDALL_BIND, HEIMDALL_NOTIFY_CHAT_ID, etc.) is available
 const ENV_FILE = path.join(os.homedir(), '.heimdall', 'env');
@@ -67,7 +68,7 @@ const { panelAliasOwnerOf, panelServiceIdsFor } = require('./plugins/known-panel
 const { m5Snapshot } = require('./plugins/inference');
 const { mcpSnapshot } = require('./mcp-probe');
 const { getObjectiveHistory, readObjectiveSourceState } = require('./code-health/store');
-const { DEFAULT_SUBJECTIVE_SOURCE_CONFIG, readSubjectiveEvidence } = require('./code-health/munin-export');
+const { DEFAULT_SUBJECTIVE_SOURCE_CONFIG, readSubjectiveEvidence, filterSubjectiveEvidence } = require('./code-health/munin-export');
 const { buildCodeHealthView, codeHealthPage, registeredRepositories } = require('./render/code-health');
 
 // Service names of the synthetic snapshots written outside the polled registry:
@@ -671,15 +672,15 @@ async function loadCodeHealthView(query = {}) {
   const subjectiveConfig = typeof codeHealthOptions.subjectiveConfigForRepo === 'function'
     ? codeHealthOptions.subjectiveConfigForRepo(repo.name)
     : codeHealthOptions.subjectiveConfig || DEFAULT_SUBJECTIVE_SOURCE_CONFIG;
-  const subjective = await codeHealthRead.readSubjectiveEvidence(db, subjectiveConfig, { now: asOf });
+  const subjectiveRaw = await codeHealthRead.readSubjectiveEvidence(db, subjectiveConfig, { now: asOf });
   const slots = Array.isArray(objectiveHistory?.slots) ? objectiveHistory.slots : [];
   const modules = new Set(slots.map((slot) => slot.scope || 'repository'));
   const requestedModule = query.module == null ? 'all' : query.module;
-  if (typeof requestedModule !== 'string' || (requestedModule !== 'all' && !modules.has(requestedModule))) {
+  if (typeof requestedModule !== 'string') {
     return { error: 'invalid module filter', statusCode: 400 };
   }
 
-  const moduleRefs = [...new Set((subjective?.records || [])
+  const moduleRefs = [...new Set((subjectiveRaw?.records || [])
     .filter((item) => item?.record?.repo_name === repo.name && item.record?.reporter?.kind === 'worker')
     .flatMap((item) => Array.isArray(item.record.module_refs) ? item.record.module_refs : []))].slice(0, 64);
   let resolvedEvidenceRefs = {};
@@ -695,6 +696,46 @@ async function loadCodeHealthView(query = {}) {
       }
     }
   }
+  const subjectiveModuleLabels = {};
+  const subjectiveModuleRefsByToken = {};
+  for (const [ref, label] of Object.entries(resolvedEvidenceRefs)) {
+    if (!/^ref:[A-Za-z0-9][A-Za-z0-9:_./-]{0,255}$/.test(ref)) continue;
+    const token = `subjective:${crypto.createHash('sha256').update(ref).digest('hex').slice(0, 24)}`;
+    subjectiveModuleLabels[token] = label;
+    subjectiveModuleRefsByToken[token] = ref;
+  }
+  const subjectiveModuleRefsByScope = {};
+  for (const scope of modules) {
+    subjectiveModuleRefsByScope[scope] = [...new Set(slots
+      .filter((slot) => (slot.scope || 'repository') === scope)
+      .flatMap((slot) => [slot.slot_ref, ...(Array.isArray(slot.feature_refs) ? slot.feature_refs : [])])
+      .filter((ref) => typeof ref === 'string'))];
+  }
+  const validModule = requestedModule === 'all' || modules.has(requestedModule) || Object.hasOwn(subjectiveModuleRefsByToken, requestedModule);
+  if (!validModule) return { error: 'invalid module filter', statusCode: 400 };
+
+  const cohortValues = [...new Set((subjectiveRaw?.records || [])
+    .filter((item) => item?.record?.repo_name === repo.name && item.record?.reporter?.kind === 'worker')
+    .map((item) => {
+      const model = item.record.actual_worker?.observed_model;
+      return typeof model === 'string' && model ? model : 'unknown';
+    }))].filter((model) => model.length <= 160).sort();
+  const requestedCohort = query.cohort == null ? 'all' : query.cohort;
+  if (typeof requestedCohort !== 'string' || (requestedCohort !== 'all' && !cohortValues.includes(requestedCohort))) {
+    return { error: 'invalid cohort filter', statusCode: 400 };
+  }
+  const selectedModuleRefs = requestedModule === 'all'
+    ? null
+    : Object.hasOwn(subjectiveModuleRefsByToken, requestedModule)
+      ? [subjectiveModuleRefsByToken[requestedModule]]
+      : subjectiveModuleRefsByScope[requestedModule] || [];
+  const subjective = await filterSubjectiveEvidence(subjectiveRaw, {
+    repoName: repo.name,
+    days,
+    asOf,
+    moduleRefs: selectedModuleRefs,
+    cohort: requestedCohort,
+  });
   const sprintMarkers = typeof codeHealthProviders.getSprintMarkers === 'function'
     ? await codeHealthProviders.getSprintMarkers(db, { repoOwner: repo.owner, repoName: repo.name }) : [];
   return {
@@ -702,11 +743,14 @@ async function loadCodeHealthView(query = {}) {
       repoName: repo.name,
       days,
       module: requestedModule,
+      cohort: requestedCohort,
       objectiveHistory,
       objectiveSource,
       subjective,
       sprintMarkers,
       resolvedEvidenceRefs,
+      subjectiveModuleLabels,
+      subjectiveCohorts: cohortValues,
       now: asOf,
     }),
   };
