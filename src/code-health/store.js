@@ -268,8 +268,14 @@ async function getObjectiveHistory(db, {
       || a.collected_at.localeCompare(b.collected_at)
       || a.source_run_id - b.source_run_id);
     const currentCandidates = allPoints.filter((point) => point.kind === 'gap' || !point.superseded);
-    const latestEventAt = currentCandidates.length ? currentCandidates[currentCandidates.length - 1].observed_at : null;
-    const latestCandidates = latestEventAt == null ? [] : currentCandidates.filter((point) => point.observed_at === latestEventAt);
+    // Full-scope producers may emit a static not-collected snapshot for metrics
+    // outside the current run. Keep it in history, but do not let it hide a
+    // substantive point; gaps and every other status remain authoritative.
+    const substantiveCandidates = currentCandidates.filter((point) => !(point.kind === 'snapshot'
+      && point.status === 'unknown' && point.reason === 'not-collected'));
+    const latestPool = substantiveCandidates.length ? substantiveCandidates : currentCandidates;
+    const latestEventAt = latestPool.length ? latestPool[latestPool.length - 1].observed_at : null;
+    const latestCandidates = latestEventAt == null ? [] : latestPool.filter((point) => point.observed_at === latestEventAt);
     let latest;
     if (latestCandidates.length === 0) latest = { status: 'unknown', current_status: 'unknown', reason: 'no-retained-sample', series_key: null, payload: null };
     else if (latestCandidates.length > 1) latest = { status: 'unknown', current_status: 'unknown', reason: 'conflicting-samples-at-same-time', series_key: null, payload: null };
