@@ -16,13 +16,60 @@ const LIMITS = Object.freeze({
 });
 const MANIFEST_KEYS = Object.freeze(['contract_version', 'repo_owner', 'repo_name', 'commit_sha', 'snapshots', 'evidence_index']);
 const PRODUCER_AUXILIARY_FILES = Object.freeze({
-  'gille-inference': Object.freeze(['evidence/ci/inventory.json', 'evidence/overhead.json']),
+  'gille-inference': Object.freeze([
+    'evidence/ci/inventory.json',
+    'evidence/complexity/summary.json',
+    'evidence/coverage/run.json',
+    'evidence/overhead.json',
+    'evidence/producer-status.json',
+    'workflow-run.json',
+  ]),
   sagascript: Object.freeze([
     'evidence/collection-status.json',
     'evidence/collection-overhead.json',
     'evidence/ci-workflow.json',
+    'workflow-status.json',
   ]),
 });
+
+const WORKFLOW_STATUS_KEYS = Object.freeze([
+  'status', 'phase', 'reason', 'phase_elapsed_seconds', 'preupload_elapsed_seconds',
+  'preupload_budget_seconds', 'preupload_over_budget', 'metadata_elapsed_seconds',
+  'metadata_budget_seconds', 'metadata_over_budget', 'over_budget',
+]);
+
+function finiteNonNegative(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function finiteNonNegativeOrNull(value) {
+  return value === null || finiteNonNegative(value);
+}
+
+function validateWorkflowStatus(files) {
+  if (!files.has('workflow-status.json')) return;
+  const status = readJsonFile(files, 'workflow-status.json');
+  if (!status || typeof status !== 'object' || Array.isArray(status)
+    || !['completed', 'partial', 'failed', 'not-collected'].includes(status.status)) {
+    throw new Error('workflow status is malformed');
+  }
+  if (status.status === 'failed' || status.status === 'not-collected') {
+    throw new Error('producer workflow reports a setup or collection failure');
+  }
+  if (canonical(Object.keys(status).sort()) !== canonical([...WORKFLOW_STATUS_KEYS].sort())
+    || typeof status.phase !== 'string' || status.phase.length === 0
+    || (status.reason !== null && typeof status.reason !== 'string')
+    || !finiteNonNegativeOrNull(status.phase_elapsed_seconds)
+    || !finiteNonNegative(status.preupload_elapsed_seconds)
+    || !finiteNonNegative(status.preupload_budget_seconds)
+    || typeof status.preupload_over_budget !== 'boolean'
+    || !finiteNonNegativeOrNull(status.metadata_elapsed_seconds)
+    || !finiteNonNegative(status.metadata_budget_seconds)
+    || typeof status.metadata_over_budget !== 'boolean'
+    || typeof status.over_budget !== 'boolean') {
+    throw new Error('workflow status is malformed');
+  }
+}
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -274,7 +321,7 @@ async function parseObjectiveArtifact(bytes, provenance) {
   if (!pinnedSource) throw new Error('artifact repository is not allowlisted');
   const archive = parseZipArchive(bytes);
   const files = archive.files;
-  if (files.has('workflow-status.json')) throw new Error('producer workflow reports a setup or collection failure');
+  validateWorkflowStatus(files);
   const manifest = readJsonFile(files, 'manifest.json');
   exactKeys(manifest, MANIFEST_KEYS, 'manifest');
   if (manifest.contract_version !== '1.0' || manifest.repo_owner !== repository.owner || manifest.repo_name !== repository.name
