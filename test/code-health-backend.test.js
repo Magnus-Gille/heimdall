@@ -460,6 +460,34 @@ describe('code-health objective backend', () => {
     }), /artifact contains an unknown file: evidence\/not-registered\.json/);
   });
 
+  it('accepts the measured Saga CLI coverage scope and rejects the prior deferred registry', async () => {
+    const runId = 816;
+    const archive = makeObjectiveArchive('sagascript', runId, 1, { scopeNames: ['rust-cli'] });
+    const parsed = await parseObjectiveArtifact(archive, {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    });
+    assert.equal(parsed.snapshots.length, 1);
+    assert.equal(parsed.snapshots[0].metrics.coverage.status, 'measured');
+    assert.equal(parsed.snapshots[0].metrics.coverage.source.scope_version, 'rust-cli-no-default-exported-v1');
+    assert.equal(sagaRegistry.scopes.find((scope) => scope.name === 'rust-cli').slots.coverage.status, 'measured');
+    assert.equal(sagaRegistry.coverage.rust_cli.package, 'sagascript-cli');
+
+    const staleRegistry = clone(sagaRegistry);
+    delete staleRegistry.coverage.rust_cli;
+    const staleCoverage = staleRegistry.scopes.find((scope) => scope.name === 'rust-cli').slots.coverage;
+    staleCoverage.status = 'unknown';
+    staleCoverage.reason = 'incomplete-input';
+    staleCoverage.scope_version = 'rust-cli-no-default-clean-deferred-v1';
+    const staleEntries = [...parseZipArchive(archive).files.entries()].map(([name, bytes]) => [
+      name, name === 'scope-registry.json' ? JSON.stringify(staleRegistry) : bytes,
+    ]);
+    await assert.rejects(parseObjectiveArtifact(zipStored(staleEntries), {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    }), /scope registry differs from the pinned producer registry/);
+  });
+
   it('fails closed on duplicate and traversing archive entries', () => {
     assert.throws(() => parseZipArchive(zipStored([['../outside.json', '{}']])), /unsafe member path/);
     assert.throws(() => parseZipArchive(zipStored([['manifest.json', '{}'], ['manifest.json', '{}']])), /duplicate member/);
