@@ -18,6 +18,16 @@ const agentFixture = require('../src/code-health/contract/tests/fixtures/code-he
 const sagaRegistry = require('../src/code-health/registries/sagascript/code-health-producer-v1.json');
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
+function setStaticMetricState(snapshot, metricName, status, reason, observedAt) {
+  const metric = snapshot.metrics[metricName];
+  metric.observed_at = observedAt;
+  metric.status = status;
+  metric.payload = null;
+  metric.reason = reason;
+  metric.source = null;
+  metric.population = null;
+}
+
 function crc32(buffer) {
   let crc = 0xffffffff;
   for (const byte of buffer) {
@@ -587,6 +597,125 @@ describe('code-health objective backend', () => {
     assert.equal(state.last_attempt_status, 'committed');
     assert.equal(state.last_success_at, '2026-10-10T12:00:00Z');
     db.close();
+  });
+
+  const admitSagaFixture = async (db, {
+    runId, snapshotId, scopeNames, artifactCreatedAt = '2026-10-09T10:02:00Z', collectedAt = '2026-10-09T12:00:00Z', mutate,
+  }) => {
+    const provenance = {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId, attempt: 1, artifactCreatedAt,
+    };
+    const parsed = await parseObjectiveArtifact(makeObjectiveArchive('sagascript', runId, 1, { snapshotId, scopeNames }), provenance);
+    if (mutate) mutate(parsed);
+    await admitObjectiveArtifact(db, parsed, provenance, collectedAt);
+  };
+
+  it('preserves measured Saga points through a later full-scope CI-only report', async () => {
+    const db = memoryDb();
+    const first = await parseObjectiveArtifact(makeObjectiveArchive('sagascript', 901, 1, {
+      snapshotId: 'ref:full-t1',
+    }), {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId: 901, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z',
+    });
+    await admitObjectiveArtifact(db, first, {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId: 901, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z',
+    }, '2026-10-09T12:00:00Z');
+
+    const second = await parseObjectiveArtifact(makeObjectiveArchive('sagascript', 902, 1, {
+      snapshotId: 'ref:ci-only-t2',
+    }), {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId: 902, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    });
+    second.snapshots.forEach((snapshot, index) => {
+      const scope = sagaRegistry.scopes[index].name;
+      snapshot.observed_at = '2026-10-10T10:00:00Z';
+      for (const metricName of Object.keys(snapshot.metrics)) {
+        snapshot.metrics[metricName].observed_at = '2026-10-10T10:00:00Z';
+        if (scope !== 'ci-release' || metricName !== 'ci_first_attempt') {
+          setStaticMetricState(snapshot, metricName, 'unknown', 'not-collected', '2026-10-10T10:00:00Z');
+        }
+      }
+    });
+    await admitObjectiveArtifact(db, second, {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId: 902, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    }, '2026-10-10T12:00:00Z');
+
+    const history = await getObjectiveHistory(db, {
+      repoOwner: 'Magnus-Gille', repoName: 'sagascript', asOf: '2026-10-11T12:00:00Z',
+    });
+    for (const scope of ['rust-core', 'rust-cli', 'swift-coreml']) {
+      const slot = history.slots.find((item) => item.scope === scope && item.metric === 'coverage');
+      assert.equal(slot.latest.snapshot_id.startsWith('ref:full-t1'), true);
+      assert.equal(slot.latest.current_status, 'measured');
+      assert.ok(slot.points.some((point) => point.snapshot_id.startsWith('ref:ci-only-t2')
+        && point.status === 'unknown' && point.reason === 'not-collected'));
+    }
+    const ci = history.slots.find((item) => item.scope === 'ci-release' && item.metric === 'ci_first_attempt');
+    assert.equal(ci.latest.snapshot_id.startsWith('ref:ci-only-t2'), true);
+    assert.equal(ci.latest.current_status, 'measured');
+    db.close();
+  });
+
+  it('keeps substantive failure, gap, stale, and conflict states authoritative', async () => {
+    const db = memoryDb();
+    await admitSagaFixture(db, { runId: 903, snapshotId: 'ref:substantive-t1' });
+    await admitSagaFixture(db, {
+      runId: 904, snapshotId: 'ref:substantive-t2', artifactCreatedAt: '2026-10-10T10:02:00Z', collectedAt: '2026-10-10T12:00:00Z',
+      mutate: (parsed) => {
+        for (const [scope, status, reason] of [['rust-cli', 'unknown', 'incomplete-input'], ['swift-coreml', 'failed', 'producer-error']]) {
+          const snapshot = parsed.snapshots.find((item) => item.snapshot_id.includes(scope));
+          snapshot.observed_at = '2026-10-10T10:00:00Z';
+          setStaticMetricState(snapshot, 'coverage', status, reason, '2026-10-10T10:00:00Z');
+        }
+      },
+    });
+    await admitSagaFixture(db, {
+      runId: 905, snapshotId: 'ref:gap-t3', scopeNames: ['rust-core', 'rust-cli', 'svelte', 'swift-coreml', 'ci-release'],
+      artifactCreatedAt: '2026-10-11T10:02:00Z', collectedAt: '2026-10-11T12:00:00Z',
+    });
+    const history = await getObjectiveHistory(db, {
+      repoOwner: 'Magnus-Gille', repoName: 'sagascript', asOf: '2026-10-12T12:00:00Z',
+    });
+    assert.equal(history.slots.find((item) => item.scope === 'rust-cli' && item.metric === 'coverage').latest.reason, 'incomplete-input');
+    assert.equal(history.slots.find((item) => item.scope === 'swift-coreml' && item.metric === 'coverage').latest.status, 'failed');
+    const gap = history.slots.find((item) => item.scope === 'typescript' && item.metric === 'coverage').latest;
+    assert.equal(gap.kind, 'gap');
+    assert.equal(gap.reason, 'missing-expected-slot');
+    db.close();
+
+    const staleDb = memoryDb();
+    await admitSagaFixture(staleDb, { runId: 906, snapshotId: 'ref:stale-t1' });
+    await admitSagaFixture(staleDb, {
+      runId: 907, snapshotId: 'ref:stale-noop-t2', artifactCreatedAt: '2026-10-10T10:02:00Z', collectedAt: '2026-10-10T12:00:00Z',
+      mutate: (parsed) => {
+        const snapshot = parsed.snapshots.find((item) => item.snapshot_id.includes('rust-cli'));
+        snapshot.observed_at = '2026-10-10T10:00:00Z';
+        setStaticMetricState(snapshot, 'coverage', 'unknown', 'not-collected', '2026-10-10T10:00:00Z');
+      },
+    });
+    const stale = await getObjectiveHistory(staleDb, {
+      repoOwner: 'Magnus-Gille', repoName: 'sagascript', asOf: '2026-10-21T12:00:00Z',
+    });
+    const staleSlot = stale.slots.find((item) => item.scope === 'rust-cli' && item.metric === 'coverage');
+    assert.equal(staleSlot.latest.snapshot_id.startsWith('ref:stale-t1'), true);
+    assert.equal(staleSlot.latest.current_status, 'stale');
+    staleDb.close();
+
+    const conflictDb = memoryDb();
+    await admitSagaFixture(conflictDb, { runId: 908, snapshotId: 'ref:conflict-t1' });
+    await admitSagaFixture(conflictDb, { runId: 909, snapshotId: 'ref:conflict-t2', collectedAt: '2026-10-10T12:00:00Z' });
+    const conflict = await getObjectiveHistory(conflictDb, {
+      repoOwner: 'Magnus-Gille', repoName: 'sagascript', asOf: '2026-10-10T12:00:00Z',
+    });
+    const conflictSlot = conflict.slots.find((item) => item.scope === 'rust-cli' && item.metric === 'coverage');
+    assert.equal(conflictSlot.latest.status, 'unknown');
+    assert.equal(conflictSlot.latest.reason, 'conflicting-samples-at-same-time');
+    conflictDb.close();
   });
 });
 
