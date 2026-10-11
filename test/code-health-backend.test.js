@@ -365,7 +365,11 @@ describe('code-health objective backend', () => {
     const allowed = makeObjectiveArchive('gille-inference', 731, 1, {
       auxiliaryFiles: [
         ['evidence/ci/inventory.json', JSON.stringify({ status: 'not-collected' })],
+        ['evidence/complexity/summary.json', JSON.stringify({ status: 'measured' })],
+        ['evidence/coverage/run.json', JSON.stringify({ status: 'measured' })],
         ['evidence/overhead.json', JSON.stringify({ report_status: 'partial' })],
+        ['evidence/producer-status.json', JSON.stringify({ status: 'valid' })],
+        ['workflow-run.json', JSON.stringify({ status: 'completed' })],
       ],
     });
     const parsed = await parseObjectiveArtifact(allowed, provenance);
@@ -380,12 +384,35 @@ describe('code-health objective backend', () => {
       auxiliaryFiles: [
         ['evidence/collection-status.json', '{}'],
         ['evidence/collection-overhead.json', '{}'],
+        ['workflow-status.json', JSON.stringify({
+          status: 'partial', phase: 'analyzer', reason: 'collector-failure', phase_elapsed_seconds: 7.792,
+          preupload_elapsed_seconds: 301, preupload_budget_seconds: 900, preupload_over_budget: false,
+          metadata_elapsed_seconds: null, metadata_budget_seconds: 30, metadata_over_budget: false, over_budget: false,
+        })],
       ],
     });
     const saga = await parseObjectiveArtifact(sagaBytes, {
       ...provenance, repositoryName: 'sagascript',
     });
     assert.equal(saga.snapshots.length, sagaRegistry.scopes.length);
+
+    for (const status of ['failed', 'not-collected']) {
+      const failed = makeObjectiveArchive('sagascript', 731, 1, {
+        auxiliaryFiles: [['workflow-status.json', JSON.stringify({
+          status, phase: 'setup', reason: 'collector-exit', phase_elapsed_seconds: null,
+          preupload_elapsed_seconds: 0, preupload_budget_seconds: 900, preupload_over_budget: false,
+          metadata_elapsed_seconds: null, metadata_budget_seconds: 30, metadata_over_budget: false, over_budget: false,
+        })]],
+      });
+      await assert.rejects(parseObjectiveArtifact(failed, { ...provenance, repositoryName: 'sagascript' }), /producer workflow reports/);
+    }
+
+    for (const status of [{ status: 'partial' }, { status: 'future-status' }]) {
+      const malformedStatus = makeObjectiveArchive('sagascript', 731, 1, {
+        auxiliaryFiles: [['workflow-status.json', JSON.stringify(status)]],
+      });
+      await assert.rejects(parseObjectiveArtifact(malformedStatus, { ...provenance, repositoryName: 'sagascript' }), /workflow status is malformed/);
+    }
   });
 
   it('admits the full static Saga producer shape and rejects arbitrary extra files', async () => {
