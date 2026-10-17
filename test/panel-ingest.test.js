@@ -136,13 +136,18 @@ describe('POST /api/panels', () => {
   let app;
   let db;
   const TOKEN = 'panel-token-xyz';
+  const OPERATOR_TOKEN = 'operator-read-only-token';
   const savedEnv = {};
 
   before(async () => {
     savedEnv.HEIMDALL_FLEET_TOKEN = process.env.HEIMDALL_FLEET_TOKEN;
+    savedEnv.HEIMDALL_INGEST_PRODUCERS_JSON = process.env.HEIMDALL_INGEST_PRODUCERS_JSON;
     savedEnv.HEIMDALL_BIND = process.env.HEIMDALL_BIND;
     savedEnv.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK = process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK;
-    process.env.HEIMDALL_FLEET_TOKEN = TOKEN;
+    process.env.HEIMDALL_FLEET_TOKEN = OPERATOR_TOKEN;
+    process.env.HEIMDALL_INGEST_PRODUCERS_JSON = JSON.stringify([{
+      id: 'panel-test', token: TOKEN, services: ['m5-inference', 'capped'],
+    }]);
     process.env.HEIMDALL_BIND = '192.0.2.1'; // non-loopback so token is required
     delete process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK;
 
@@ -244,7 +249,7 @@ describe('GET /api/panels/schema', () => {
     const body = JSON.parse(res.body);
     for (const k of ['stat', 'timeseries', 'table', 'status']) assert.ok(body.kinds[k]);
     assert.equal(body.example.service, 'm5-inference');
-    assert.match(body.description, /configured fleet credential.*Authorization header.*Bearer scheme/i);
+    assert.match(body.description, /producer Bearer credential scoped to this exact service id/i);
     assert.doesNotMatch(body.description, /Bearer\s+[A-Z][A-Z0-9_]+/,
       'schema docs must not use secret-shaped Bearer placeholders');
   });
@@ -255,12 +260,18 @@ describe('GET /services/:name with pushed panels', () => {
   let app;
   let db;
   const TOKEN = 'panel-token-render';
+  const OPERATOR_TOKEN = 'operator-read-render-token';
   const savedEnv = {};
 
   before(async () => {
     savedEnv.HEIMDALL_FLEET_TOKEN = process.env.HEIMDALL_FLEET_TOKEN;
+    savedEnv.HEIMDALL_INGEST_PRODUCERS_JSON = process.env.HEIMDALL_INGEST_PRODUCERS_JSON;
     savedEnv.HEIMDALL_BIND = process.env.HEIMDALL_BIND;
-    process.env.HEIMDALL_FLEET_TOKEN = TOKEN;
+    process.env.HEIMDALL_FLEET_TOKEN = OPERATOR_TOKEN;
+    process.env.HEIMDALL_INGEST_PRODUCERS_JSON = JSON.stringify([{
+      id: 'panel-render-test', token: TOKEN,
+      services: ['m5-inference', 'lone-pushed-svc', 'index-only-svc', 'reported-pass', 'reported-warn'],
+    }]);
     process.env.HEIMDALL_BIND = '192.0.2.1';
     db = freshDb();
     ({ app } = buildApp(db));
@@ -371,8 +382,7 @@ describe('GET /services/:name with pushed panels', () => {
     assert.equal(row.data, undefined, 'summary list omits data payloads');
   });
 
-  // Full data payloads share the fleet trust boundary with POST (Codex review):
-  // unauthenticated ?service= reads degrade to summary rows, a valid Bearer gets data.
+  // Full data payloads require the producer's exact service scope or the operator token.
   it('GET /api/panels?service= without auth returns summary rows only', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/panels?service=m5-inference' });
     assert.equal(res.statusCode, 200);
@@ -382,7 +392,7 @@ describe('GET /services/:name with pushed panels', () => {
     assert.equal(row.data, undefined, 'no data payload without fleet auth');
   });
 
-  it('GET /api/panels?service= with the fleet token returns full panels with data', async () => {
+  it('GET /api/panels?service= with the scoped producer token returns its full panel data', async () => {
     const res = await app.inject({
       method: 'GET', url: '/api/panels?service=m5-inference',
       headers: { authorization: `Bearer ${TOKEN}` },
@@ -402,10 +412,9 @@ describe('GET /services/:name with pushed panels', () => {
     assert.equal(res.statusCode, 401);
   });
 
-  it('GET /api/panels?service= for an unknown service returns []', async () => {
+  it('GET /api/panels?service= for an unknown service without auth returns summary []', async () => {
     const res = await app.inject({
       method: 'GET', url: '/api/panels?service=no-such-svc',
-      headers: { authorization: `Bearer ${TOKEN}` },
     });
     assert.equal(res.statusCode, 200);
     assert.deepEqual(JSON.parse(res.body), []);
@@ -419,8 +428,9 @@ describe('handlePanelIngest — global quotas (Fix 2)', () => {
     const db = freshDb();
     // Stub out the count functions to simulate a full fleet store.
     const opts = {
-      authHeader: 'Bearer tok', token: 'tok', bindHost: '127.0.0.1',
-      allowInsecureLoopback: true, // skip real auth for unit test
+      authHeader: 'Bearer panel-quota-token',
+      producerRegistryJson: JSON.stringify([{ id: 'panel-quota', token: 'panel-quota-token', services: ['svc-a', 'brand-new-service', 'svc-upd'] }]),
+      legacyFleetToken: 'operator-read-only-token',
       body: { service: 'svc-a', panel: 'brand-new', kind: 'stat', value: 1 },
       countPanelsFn: () => 0,          // per-service: under limit
       countTotalFn: () => MAX_TOTAL_PANELS,   // global total: AT limit
@@ -437,8 +447,9 @@ describe('handlePanelIngest — global quotas (Fix 2)', () => {
     const db = freshDb();
     const { handlePanelIngest } = require('../src/panel-ingest');
     const opts = {
-      authHeader: 'Bearer tok', token: 'tok', bindHost: '127.0.0.1',
-      allowInsecureLoopback: true,
+      authHeader: 'Bearer panel-quota-token',
+      producerRegistryJson: JSON.stringify([{ id: 'panel-quota', token: 'panel-quota-token', services: ['svc-a', 'brand-new-service', 'svc-upd'] }]),
+      legacyFleetToken: 'operator-read-only-token',
       body: { service: 'brand-new-service', panel: 'p1', kind: 'stat', value: 1 },
       countPanelsFn: () => 0,
       countTotalFn: () => 0,
@@ -455,16 +466,18 @@ describe('handlePanelIngest — global quotas (Fix 2)', () => {
     const { handlePanelIngest } = require('../src/panel-ingest');
     // First insert the panel legitimately.
     const insert = handlePanelIngest(db, {
-      authHeader: 'Bearer tok', token: 'tok', bindHost: '127.0.0.1',
-      allowInsecureLoopback: true,
+      authHeader: 'Bearer panel-quota-token',
+      producerRegistryJson: JSON.stringify([{ id: 'panel-quota', token: 'panel-quota-token', services: ['svc-a', 'brand-new-service', 'svc-upd'] }]),
+      legacyFleetToken: 'operator-read-only-token',
       body: { service: 'svc-upd', panel: 'existing', kind: 'stat', value: 1 },
     });
     assert.equal(insert.status, 200);
 
     // Now simulate at-cap and update the SAME (service, panel).
     const update = handlePanelIngest(db, {
-      authHeader: 'Bearer tok', token: 'tok', bindHost: '127.0.0.1',
-      allowInsecureLoopback: true,
+      authHeader: 'Bearer panel-quota-token',
+      producerRegistryJson: JSON.stringify([{ id: 'panel-quota', token: 'panel-quota-token', services: ['svc-a', 'brand-new-service', 'svc-upd'] }]),
+      legacyFleetToken: 'operator-read-only-token',
       body: { service: 'svc-upd', panel: 'existing', kind: 'stat', value: 99 },
       countTotalFn: () => MAX_TOTAL_PANELS,       // at cap
       countServicesFn: () => MAX_PANEL_SERVICES,  // at cap

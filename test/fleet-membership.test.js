@@ -28,6 +28,16 @@ const { buildOverviewStatus } = require('../src/render/overview');
 
 const NOW = Date.parse('2026-06-23T12:00:00Z');
 const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
+const TEST_FLEET_AUTH = {
+  authHeader: 'Bearer membership-test-token',
+  producerRegistryJson: JSON.stringify([{
+    id: 'membership-test', token: 'membership-test-token', hosts: [
+      'orin-nano', 'macbook-air', 'old-pi', 'ghost', 'retained', 'new-host',
+      'control-node', 'orin', 'huginmunin',
+      'authority-unavailable', 'authority-malformed', 'authority-nodesmissing',
+    ],
+  }]),
+};
 
 function tmpDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-membership-'));
@@ -123,14 +133,12 @@ describe('fleet membership lifecycle (#56)', () => {
       'a stale private reverse alias cannot remap the canonical registry node');
 
     const db = tmpDb();
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'orin-nano', cpu_pct: 34 },
-      allowInsecureLoopback: true,
       now: NOW,
     });
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'macbook-air', cpu_pct: 12 },
-      allowInsecureLoopback: true,
       now: NOW + 1000,
     });
     reconcileFleetHostConfig(db, cfg.hosts, cfg.hostAliases, NOW + 2000);
@@ -149,9 +157,8 @@ describe('fleet membership lifecycle (#56)', () => {
 
   it('keeps config as membership authority while retaining observed history', () => {
     const db = tmpDb();
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'old-pi', cpu_pct: 31 },
-      allowInsecureLoopback: true,
       now: NOW,
     });
 
@@ -180,9 +187,8 @@ describe('fleet membership lifecycle (#56)', () => {
 
   it('does not admit a newly observed unregistered hostname into live membership', () => {
     const db = tmpDb();
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'ghost', cpu_pct: 10 },
-      allowInsecureLoopback: true,
       configuredHostnames: ['control-node'],
       aliases: {},
       now: NOW,
@@ -213,10 +219,9 @@ describe('fleet membership lifecycle (#56)', () => {
       const cfg = loadFleetConfig(overlay, { grimnirPath: registryPath });
       assert.equal(cfg.authority.status, status);
       const hostname = `authority-${status.replace('-', '')}`;
-      const result = handlePush(db, {
+      const result = handlePush(db, { ...TEST_FLEET_AUTH,
         body: { hostname, cpu_pct: 10 },
-        allowInsecureLoopback: true,
-        now: NOW,
+          now: NOW,
         // Failed authority states deliberately omit configuredHostnames. An
         // empty array would mean an intentionally empty, valid fleet.
       });
@@ -237,14 +242,13 @@ describe('fleet membership lifecycle (#56)', () => {
     assert.equal(cfg.authority.intentionallyEmpty, true);
 
     const db = tmpDb();
-    handlePush(db, { body: { hostname: 'retained' }, allowInsecureLoopback: true, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'retained' }, now: NOW });
     reconcileFleetHostConfig(db, cfg.hosts, cfg.hostAliases, NOW + 1000);
     assert.equal(getFleetHosts(db).find((row) => row.hostname === 'retained').membership_state, 'retired');
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'new-host' },
       configuredHostnames: [],
       aliases: {},
-      allowInsecureLoopback: true,
       now: NOW + 2000,
     });
     assert.equal(getFleetHosts(db).find((row) => row.hostname === 'new-host').membership_state, 'retired');
@@ -296,18 +300,16 @@ describe('fleet membership lifecycle (#56)', () => {
     const aliases = { 'control-node': 'huginmunin', 'orin-nano': 'orin' };
     reconcileFleetHostConfig(db, hosts, aliases, NOW);
 
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'control-node', cpu_pct: 12, agent_version: 'abc1234' },
       configuredHostnames: hosts.map((host) => host.hostname),
       aliases,
-      allowInsecureLoopback: true,
       now: NOW + 1000,
     });
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'orin-nano', cpu_pct: 34, agent_version: 'old0000' },
       configuredHostnames: hosts.map((host) => host.hostname),
       aliases,
-      allowInsecureLoopback: true,
       now: NOW + 2000,
     });
 

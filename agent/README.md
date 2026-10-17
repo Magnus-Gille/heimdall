@@ -27,6 +27,12 @@ FLEET_TOKEN=<generate-a-random-token>
 INTERVAL=30
 ```
 
+Use a distinct `FLEET_TOKEN` for each agent host. Add the matching credential to
+Heimdall's host-owned `HEIMDALL_INGEST_PRODUCERS_JSON` registry with that host
+in its explicit `hosts` scope. Do not reuse the operator read credential or a
+different host's producer credential. The request URL, Bearer header, and JSON
+payload remain unchanged.
+
 For a laptop or other intermittent host, set `HOSTNAME=workstation` and mark the corresponding fleet entry `always_on: false`.
 
 ### 2. Smoke test
@@ -142,6 +148,6 @@ the public contract payload.
 |---|---|
 | `ModuleNotFoundError: psutil` | `pip install psutil` |
 | `temp_cpu_c` missing on Mac | `brew install macmon` |
-| POST returns 401 | Set `FLEET_TOKEN` in config.env |
+| POST returns 401 | Confirm `FLEET_TOKEN` matches this host's producer record in Heimdall's host-owned ingest registry |
 | hostname wrong on server | Set `HOSTNAME=<name>` in config.env |
 | Service is skipped or won't start on Pi | Manually place a mode-`0600` `config.env` on the target as described in §3a, rerun the deploy script, then check `systemctl --user status heimdall-agent` and `journalctl --user -u heimdall-agent` |

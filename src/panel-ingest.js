@@ -5,9 +5,8 @@
  *
  * A producer POSTs ONE JSON blob to `POST /api/panels` and a number / trend /
  * table / status appears on its service page — zero Heimdall code per panel.
- * Framework-independent (returns {status, body}) so it is unit-testable,
- * mirroring alert-ingest.js / fleet/ingest.js. Auth reuses the fleet fail-closed
- * Bearer check + the fleet token (no new credential).
+ * Framework-independent (returns {status, body}) so it is unit-testable.
+ * Producer Bearer credentials are scoped to explicit service ids.
  *
  * Validation is LENIENT: bad OPTIONAL fields are dropped and reported in
  * `warnings` (returned in the 200 body). It HARD-rejects only on:
@@ -19,7 +18,7 @@
  * table.rows ≤200, cols ≤20; a service may hold at most 50 distinct panels.
  */
 
-const { checkFleetAuth } = require('./fleet/auth');
+const { authenticateProducer, authorizeProducerService } = require('./fleet/producer-auth');
 const {
   upsertPanel, countPanelsForService, countPanels, countPanelServices, isRetiredPushedPanel,
 } = require('./db');
@@ -102,25 +101,23 @@ function validatePanel(obj) {
 /**
  * Auth → validate → upsert. Returns {status, body}.
  * @param {object} db open database
- * @param {object} opts { authHeader, token, bindHost, allowInsecureLoopback, body,
+ * @param {object} opts { authHeader, producerRegistryJson, legacyFleetToken, body,
  *                         upsertPanelFn?, countPanelsFn? }
  */
 function handlePanelIngest(db, opts = {}) {
   const {
-    authHeader = '', token = '', bindHost = '127.0.0.1',
-    allowInsecureLoopback = false, body,
+    authHeader = '', producerRegistryJson = '', legacyFleetToken = '', body,
     upsertPanelFn = upsertPanel,
     countPanelsFn = countPanelsForService,
     countTotalFn = countPanels,
     countServicesFn = countPanelServices,
   } = opts;
 
-  // TODO: per-agent tokens to prevent cross-service writes (separate auth redesign).
-  const auth = checkFleetAuth(authHeader, token, bindHost, allowInsecureLoopback);
+  const auth = authenticateProducer(authHeader, producerRegistryJson, legacyFleetToken);
   if (!auth.ok) {
     return {
-      status: auth.code || 401,
-      body: { error: 'panel ingest requires HEIMDALL_FLEET_TOKEN (or HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK=1 for loopback-only dev)' },
+      status: auth.status || 401,
+      body: { error: auth.error },
     };
   }
 
@@ -128,6 +125,10 @@ function handlePanelIngest(db, opts = {}) {
   if (!v.ok) return { status: 400, body: { error: 'invalid panel', details: v.errors, warnings: v.warnings } };
 
   const p = v.value;
+  const authorization = authorizeProducerService(auth.producer, p.service);
+  if (!authorization.ok) {
+    return { status: authorization.status || 403, body: { error: authorization.error } };
+  }
 
   // Acknowledge the retired low-signal Brokkr card without writing it back into
   // the store. Existing production data remains intact for an easy rollback,
@@ -182,8 +183,8 @@ function handlePanelIngest(db, opts = {}) {
 
 /** Short, discoverable schema doc (served at GET /api/panels/schema). */
 const PANEL_SCHEMA_DOC = {
-  description: 'Generic typed-panel ingest. POST one of these blobs to /api/panels with the configured fleet credential in the Authorization header using the Bearer scheme; it renders on /services/<service> with no Heimdall code change. A panel is keyed by (service, panel); the latest push wins.',
-  readback: 'GET /api/panels lists all stored panels (summary, no data). GET /api/panels?service=<id> with the fleet Bearer token returns that service’s full panels incl. data; without auth it returns summary rows. Some producer ids are aliased onto an owning service page (e.g. m5-inference → m5-gateway).',
+  description: 'Generic typed-panel ingest. POST one of these blobs to /api/panels with a producer Bearer credential scoped to this exact service id; it renders on /services/<service> with no Heimdall code change. A panel is keyed by (service, panel); the latest push wins.',
+  readback: 'GET /api/panels lists all stored panels (summary, no data). GET /api/panels?service=<id> returns that service’s full panels incl. data to a producer credential scoped to that exact service id or the read-only Heimdall operator token; without auth it returns summary rows. Some producer ids are aliased onto an owning service page (e.g. m5-inference → m5-gateway), but authorization uses the stored id.',
   envelope: '{ service, panel, kind, label, unit?, ...kindData, detail? }',
   ids: 'service/panel must match ^[a-z0-9][a-z0-9-]{0,63}$',
   kinds: {
