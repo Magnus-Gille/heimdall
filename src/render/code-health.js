@@ -6,6 +6,9 @@ const { REPOSITORIES } = require('../code-health/registry');
 
 const MAX_HISTORY_POINTS = 12;
 const MAX_EVIDENCE_ROWS = 6;
+const CI_CONCLUSIONS = Object.freeze(['success', 'failure', 'infra_failure', 'cancelled', 'skipped', 'pending', 'unknown']);
+const CI_ELIGIBLE_CONCLUSIONS = new Set(['success', 'failure', 'infra_failure']);
+const CI_EXCLUSION_ORDER = Object.freeze(['cancelled', 'pending', 'skipped', 'unknown']);
 const METRICS = Object.freeze([
   { id: 'complex_functions', label: 'Complex functions', unit: 'functions', help: 'Functions above the registered complexity threshold.' },
   { id: 'unused_candidates', label: 'Unused candidates', unit: 'candidates', help: 'Tool candidates remain uncertain until an owner validates them.' },
@@ -66,6 +69,26 @@ function shortDigest(value) {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? `sha256:${value.slice(0, 12)}` : null;
 }
 
+function ciFirstAttemptSummary(payload) {
+  const runs = Array.isArray(payload?.runs) ? payload.runs : [];
+  const counts = Object.fromEntries(CI_CONCLUSIONS.map((conclusion) => [conclusion, 0]));
+  for (const run of runs) {
+    const conclusion = CI_CONCLUSIONS.includes(run?.overall_conclusion) ? run.overall_conclusion : 'unknown';
+    counts[conclusion] += 1;
+  }
+  const expected = Number.isSafeInteger(payload?.expected_run_count) ? payload.expected_run_count : runs.length;
+  const eligible = CI_CONCLUSIONS.filter((conclusion) => CI_ELIGIBLE_CONCLUSIONS.has(conclusion))
+    .reduce((total, conclusion) => total + counts[conclusion], 0);
+  const excluded = CI_EXCLUSION_ORDER
+    .filter((conclusion) => counts[conclusion] > 0)
+    .map((conclusion) => `${counts[conclusion]} ${conclusion}`);
+  return { counts, expected, eligible, success: counts.success, excluded };
+}
+
+function ciExcludedLabel(summary) {
+  return summary.excluded.length ? `excluded: ${summary.excluded.join(', ')}` : 'excluded: none';
+}
+
 function evidenceRows(metricName, payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
   const rows = [];
@@ -90,11 +113,11 @@ function evidenceRows(metricName, payload) {
     add('Eligible source files', payload.eligible_source_files);
     add('Source inventory', payload.source_inventory);
   } else if (metricName === 'ci_first_attempt') {
-    const runs = Array.isArray(payload.runs) ? payload.runs.slice(0, 1000) : [];
-    const success = runs.filter((run) => run && run.overall_conclusion === 'success').length;
-    const failed = runs.filter((run) => run && ['failure', 'infra_failure'].includes(run.overall_conclusion)).length;
-    add('Successful first attempts', `${success} / ${Number.isSafeInteger(payload.expected_run_count) ? payload.expected_run_count : runs.length}`);
-    add('Failed or infrastructure failures', failed);
+    const summary = ciFirstAttemptSummary(payload);
+    add('Successful first attempts', summary.eligible > 0 ? `${summary.success} / ${summary.eligible} eligible` : 'No eligible first attempts');
+    add('Expected first attempts', summary.expected);
+    add('Failed or infrastructure failures', summary.counts.failure + summary.counts.infra_failure);
+    add('Excluded outcomes', ciExcludedLabel(summary));
     add('Window', `${payload.window_start || 'unknown'} to ${payload.window_end || 'unknown'}`);
   } else if (metricName === 'confirmed_regressions') {
     const items = Array.isArray(payload.regressions) ? payload.regressions : [];
@@ -117,10 +140,11 @@ function metricDisplay(metricName, point) {
     return `${payload.covered} / ${payload.eligible} ${point.unit || 'items'}${percent}`;
   }
   if (metricName === 'ci_first_attempt') {
-    const runs = Array.isArray(payload.runs) ? payload.runs : [];
-    const success = runs.filter((run) => run && run.overall_conclusion === 'success').length;
-    const expected = Number.isSafeInteger(payload.expected_run_count) ? payload.expected_run_count : runs.length;
-    return `${success} / ${expected} first attempts passed`;
+    const summary = ciFirstAttemptSummary(payload);
+    const passed = summary.eligible > 0
+      ? `${summary.success} / ${summary.eligible} eligible first attempts passed`
+      : 'No eligible first attempts passed';
+    return `${passed} · ${summary.expected} expected · ${ciExcludedLabel(summary)}`;
   }
   if (metricName === 'confirmed_regressions') {
     if (payload.survey_complete !== true) return null;
