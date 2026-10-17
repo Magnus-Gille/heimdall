@@ -2,19 +2,19 @@
   "sources": [
     {
       "repository": "Magnus-Gille/gille-inference",
-      "revision": "ee1826f3815b10ce799704cc1300a56b48591751",
+      "revision": "d376ae0ae2d07f06b37e9daceb9ef06f5945bfaf",
       "source_path": "research/code-health-402/slots.json",
       "local_path": "registries/gille-inference/slots.json",
-      "source_git_blob": "4874e7c68eb9b3edf14bbd6dfe8a8d805ecd9c8a",
-      "sha256": "3e70f6acbdc4c03c017900d55240d1b6463555d190af15a0c53a0db5ced703f1"
+      "source_git_blob": "7e5775a7d6ab460885caa75c4b0fc49f2a1948be",
+      "sha256": "66659ba09bbb2ef3de0bcd410115c9b62c84baced1fb9ccb43abd97597994546"
     },
     {
       "repository": "Magnus-Gille/sagascript",
-      "revision": "23ff341df696085e0e0a9b5eb0d85baa143c58d2",
+      "revision": "97376a8e80fac9e626425784b3efbaab569bb61b",
       "source_path": "docs/code-health-producer-v1.json",
       "local_path": "registries/sagascript/code-health-producer-v1.json",
-      "source_git_blob": "541f32bb4556dafb6b747bd6690c0e32172234cd",
-      "sha256": "7b665d50fbcdbda7dc999ba38e6ccd8a98b1f653d1f2919d37897f9f199c254a"
+      "source_git_blob": "124219697cc10db8871760a68d1f59e57efd08e6",
+      "sha256": "d3da68852b628fa17adab1a66a228014fec1a7a81655bf85ca2e7cec59a89863"
     }
   ]
 }

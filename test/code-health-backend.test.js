@@ -498,6 +498,31 @@ describe('code-health objective backend', () => {
     }), /scope registry differs from the pinned producer registry/);
   });
 
+  it('pins the current Saga main-push CI cohort scope', () => {
+    assert.equal(
+      sagaRegistry.scopes.find((scope) => scope.name === 'ci-release').slots.ci_first_attempt.scope_version,
+      'main-push-current-config-ci-v2',
+    );
+  });
+
+  it('accepts the current Saga producer registry and rejects its prior CI cohort declaration', async () => {
+    const runId = 817;
+    const provenance = {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    };
+    const archive = makeObjectiveArchive('sagascript', runId, 1);
+    const parsed = await parseObjectiveArtifact(archive, provenance);
+    assert.equal(parsed.snapshots.length, sagaRegistry.scopes.length);
+
+    const priorRegistry = clone(sagaRegistry);
+    priorRegistry.scopes.find((scope) => scope.name === 'ci-release').slots.ci_first_attempt.scope_version = 'main-push-ci-v1';
+    const priorEntries = [...parseZipArchive(archive).files.entries()].map(([name, bytes]) => [
+      name, name === 'scope-registry.json' ? JSON.stringify(priorRegistry) : bytes,
+    ]);
+    await assert.rejects(parseObjectiveArtifact(zipStored(priorEntries), provenance), /scope registry differs from the pinned producer registry/);
+  });
+
   it('fails closed on duplicate and traversing archive entries', () => {
     assert.throws(() => parseZipArchive(zipStored([['../outside.json', '{}']])), /unsafe member path/);
     assert.throws(() => parseZipArchive(zipStored([['manifest.json', '{}'], ['manifest.json', '{}']])), /duplicate member/);

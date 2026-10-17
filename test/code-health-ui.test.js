@@ -146,6 +146,13 @@ function historyFixture() {
   };
 }
 
+function historyWithCiPayload(payload) {
+  return {
+    ...historyFixture(),
+    slots: [objectiveSlot('ci_first_attempt', 'repository', measuredPoint('ci_first_attempt', { payload }))],
+  };
+}
+
 function seedObjectiveForProjection(db) {
   const positive = require('../src/code-health/contract/tests/fixtures/code-health/objective-positive.json');
   const objective = JSON.parse(JSON.stringify(positive));
@@ -182,6 +189,46 @@ function seedObjectiveForProjection(db) {
 }
 
 describe('code-health renderer', () => {
+  it('renders the contract eligible CI denominator separately from expected and cancelled runs', () => {
+    const payload = {
+      runs: [
+        ...Array.from({ length: 42 }, () => ({ overall_conclusion: 'success' })),
+        ...Array.from({ length: 3 }, () => ({ overall_conclusion: 'failure' })),
+        { overall_conclusion: 'cancelled' },
+      ],
+      expected_run_count: 46,
+      window_start: '2026-09-19T08:35:14Z',
+      window_end: '2026-10-17T08:35:14Z',
+    };
+    const view = buildCodeHealthView({ repoName: REPO, objectiveHistory: historyWithCiPayload(payload), subjective: emptySubjective(), now: new Date(NOW) });
+    const slot = view.objective.find((metric) => metric.id === 'ci_first_attempt').slots[0];
+
+    assert.equal(slot.value, '42 / 45 eligible first attempts passed · 46 expected · excluded: 1 cancelled');
+    assert.equal(slot.evidence[0].value, '42 / 45 eligible');
+    assert.equal(slot.evidence[1].value, '46');
+    assert.equal(slot.evidence[3].value, 'excluded: 1 cancelled');
+  });
+
+  it('does not invent a zero-denominator fraction for only unknown or excluded CI outcomes', () => {
+    const payload = {
+      runs: [
+        { overall_conclusion: 'cancelled' },
+        { overall_conclusion: 'pending' },
+        { overall_conclusion: 'unknown' },
+      ],
+      expected_run_count: 3,
+      window_start: '2026-09-19T08:35:14Z',
+      window_end: '2026-10-17T08:35:14Z',
+    };
+    const view = buildCodeHealthView({ repoName: REPO, objectiveHistory: historyWithCiPayload(payload), subjective: emptySubjective(), now: new Date(NOW) });
+    const slot = view.objective.find((metric) => metric.id === 'ci_first_attempt').slots[0];
+
+    assert.equal(slot.value, 'No eligible first attempts passed · 3 expected · excluded: 1 cancelled, 1 pending, 1 unknown');
+    assert.equal(slot.evidence[0].value, 'No eligible first attempts');
+    assert.equal(slot.evidence[3].value, 'excluded: 1 cancelled, 1 pending, 1 unknown');
+    assert.doesNotMatch(slot.value, /0 \/ 0/);
+  });
+
   it('keeps the five objective groups separate and represents unknown as a dash with reason', () => {
     const view = buildCodeHealthView({ repoName: REPO, days: 90, objectiveHistory: historyFixture(), objectiveSource: { status: 'disabled' }, subjective: emptySubjective(), now: new Date(NOW) });
     const html = codeHealthPage('v', view);
