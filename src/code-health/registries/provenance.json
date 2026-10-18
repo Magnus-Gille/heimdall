@@ -10,11 +10,11 @@
     },
     {
       "repository": "Magnus-Gille/sagascript",
-      "revision": "934d06cf99bbc1b3527ac073300cc5b63b382ac0",
+      "revision": "c2196cfbced0c75fbe83daa2f465cdbd9ee82e9c",
       "source_path": "docs/code-health-producer-v1.json",
       "local_path": "registries/sagascript/code-health-producer-v1.json",
-      "source_git_blob": "3ada62cce1f351f983a59724565ff2a6b66b3a29",
-      "sha256": "874fa90fa17d5700504d2d9677eba4951e648a072246e35fc719823a289cef4d"
+      "source_git_blob": "29cf957146349a80982e5e0ae6c48adcf0892478",
+      "sha256": "282b1b270291b8ae5bb6e5844d9e78d4a294c9192ae802596cfeb2eb92a1ad79"
     }
   ]
 }
