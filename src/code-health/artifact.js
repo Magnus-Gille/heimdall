@@ -25,6 +25,7 @@ const PRODUCER_AUXILIARY_FILES = Object.freeze({
     'workflow-run.json',
   ]),
   sagascript: Object.freeze([
+    'evidence/ci-attempt1-timings.json',
     'evidence/collection-status.json',
     'evidence/collection-overhead.json',
     'evidence/ci-workflow.json',

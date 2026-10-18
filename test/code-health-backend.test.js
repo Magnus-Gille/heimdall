@@ -470,6 +470,35 @@ describe('code-health objective backend', () => {
     }), /artifact contains an unknown file: evidence\/not-registered\.json/);
   });
 
+  it('accepts the Saga CI attempt-1 timing sidecar without widening other producers or files', async () => {
+    const runId = 817;
+    const sagaArchive = makeObjectiveArchive('sagascript', runId, 1, {
+      auxiliaryFiles: [['evidence/ci-attempt1-timings.json', JSON.stringify({ per_run: [] })]],
+    });
+    const provenance = {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    };
+    const parsed = await parseObjectiveArtifact(sagaArchive, provenance);
+    assert.equal(parsed.snapshots.length, sagaRegistry.scopes.length);
+
+    const gilleArchive = makeObjectiveArchive('gille-inference', runId, 1, {
+      auxiliaryFiles: [['evidence/ci-attempt1-timings.json', JSON.stringify({ per_run: [] })]],
+    });
+    await assert.rejects(
+      parseObjectiveArtifact(gilleArchive, { ...provenance, repositoryName: 'gille-inference' }),
+      /artifact contains an unknown file: evidence\/ci-attempt1-timings\.json/,
+    );
+
+    const sagaWithUnknown = makeObjectiveArchive('sagascript', runId, 1, {
+      auxiliaryFiles: [
+        ['evidence/ci-attempt1-timings.json', JSON.stringify({ per_run: [] })],
+        ['evidence/unregistered.json', '{}'],
+      ],
+    });
+    await assert.rejects(parseObjectiveArtifact(sagaWithUnknown, provenance), /artifact contains an unknown file: evidence\/unregistered\.json/);
+  });
+
   it('accepts the measured Saga CLI coverage scope and rejects the prior deferred registry', async () => {
     const runId = 816;
     const archive = makeObjectiveArchive('sagascript', runId, 1, { scopeNames: ['rust-cli'] });
