@@ -8,7 +8,7 @@ const ROOT = __dirname;
 const CONTRACT_ROOT = path.join(ROOT, 'contract');
 const REGISTRY_ROOT = path.join(ROOT, 'registries');
 const CONTRACT_PROVENANCE_SHA256 = '0175eda1b69f9392978d7263fc0c4b5dc3d2482baf0c5fab4edbee060dfa931a';
-const REGISTRY_PROVENANCE_SHA256 = '8493a5572ce89a0833a7b0102fbbc52c1415e9fb2394a971f53451e7720d858f';
+const REGISTRY_PROVENANCE_SHA256 = 'bf72045c540602efc94ed785010c8de1f2cfffe677dab8975fc841dbdeba5588';
 const REPOSITORIES = Object.freeze([
   Object.freeze({ owner: 'Magnus-Gille', name: 'gille-inference', workflowPath: '.github/workflows/code-health.yml' }),
   Object.freeze({ owner: 'Magnus-Gille', name: 'sagascript', workflowPath: '.github/workflows/code-health.yml' }),
