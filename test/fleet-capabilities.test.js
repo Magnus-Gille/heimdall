@@ -9,6 +9,14 @@ const path = require('path');
 const { handlePush } = require('../src/fleet/ingest');
 const { openDatabase, getLatestFleetMetric } = require('../src/db');
 
+const FLEET_TEST_AUTH = {
+  authHeader: 'Bearer fleet-capabilities-test-token',
+  producerRegistryJson: JSON.stringify([{
+    id: 'fleet-capabilities-test', token: 'fleet-capabilities-test-token',
+    hosts: ['legacy-agent', 'brokkr-node', 'new-agent', 'bad-agent', 'bad-evidence', 'bad-envelope'],
+  }]),
+};
+
 function tmpDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-capabilities-'));
   return openDatabase(path.join(dir, 'test.db'));
@@ -17,7 +25,7 @@ function tmpDb() {
 describe('fleet monitoring-agent capability negotiation', () => {
   it('keeps legacy fleet payloads accepted without a capability envelope', () => {
     const db = tmpDb();
-    const result = handlePush(db, { body: { hostname: 'legacy-agent' }, allowInsecureLoopback: true });
+    const result = handlePush(db, { ...FLEET_TEST_AUTH, body: { hostname: 'legacy-agent' } });
     assert.equal(result.status, 200);
     assert.equal(result.body.capability_contract.version, 1);
     db.close();
@@ -36,7 +44,7 @@ describe('fleet monitoring-agent capability negotiation', () => {
         },
       },
     };
-    const result = handlePush(db, { body, allowInsecureLoopback: true });
+    const result = handlePush(db, { ...FLEET_TEST_AUTH, body });
     assert.equal(result.status, 200);
     assert.deepEqual(result.body.capability_contract.accepted, ['lifecycle-result', 'node-capability-freshness']);
     assert.equal(result.body.capability_contract.authority, 'observation_only');
@@ -48,8 +56,8 @@ describe('fleet monitoring-agent capability negotiation', () => {
   it('rejects unsupported required capabilities with a stable diagnostic before persistence', () => {
     const db = tmpDb();
     const result = handlePush(db, {
+      ...FLEET_TEST_AUTH,
       body: { hostname: 'new-agent', capability_contract: { version: 1, required: ['topology-authority'] } },
-      allowInsecureLoopback: true,
     });
     assert.equal(result.status, 422);
     assert.equal(result.body.error, 'unsupported required capabilities');
@@ -62,8 +70,8 @@ describe('fleet monitoring-agent capability negotiation', () => {
   it('rejects a malformed versioned envelope without changing legacy validation', () => {
     const db = tmpDb();
     const result = handlePush(db, {
+      ...FLEET_TEST_AUTH,
       body: { hostname: 'bad-agent', capability_contract: { version: 2, required: [] } },
-      allowInsecureLoopback: true,
     });
     assert.equal(result.status, 400);
     assert.match(result.body.details.join(' '), /capability_contract.version/);
@@ -73,8 +81,8 @@ describe('fleet monitoring-agent capability negotiation', () => {
   it('rejects topology-shaped evidence instead of retaining it as telemetry', () => {
     const db = tmpDb();
     const result = handlePush(db, {
+      ...FLEET_TEST_AUTH,
       body: { hostname: 'bad-evidence', capability_contract: { version: 1, required: [], evidence: { topology: { host: 'private' } } } },
-      allowInsecureLoopback: true,
     });
     assert.equal(result.status, 400);
     assert.match(result.body.details.join(' '), /not a supported observation/);
@@ -85,8 +93,8 @@ describe('fleet monitoring-agent capability negotiation', () => {
   it('rejects unknown capability-envelope fields before persistence', () => {
     const db = tmpDb();
     const result = handlePush(db, {
+      ...FLEET_TEST_AUTH,
       body: { hostname: 'bad-envelope', capability_contract: { version: 1, required: [], topology: { host: 'private' } } },
-      allowInsecureLoopback: true,
     });
     assert.equal(result.status, 400);
     assert.match(result.body.details.join(' '), /capability_contract.topology is not allowed/);

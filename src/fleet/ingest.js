@@ -1,6 +1,6 @@
 'use strict';
 
-const { checkFleetAuth } = require('./auth');
+const { authenticateProducer, authorizeProducerHost } = require('./producer-auth');
 const { validatePushPayload } = require('./validate');
 const { recordFleetPush } = require('../db');
 const { negotiationResponse } = require('./capabilities');
@@ -10,22 +10,25 @@ const { negotiationResponse } = require('./capabilities');
  * of the HTTP framework so it is unit-testable. Returns {status, body}.
  *
  * @param {object} db open database
- * @param {object} opts { authHeader, sourceIp, token, bindHost, body, now }
+ * @param {object} opts { authHeader, producerRegistryJson, legacyFleetToken, sourceIp, body, now }
  */
 function handlePush(db, opts) {
   const {
-    authHeader = '', sourceIp = null, token = '', bindHost = '127.0.0.1',
-    allowInsecureLoopback = false, body, now = Date.now(),
+    authHeader = '', sourceIp = null, producerRegistryJson = '', legacyFleetToken = '',
+    body, now = Date.now(),
     configuredHostnames, aliases = {},
   } = opts;
 
-  const auth = checkFleetAuth(authHeader, token, bindHost, allowInsecureLoopback);
-  if (!auth.ok) return { status: auth.code || 401, body: { error: auth.error } };
+  const auth = authenticateProducer(authHeader, producerRegistryJson, legacyFleetToken);
+  if (!auth.ok) return { status: auth.status || 401, body: { error: auth.error } };
 
   const result = validatePushPayload(body);
   if (!result.ok) return { status: 400, body: { error: 'invalid payload', details: result.errors } };
 
   const payload = result.value;
+  const authorization = authorizeProducerHost(auth.producer, payload.hostname, aliases);
+  if (!authorization.ok) return { status: authorization.status || 403, body: { error: authorization.error } };
+
   const negotiation = payload.capability_contract;
   if (negotiation && negotiation.unsupportedRequired.length) {
     return {

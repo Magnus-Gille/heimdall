@@ -92,7 +92,13 @@ Important settings:
 - `HEIMDALL_CONFIG_PATH` selects the service/fleet overlay.
 - `HEIMDALL_CONFIG_MODE=demo` permits the committed documentation-only overlay outside production.
 - `GRIMNIR_SERVICES_JSON` selects the ecosystem registry source.
-- `HEIMDALL_FLEET_TOKEN` authenticates `/api/fleet/push`.
+- `HEIMDALL_INGEST_PRODUCERS_JSON` is a host-owned JSON array of producer records
+  for `/api/fleet/push` and `/api/panels`. Each record has a unique `id`, a
+  distinct `token`, and one or both non-empty `hosts` and `services` lists; there
+  are no wildcard scopes. Host scopes use fleet host ids; service scopes match
+  the exact stored panel service id. Invalid configuration disables both writes.
+- `HEIMDALL_FLEET_TOKEN` is retained as an operator credential for full panel
+  read-back only. It cannot write fleet metrics or panels.
 - `HEIMDALL_ALERT_TOKEN` authenticates `/api/alerts` ingestion.
 - `HEIMDALL_MAINTENANCE_RESULT_TOKEN` authenticates the separate, read-only
   Brokkr v1 maintenance-evidence observer. It has no insecure-loopback mode;
@@ -156,7 +162,9 @@ Heimdall is an operator tool, not a hardened multi-user SaaS application.
 
 - The dashboard has no built-in end-user login. Keep it on loopback or a private network, or put authenticated access control in front of it.
 - A reverse proxy is not treated as a local operator. Sensitive local routes and alert dismissal validate the real socket peer and reject forwarded identity headers.
-- Push endpoints fail closed unless their bearer token is configured. The insecure-loopback flags are only for isolated development.
+- Fleet and typed-panel writes require an explicit scoped producer credential on
+  every bind, including loopback. The legacy fleet token is read-only. Other
+  push endpoints keep their own dedicated credentials and documented policies.
 - Self-heal is off by default. When enabled, Heimdall first persists bounded validated observation snapshots to Munin and then submits only a diagnosis-only Hugin task with resolvable `Context-refs:` to those immutable snapshots. The task's actual authority still comes from Hugin's runtime, SSH keys, and sudo policy; typed actuation remains blocked pending a reviewed allowlisted adapter. A cooldown and durable per-service reservation limit repetition but are not authorization boundaries. The current autonomous diagnosis scope is limited to local `control-node` services; remote services such as `mimir` stay excluded until host-correct restart evidence exists. Review generated tasks and grant only narrowly scoped restart permissions.
 - Remote SSH probes require strict host-key checking and a dedicated known-hosts file. Prefer a restricted account and command allowlist.
 

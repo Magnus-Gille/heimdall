@@ -34,12 +34,17 @@ describe('retired Brokkr m5-memlimits panel', () => {
   let app;
   let db;
   const token = 'panel-retirement-token';
+  const operatorToken = 'panel-retirement-operator-token';
   const savedEnv = {};
 
   before(async () => {
     savedEnv.HEIMDALL_FLEET_TOKEN = process.env.HEIMDALL_FLEET_TOKEN;
+    savedEnv.HEIMDALL_INGEST_PRODUCERS_JSON = process.env.HEIMDALL_INGEST_PRODUCERS_JSON;
     savedEnv.HEIMDALL_BIND = process.env.HEIMDALL_BIND;
-    process.env.HEIMDALL_FLEET_TOKEN = token;
+    process.env.HEIMDALL_FLEET_TOKEN = operatorToken;
+    process.env.HEIMDALL_INGEST_PRODUCERS_JSON = JSON.stringify([{
+      id: 'brokkr-panel-producer', token, services: ['brokkr'],
+    }]);
     process.env.HEIMDALL_BIND = '192.0.2.1';
 
     db = freshDb();

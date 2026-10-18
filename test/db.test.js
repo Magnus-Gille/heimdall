@@ -434,7 +434,12 @@ describe('isValidMetricHost', () => {
   });
 
   it('accepts a fleet host once it has pushed telemetry', () => {
-    handlePush(db, { body: { hostname: 'm5', temp_cpu_c: 40 }, allowInsecureLoopback: true, now: Date.now() });
+    handlePush(db, {
+      authHeader: 'Bearer db-fleet-test-token',
+      producerRegistryJson: JSON.stringify([{ id: 'm5-agent', token: 'db-fleet-test-token', hosts: ['m5'] }]),
+      body: { hostname: 'm5', temp_cpu_c: 40 },
+      now: Date.now(),
+    });
     assert.ok(isValidMetricHost(db, 'm5'));
   });
 

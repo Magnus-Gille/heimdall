@@ -38,7 +38,7 @@ const { detectCausalityHint } = require('./causality');
 // v2 platform: fleet telemetry (push-agent ingest + fleet view)
 const { reconcileFleetHostConfig } = require('./db');
 const { handlePush } = require('./fleet/ingest');
-const { checkFleetAuth } = require('./fleet/auth');
+const { authenticateProducer, authorizeProducerService, isOperatorReadToken } = require('./fleet/producer-auth');
 const { fleetPage, fleetGridFragment } = require('./fleet/render');
 const { loadFleetConfig } = require('./fleet/config');
 // v2 platform: self-describing service contract + discovery
@@ -882,17 +882,14 @@ app.post('/api/alerts', async (request, reply) => {
 
 // #57 generic typed-panel ingest: a producer POSTs ONE JSON blob and a
 // number/trend/table/status appears on its service page — zero Heimdall code per
-// panel. Fail-closed Bearer auth, reusing the fleet token (no new credential).
+// panel. Producer credentials are scoped to explicit stored service ids.
 // Explicit per-route bodyLimit (256 KiB) — generous for legit panels, far below
 // the 1 MiB Fastify default. Bodies exceeding this return 413.
 app.post('/api/panels', { bodyLimit: 256 * 1024 }, async (request, reply) => {
-  const insecureLoopback = process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK === '1'
-    || process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK === 'true';
   const result = handlePanelIngest(db, {
     authHeader: request.headers['authorization'] || '',
-    token: process.env.HEIMDALL_FLEET_TOKEN || '',
-    bindHost: process.env.HEIMDALL_BIND || '127.0.0.1',
-    allowInsecureLoopback: insecureLoopback,
+    producerRegistryJson: process.env.HEIMDALL_INGEST_PRODUCERS_JSON || '',
+    legacyFleetToken: process.env.HEIMDALL_FLEET_TOKEN || '',
     body: request.body,
   });
   reply.code(result.status).send(result.body);
@@ -944,21 +941,28 @@ app.post('/api/synthetic-journeys', { bodyLimit: 64 * 1024 }, async (request, re
 app.get('/api/panels/schema', async () => PANEL_SCHEMA_DOC);
 
 // Read-back for producers (#102): what actually landed. Summary rows (no data
-// payloads) are open like the other read APIs, but FULL data payloads share the
-// fleet trust boundary with POST — the UI renders only sparklines/latest values,
-// so raw point history is not otherwise public. ?service= + valid fleet Bearer →
-// that service's full panels; without auth it degrades to that service's summary.
+// payloads) are open like the other read APIs. A scoped producer may read full
+// data for its exact service; the legacy fleet token remains operator full-read
+// only. Without auth this degrades to that service's summary.
 app.get('/api/panels', async (request, reply) => {
   const service = typeof request.query.service === 'string' ? request.query.service : '';
   const authHeader = request.headers['authorization'] || '';
   let full = false;
   if (service && authHeader) {
-    const insecureLoopback = process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK === '1'
-      || process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK === 'true';
-    const auth = checkFleetAuth(authHeader, process.env.HEIMDALL_FLEET_TOKEN || '',
-      process.env.HEIMDALL_BIND || '127.0.0.1', insecureLoopback);
-    // A presented-but-wrong token fails loudly rather than silently degrading.
-    if (!auth.ok) { reply.code(auth.code || 401).send({ error: 'invalid fleet token' }); return; }
+    const legacyFleetToken = process.env.HEIMDALL_FLEET_TOKEN || '';
+    if (!isOperatorReadToken(authHeader, legacyFleetToken)) {
+      const auth = authenticateProducer(
+        authHeader,
+        process.env.HEIMDALL_INGEST_PRODUCERS_JSON || '',
+        legacyFleetToken,
+      );
+      if (!auth.ok) { reply.code(auth.status || 401).send({ error: auth.error }); return; }
+      const authorization = authorizeProducerService(auth.producer, service);
+      if (!authorization.ok) {
+        reply.code(authorization.status || 403).send({ error: authorization.error });
+        return;
+      }
+    }
     full = true;
   }
   if (service) {
@@ -1069,14 +1073,11 @@ app.get('/api/fleet/grid', async (request, reply) => {
 });
 
 app.post('/api/fleet/push', { bodyLimit: 64 * 1024 }, async (request, reply) => {
-  const insecureLoopback = process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK === '1'
-    || process.env.HEIMDALL_FLEET_ALLOW_INSECURE_LOOPBACK === 'true';
   const result = handlePush(db, {
     authHeader: request.headers['authorization'] || '',
     sourceIp: request.ip,
-    token: process.env.HEIMDALL_FLEET_TOKEN || '',
-    bindHost: process.env.HEIMDALL_BIND || '127.0.0.1',
-    allowInsecureLoopback: insecureLoopback,
+    producerRegistryJson: process.env.HEIMDALL_INGEST_PRODUCERS_JSON || '',
+    legacyFleetToken: process.env.HEIMDALL_FLEET_TOKEN || '',
     body: request.body,
     now: Date.now(),
     // Only a successfully loaded Grimnir registry can authorize lifecycle

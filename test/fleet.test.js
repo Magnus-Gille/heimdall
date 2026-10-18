@@ -24,6 +24,17 @@ const {
 
 const NOW = Date.parse('2026-06-23T12:00:00Z');
 const ago = (s) => new Date(NOW - s * 1000).toISOString();
+const TEST_FLEET_AUTH = {
+  authHeader: 'Bearer fleet-test-token',
+  producerRegistryJson: JSON.stringify([{
+    id: 'fleet-test', token: 'fleet-test-token', hosts: [
+      'control-node', 'a', 'h', 'current-node', 'drift-node', 'legacy-node',
+      'm5', 'nas', 'old-control', 'old-pi', 'orin-nano', 'macbook-air',
+      'ghost', 'retained', 'new-host', 'authority-unavailable',
+      'authority-malformed', 'authority-nodesmissing',
+    ],
+  }]),
+};
 
 function tmpDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-fleet-'));
@@ -178,14 +189,14 @@ describe('auth.checkFleetAuth', () => {
 describe('ingest.handlePush (integration)', () => {
   it('401s on auth failure before touching the DB', () => {
     const db = tmpDb();
-    const r = handlePush(db, { authHeader: '', token: 'k', bindHost: '192.0.2.1', body: { hostname: 'a' }, now: NOW });
+    const r = handlePush(db, { ...TEST_FLEET_AUTH, authHeader: '', body: { hostname: 'a' }, now: NOW });
     assert.equal(r.status, 401);
     assert.equal(getFleetHosts(db).length, 0);
     db.close();
   });
   it('400s on invalid payload (after passing auth)', () => {
     const db = tmpDb();
-    const r = handlePush(db, { body: { nope: 1 }, allowInsecureLoopback: true, now: NOW });
+    const r = handlePush(db, { ...TEST_FLEET_AUTH, body: { nope: 1 }, now: NOW });
     assert.equal(r.status, 400);
     db.close();
   });
@@ -199,7 +210,7 @@ describe('ingest.handlePush (integration)', () => {
       disk: [{ mount: '/', total_mb: 59000, used_mb: 6000, used_pct: 10 }],
       extra: { thermal_state: 'nominal' },
     };
-    const r = handlePush(db, { body, sourceIp: '192.0.2.10', allowInsecureLoopback: true, now: NOW });
+    const r = handlePush(db, { ...TEST_FLEET_AUTH, body, sourceIp: '192.0.2.10', now: NOW });
     assert.equal(r.status, 200);
     assert.equal(r.body.hostname, 'control-node');
 
@@ -231,7 +242,7 @@ describe('ingest.handlePush (integration)', () => {
   it('drops a future-dated ts so latest/charts use server time', () => {
     const db = tmpDb();
     const future = new Date(NOW + 3600 * 1000).toISOString();
-    const r = handlePush(db, { body: { hostname: 'h', cpu_pct: 5, ts: future }, allowInsecureLoopback: true, now: NOW });
+    const r = handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'h', cpu_pct: 5, ts: future }, now: NOW });
     assert.equal(r.status, 200);
     const latest = getLatestFleetMetric(db, 'h');
     assert.ok(Date.parse(latest.timestamp) <= NOW + 1000, 'future ts should be dropped in favor of received_at');
@@ -241,22 +252,20 @@ describe('ingest.handlePush (integration)', () => {
   it('getLatestFleetMetric uses received_at/id, not the agent ts', () => {
     const db = tmpDb();
     // 2nd push has an OLDER ts but arrives LATER → it must win.
-    handlePush(db, { body: { hostname: 'h', cpu_pct: 10, ts: ago(0) }, allowInsecureLoopback: true, now: NOW });
-    handlePush(db, { body: { hostname: 'h', cpu_pct: 20, ts: ago(3600) }, allowInsecureLoopback: true, now: NOW + 1000 });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'h', cpu_pct: 10, ts: ago(0) }, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'h', cpu_pct: 20, ts: ago(3600) }, now: NOW + 1000 });
     assert.equal(getLatestFleetMetric(db, 'h').cpu_pct, 20);
     db.close();
   });
 
   it('a later versionless push clears the latest snapshot and rendered card to unknown', () => {
     const db = tmpDb();
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'h', cpu_pct: 10, agent_version: 'abc1234' },
-      allowInsecureLoopback: true,
       now: NOW,
     });
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'h', cpu_pct: 20 },
-      allowInsecureLoopback: true,
       now: NOW,
     });
 
@@ -361,9 +370,8 @@ describe('always_on normalization', () => {
 describe('fleet render — temp sparkline', () => {
   it('canonical metric history includes samples written under a pre-rename alias', () => {
     const db = tmpDb();
-    handlePush(db, {
+    handlePush(db, { ...TEST_FLEET_AUTH,
       body: { hostname: 'old-control', temp_cpu_c: 41 },
-      allowInsecureLoopback: true,
       now: NOW,
     });
     const history = getMetricHistory(
@@ -380,8 +388,8 @@ describe('fleet render — temp sparkline', () => {
 
   it('buildMachines includes a tempSpark series oldest→newest from temp_cpu_c pushes', () => {
     const db = tmpDb();
-    handlePush(db, { body: { hostname: 'm5', temp_cpu_c: 40 }, allowInsecureLoopback: true, now: NOW });
-    handlePush(db, { body: { hostname: 'm5', temp_cpu_c: 46 }, allowInsecureLoopback: true, now: NOW + 1000 });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'm5', temp_cpu_c: 40 }, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'm5', temp_cpu_c: 46 }, now: NOW + 1000 });
     const machines = buildMachines(db, NOW + 2000, {});
     const m = machines.find((x) => x.hostname === 'm5');
     assert.ok(m, 'expected m5 in machines');
@@ -435,9 +443,9 @@ describe('fleet render — agent version drift', () => {
 
   it('buildMachines exposes current, drift, and unknown against the explicit runtime baseline', () => {
     const db = tmpDb();
-    handlePush(db, { body: { hostname: 'current-node', agent_version: 'abc1234' }, allowInsecureLoopback: true, now: NOW });
-    handlePush(db, { body: { hostname: 'drift-node', agent_version: 'deadbee' }, allowInsecureLoopback: true, now: NOW + 1000 });
-    handlePush(db, { body: { hostname: 'legacy-node' }, allowInsecureLoopback: true, now: NOW + 2000 });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'current-node', agent_version: 'abc1234' }, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'drift-node', agent_version: 'deadbee' }, now: NOW + 1000 });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'legacy-node' }, now: NOW + 2000 });
 
     const machines = buildMachines(db, NOW + 3000, {}, { baselineVersion: 'abc1234' });
     const byHost = Object.fromEntries(machines.map((m) => [m.hostname, m]));
@@ -453,8 +461,8 @@ describe('fleet render — agent version drift', () => {
 
   it('exceptionsOnly still surfaces an online host with agent drift', () => {
     const db = tmpDb();
-    handlePush(db, { body: { hostname: 'current-node', agent_version: 'abc1234' }, allowInsecureLoopback: true, now: NOW });
-    handlePush(db, { body: { hostname: 'drift-node', agent_version: 'deadbee' }, allowInsecureLoopback: true, now: NOW + 1000 });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'current-node', agent_version: 'abc1234' }, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'drift-node', agent_version: 'deadbee' }, now: NOW + 1000 });
 
     const html = fleetGridFragment(db, NOW + 2000, {}, { exceptionsOnly: true, baselineVersion: 'abc1234' });
     assert.match(html, /drift-node/);
@@ -468,8 +476,8 @@ describe('fleet render — agent version drift', () => {
 
   it('can omit the M5 agent only from the Overview fleet fragment', () => {
     const db = tmpDb();
-    handlePush(db, { body: { hostname: 'm5' }, allowInsecureLoopback: true, now: NOW });
-    handlePush(db, { body: { hostname: 'nas' }, allowInsecureLoopback: true, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'm5' }, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'nas' }, now: NOW });
 
     const overview = fleetGridFragment(db, NOW + 1000, {}, { excludeHostnames: ['m5'] });
     const fullFleet = fleetGridFragment(db, NOW + 1000, {});
@@ -555,8 +563,8 @@ describe('fleetPage — data-hosts is HTML-escaped (XSS guard)', () => {
 describe('pruneFleetMetrics', () => {
   it('deletes rows older than the cutoff, keeps newer', () => {
     const db = tmpDb();
-    handlePush(db, { body: { hostname: 'h', cpu_pct: 5 }, allowInsecureLoopback: true, now: Date.parse('2026-06-01T00:00:00Z') });
-    handlePush(db, { body: { hostname: 'h', cpu_pct: 6 }, allowInsecureLoopback: true, now: NOW });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'h', cpu_pct: 5 }, now: Date.parse('2026-06-01T00:00:00Z') });
+    handlePush(db, { ...TEST_FLEET_AUTH, body: { hostname: 'h', cpu_pct: 6 }, now: NOW });
     const cutoff = new Date(NOW - 7 * 24 * 3600 * 1000).toISOString();
     assert.equal(pruneFleetMetrics(db, cutoff), 1);
     assert.equal(db.prepare('SELECT COUNT(*) c FROM fleet_metrics').get().c, 1);
