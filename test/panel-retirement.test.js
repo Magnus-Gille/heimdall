@@ -16,6 +16,7 @@ const {
   countPanelServices,
   listPanelServices,
   listPanels,
+  isRetiredPushedPanel,
 } = require('../src/db');
 
 function freshDb() {
@@ -127,5 +128,88 @@ describe('retired Brokkr m5-memlimits panel', () => {
     ).get();
     assert.deepEqual(stored, { label: 'm5 OOM prevention', updated_at: 20 });
     assert.deepEqual(getPanelsForService(db, 'brokkr').map((row) => row.panel), ['hw-health', 'photos']);
+  });
+});
+
+describe('retired shared Brokkr link-health panel', () => {
+  // Every fleet node used to push brokkr/link-health, so the last push hid the
+  // others. Nodes now push link-health-<node>; only the shared row is retired.
+  let app;
+  let db;
+  const token = 'link-health-retirement-token';
+  const savedEnv = {};
+
+  before(async () => {
+    for (const key of ['HEIMDALL_FLEET_TOKEN', 'HEIMDALL_INGEST_PRODUCERS_JSON', 'HEIMDALL_BIND']) {
+      savedEnv[key] = process.env[key];
+    }
+    process.env.HEIMDALL_FLEET_TOKEN = 'link-health-retirement-operator-token';
+    process.env.HEIMDALL_INGEST_PRODUCERS_JSON = JSON.stringify([{
+      id: 'brokkr-panel-producer', token, services: ['brokkr'],
+    }]);
+    process.env.HEIMDALL_BIND = '192.0.2.1';
+
+    db = freshDb();
+    upsertPanel(db, panel('hw-health', 'Hardware health', 10));
+    upsertPanel(db, panel('link-health', 'Network Link Health', 20));
+    upsertPanel(db, panel('link-health-node-a', 'Network Link Health (node-a)', 30));
+    upsertPanel(db, panel('link-health-node-b', 'Network Link Health (node-b)', 40));
+    ({ app } = buildApp(db));
+    await app.ready();
+  });
+
+  after(async () => {
+    await app.close();
+    db.close();
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  const push = (panelId, label) => app.inject({
+    method: 'POST', url: '/api/panels',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ service: 'brokkr', panel: panelId, kind: 'stat', label, value: 7 }),
+  });
+
+  it('hides exactly the shared panel and keeps every per-node panel', () => {
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM panels WHERE service = 'brokkr'").get().n, 4);
+    const visible = ['hw-health', 'link-health-node-a', 'link-health-node-b'];
+    assert.deepEqual(getPanelsForService(db, 'brokkr').map((row) => row.panel), visible);
+    assert.deepEqual(listPanels(db).map((row) => row.panel), visible);
+    assert.equal(countPanelsForService(db, 'brokkr'), 3);
+    assert.equal(countPanels(db), 3);
+  });
+
+  it('still retires the earlier m5-memlimits panel alongside it', () => {
+    const before = countPanels(db);
+    upsertPanel(db, panel('m5-memlimits', 'm5 OOM prevention', 50));
+    assert.ok(!getPanelsForService(db, 'brokkr').some((row) => ['m5-memlimits', 'link-health'].includes(row.panel)));
+    assert.equal(countPanels(db), before);
+  });
+
+  it('acknowledges a push to the shared panel without reviving or mutating it', async () => {
+    const response = await push('link-health', 'revived shared label');
+    assert.equal(response.statusCode, 200);
+    assert.equal(JSON.parse(response.body).retired, true);
+    const stored = db.prepare(
+      "SELECT label, updated_at FROM panels WHERE service = 'brokkr' AND panel = 'link-health'",
+    ).get();
+    assert.deepEqual(stored, { label: 'Network Link Health', updated_at: 20 });
+  });
+
+  it('stores and shows a pushed per-node panel', async () => {
+    const response = await push('link-health-node-c', 'Network Link Health (node-c)');
+    assert.equal(response.statusCode, 200);
+    assert.notEqual(JSON.parse(response.body).retired, true);
+    assert.ok(getPanelsForService(db, 'brokkr').some((row) => row.panel === 'link-health-node-c'));
+  });
+
+  it('marks both retired identities and nothing else as retired', () => {
+    assert.equal(isRetiredPushedPanel('brokkr', 'link-health'), true);
+    assert.equal(isRetiredPushedPanel('brokkr', 'm5-memlimits'), true);
+    assert.equal(isRetiredPushedPanel('brokkr', 'link-health-node-a'), false);
+    assert.equal(isRetiredPushedPanel('other', 'link-health'), false);
   });
 });

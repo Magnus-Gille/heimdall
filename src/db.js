@@ -1169,17 +1169,23 @@ function pruneServiceSnapshots(db, keepNames) {
 
 // --- Typed panels (generic push ingest, #57) ---
 
-// This Brokkr card was deployment prose, not live telemetry. Keep its stored
-// row untouched for rollback, but retire it from every public read/count path.
-// Exact identity matching preserves Brokkr's useful hw-health and photos panels.
-const RETIRED_PUSHED_PANEL = Object.freeze({ service: 'brokkr', panel: 'm5-memlimits' });
+// Retired pushed panels keep their stored rows untouched for rollback but are
+// excluded from every public read/count path and never revived by a push.
+// Exact identity matching preserves every other panel of the same service.
+const RETIRED_PUSHED_PANELS = Object.freeze([
+  // Deployment prose, not live telemetry.
+  Object.freeze({ service: 'brokkr', panel: 'm5-memlimits' }),
+  // Shared by every fleet node, so the last push hid the others; nodes now
+  // publish link-health-<node>.
+  Object.freeze({ service: 'brokkr', panel: 'link-health' }),
+]);
 
 function isRetiredPushedPanel(service, panel) {
-  return service === RETIRED_PUSHED_PANEL.service && panel === RETIRED_PUSHED_PANEL.panel;
+  return RETIRED_PUSHED_PANELS.some((retired) => retired.service === service && retired.panel === panel);
 }
 
-const VISIBLE_PANEL_SQL = 'NOT (service = ? AND panel = ?)';
-const visiblePanelParams = () => [RETIRED_PUSHED_PANEL.service, RETIRED_PUSHED_PANEL.panel];
+const VISIBLE_PANEL_SQL = `NOT (${RETIRED_PUSHED_PANELS.map(() => '(service = ? AND panel = ?)').join(' OR ')})`;
+const visiblePanelParams = () => RETIRED_PUSHED_PANELS.flatMap(({ service, panel }) => [service, panel]);
 
 /**
  * Upsert one typed panel by (service, panel). `data` is the kind-specific
