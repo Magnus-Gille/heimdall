@@ -101,7 +101,11 @@ def replace(*a, **kw):
     state["replace"] += 1
     if state["replace"] in opts.get("replace_fail", []):
         raise OSError(errno.EIO, "injected")
-    return real_replace(*a, **kw)
+    result = real_replace(*a, **kw)
+    if opts.get("touch_after_replace") and state["replace"] == 1:
+        with open(opts["touch_after_replace"], "a") as handle:
+            handle.write("X=1\\n")
+    return result
 def link(src, dst, **kw):
     if opts.get("link") == "fail":
         raise OSError(errno.EIO, "injected")
@@ -1216,5 +1220,199 @@ describe('producer-token-ops additional coverage', () => {
     assert.equal(result.code, 3);
     assert.deepEqual(fs.readFileSync(fx.env), staged);
     assert.ok(!listing(fx.dir).some((name) => name.includes('producer-token-')));
+  });
+});
+
+// --- Second review round -----------------------------------------------------
+
+describe('producer-token-ops credential echo (second round)', () => {
+  const OLD_A = 'replaced-token-value-aaaaaaaaaaaa';
+  const LOWER_LEGACY = 'legacy-token-lowercase-cccccccccccc';
+
+  it('--replace refuses a scope equal to the token being replaced', async () => {
+    const fx = serverFixture({ records: [{ id: 'a', token: OLD_A, hosts: ['node-a'] }] });
+    const before = fs.readFileSync(fx.env);
+    for (const scope of [['--host', OLD_A], ['--service', OLD_A]]) {
+      const result = await run(['register', '--server-env', fx.env, '--id', 'a', '--replace', ...scope]);
+      assert.equal(result.code, 3, scope.join(' ') + result.stderr);
+      assert.match(result.stderr, /equal a credential/);
+      assertNoSecrets(result, [OLD_A]);
+    }
+    assert.deepEqual(fs.readFileSync(fx.env), before);
+    assert.ok(!fs.existsSync(fx.backup));
+  });
+
+  it('diagnose refuses to print metadata when the legacy token is assigned twice', async () => {
+    const dir = tmpdir();
+    const env = path.join(dir, 'heimdall.env');
+    writeEnv(env, [
+      'HEIMDALL_FLEET_TOKEN=' + LEGACY,
+      'HEIMDALL_FLEET_TOKEN=' + LEGACY,
+      registryLine([{ id: 'a', token: EXISTING_TOKEN, services: [LEGACY] }]),
+      '',
+    ]);
+    const result = await run(['diagnose', '--server-env', env]);
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stdout, /more than one HEIMDALL_FLEET_TOKEN/);
+    assert.ok(!result.stdout.includes('producer id='));
+    assertNoSecrets(result, [EXISTING_TOKEN]);
+  });
+
+  it('diagnose with a duplicated legacy token and no registry still reports without values', async () => {
+    const dir = tmpdir();
+    const env = path.join(dir, 'heimdall.env');
+    writeEnv(env, ['HEIMDALL_FLEET_TOKEN=' + LOWER_LEGACY, 'HEIMDALL_FLEET_TOKEN=other', '']);
+    const result = await run(['diagnose', '--server-env', env]);
+    assert.equal(result.code, 2);
+    assertNoSecrets(result, [LOWER_LEGACY]);
+    assert.ok(!result.stdout.includes(LOWER_LEGACY));
+  });
+});
+
+describe('producer-token-ops restore identity (second round)', () => {
+  const REG = (file) => ['register', '--server-env', file, '--id', 'newcomer', '--host', 'node-a', '--emit-token'];
+
+  it('does not overwrite a file another writer changed after the commit (output failure)', async () => {
+    const fx = serverFixture({ records: EXISTING });
+    const result = await runDriver(REG(fx.env), { stdout_fail_first: true, touch_after_replace: fx.env });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /another writer changed the file/);
+    assert.match(result.stderr, /diagnose/);
+    const text = fs.readFileSync(fx.env, 'utf8');
+    assert.ok(text.endsWith('X=1\n'), 'the other writer change must survive');
+    assert.ok(text.includes('"id":"newcomer"'), 'the commit must not be silently undone over the other change');
+    assert.equal(result.stdout, '');
+  });
+
+  it('does not overwrite a file another writer changed after the commit (directory sync failure)', async () => {
+    const fx = serverFixture({ records: EXISTING });
+    const result = await runDriver(REG(fx.env), { dirfsync_fail: [2], touch_after_replace: fx.env });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /another writer changed the file/);
+    assert.ok(fs.readFileSync(fx.env, 'utf8').endsWith('X=1\n'));
+  });
+
+  it('still restores when nothing else touched the file', async () => {
+    const fx = serverFixture({ records: EXISTING });
+    const original = fs.readFileSync(fx.env);
+    const result = await runDriver(REG(fx.env), { stdout_fail_first: true });
+    assert.equal(result.code, 3, result.stderr);
+    assert.deepEqual(fs.readFileSync(fx.env), original);
+  });
+});
+
+describe('producer-token-ops post-commit status failures (second round)', () => {
+  it('stage: a failing status write after the commit is exit 4, never "unchanged"', async () => {
+    const fx = producerFixture();
+    const result = await runDriver(['stage', '--producer-env', fx.env], { stdout_fail_first: true, stdin_text: STAGED + '\n' });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /committed/);
+    assert.match(result.stderr, /HEIMDALL_PRODUCER_TOKEN_PENDING/);
+    assert.match(result.stderr, /diagnose|inspect/);
+    assert.ok(fs.readFileSync(fx.env, 'utf8').includes('HEIMDALL_PRODUCER_TOKEN_PENDING=' + STAGED));
+    assertNoSecrets(result, [STAGED, OLD_ACTIVE]);
+  });
+
+  it('cutover: a failing status write after the commit is exit 4', async () => {
+    const fx = producerFixture(['HEIMDALL_PRODUCER_TOKEN_PENDING=' + STAGED]);
+    const result = await runDriver(['cutover', '--producer-env', fx.env, '--active-key', 'FLEET_TOKEN'], { stdout_fail_first: true });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /committed/);
+    assert.match(result.stderr, /FLEET_TOKEN/);
+    const text = fs.readFileSync(fx.env, 'utf8');
+    assert.ok(text.includes('FLEET_TOKEN=' + STAGED) && !text.includes('PENDING'));
+    assertNoSecrets(result, [STAGED, OLD_ACTIVE]);
+  });
+
+  it('rollback: a failing status write after the restore is exit 4', async () => {
+    const fx = producerFixture();
+    const original = fs.readFileSync(fx.env);
+    await run(['stage', '--producer-env', fx.env], { stdin: STAGED + '\n' });
+    const result = await runDriver(['rollback', '--env', fx.env], { stdout_fail_first: true });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /committed|restored/);
+    assert.deepEqual(fs.readFileSync(fx.env), original);
+  });
+
+  it('cutover: a directory sync failure after the rename is exit 4', async () => {
+    const fx = producerFixture(['HEIMDALL_PRODUCER_TOKEN_PENDING=' + STAGED]);
+    const result = await runDriver(['cutover', '--producer-env', fx.env, '--active-key', 'FLEET_TOKEN'], { dirfsync_fail: [2] });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /uncertain/);
+    assertNoSecrets(result, [STAGED, OLD_ACTIVE]);
+  });
+
+  it('rollback: a directory sync failure after the rename is exit 4', async () => {
+    const fx = producerFixture();
+    await run(['stage', '--producer-env', fx.env], { stdin: STAGED + '\n' });
+    const result = await runDriver(['rollback', '--env', fx.env], { dirfsync_fail: [1] });
+    assert.equal(result.code, 4, result.stderr);
+    assert.match(result.stderr, /uncertain/);
+  });
+});
+
+describe('producer-token-ops whitespace handling (second round)', () => {
+  const NBSP = ' ';
+  const cases = [
+    ['trailing NBSP on the legacy token', ['HEIMDALL_FLEET_TOKEN=legacy-with-nbsp-xxxxxxxxxxxx' + NBSP, '']],
+    ['leading NBSP on the legacy token', ['HEIMDALL_FLEET_TOKEN=' + NBSP + 'legacy-with-nbsp-xxxxxxxxxxxx', '']],
+    ['non-ASCII inside the legacy token', ['HEIMDALL_FLEET_TOKEN=legacy-töken-xxxxxxxxxxxx', '']],
+    ['trailing ideographic space on the registry', [registryLine(EXISTING) + '　', '']],
+    ['leading NBSP before a quoted registry', [REGISTRY_KEY + '=' + NBSP + "'" + JSON.stringify(EXISTING) + "'", '']],
+  ];
+
+  for (const [label, lines] of cases) {
+    it('server env refused: ' + label, async () => {
+      const dir = tmpdir();
+      const env = path.join(dir, 'heimdall.env');
+      writeEnv(env, lines);
+      const before = fs.readFileSync(env);
+      for (const args of [
+        ['diagnose', '--server-env', env],
+        ['register', '--server-env', env, '--id', 'fresh', '--host', 'node-a'],
+      ]) {
+        const result = await run(args);
+        assert.equal(result.code, 3, args[0] + ' ' + result.stdout + result.stderr);
+        assert.match(result.stderr, /non-ASCII/);
+      }
+      assert.deepEqual(fs.readFileSync(env), before);
+    });
+  }
+
+  it('producer env refused: non-ASCII whitespace around the pending or active value', async () => {
+    for (const lines of [
+      ['FLEET_TOKEN=' + OLD_ACTIVE, 'HEIMDALL_PRODUCER_TOKEN_PENDING=' + STAGED + NBSP, ''],
+      ['FLEET_TOKEN=' + NBSP + OLD_ACTIVE, 'HEIMDALL_PRODUCER_TOKEN_PENDING=' + STAGED, ''],
+    ]) {
+      const dir = tmpdir();
+      const env = path.join(dir, 'producer.env');
+      writeEnv(env, lines);
+      const result = await run(['cutover', '--producer-env', env, '--active-key', 'FLEET_TOKEN']);
+      assert.equal(result.code, 3, result.stderr);
+      assert.match(result.stderr, /non-ASCII/);
+    }
+  });
+
+  it('keeps ASCII spaces and tabs around unquoted values harmless and preserves quoted inner spaces out of tokens', async () => {
+    const dir = tmpdir();
+    const env = path.join(dir, 'producer.env');
+    writeEnv(env, ['FLEET_TOKEN = \t' + OLD_ACTIVE + '  ', 'HEIMDALL_PRODUCER_TOKEN_PENDING=' + STAGED + '\t', '']);
+    const result = await run(['cutover', '--producer-env', env, '--active-key', 'FLEET_TOKEN']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(fs.readFileSync(env, 'utf8'), 'FLEET_TOKEN=' + STAGED + '\n');
+    // Inside quotes nothing is stripped, so padded quoted values are not tokens.
+    writeEnv(env, ['FLEET_TOKEN=x', "HEIMDALL_PRODUCER_TOKEN_PENDING=' " + STAGED + " '", '']);
+    const padded = await run(['cutover', '--producer-env', env, '--active-key', 'FLEET_TOKEN']);
+    assert.equal(padded.code, 3);
+  });
+});
+
+describe('producer-token-ops documented pipeline (second round)', () => {
+  it('documents a checked pipeline and the reconciliation steps', () => {
+    const doc = fs.readFileSync(path.join(__dirname, '..', 'docs', 'producer-token-operations.md'), 'utf8');
+    assert.match(doc, /set -euo pipefail/);
+    assert.match(doc, /PIPESTATUS/);
+    assert.match(doc, /Reconciliation/);
+    assert.match(doc, /never run .*cutover/i);
   });
 });

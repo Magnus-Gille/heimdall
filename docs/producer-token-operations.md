@@ -74,6 +74,10 @@ secret-free message) anything else in a file it must read or modify:
 - no backslash in any value the helper reads or writes, and no line anywhere
   ending in a backslash (line continuation, including in comments);
 - no carriage returns: CRLF files are refused, not edited;
+- in values of the keys the helper reads or writes, only ASCII: systemd strips
+  just ASCII space/tab around an unquoted value and nothing inside quotes, so
+  any non-ASCII character (for example a trailing no-break space) is refused
+  rather than guessed at;
 - for the keys the helper reads or writes, quotes only as one wrapping pair
   (`KEY=value`, `KEY='value'` or `KEY="value"`); and
 - a key that must be read or modified and is assigned more than once.
@@ -87,9 +91,13 @@ form by hand first.
 
 `register` refuses an existing or resulting registry in which any id, host or
 service equals any token in the registry or the legacy fleet token, because
-`diagnose` and the status output print ids and scopes. `diagnose` prints
-`<redacted>` for any id, host or service equal to such a value (and still
-validates normally).
+`diagnose` and the status output print ids and scopes. With `--replace` the
+tokens of both the original and the resulting registry count, so a new scope
+cannot equal the token being replaced. `diagnose` prints `<redacted>` for any
+id, host or service equal to such a value (and still validates normally). If
+`HEIMDALL_FLEET_TOKEN` is assigned more than once the effective legacy value is
+ambiguous: `diagnose` exits 2 without printing any registry metadata and
+`register` refuses.
 
 ## Commands
 
@@ -104,9 +112,13 @@ validates normally).
 Exit code 3 means refused or failed with the files unchanged; for `register`
 it also covers a failure after the registry was replaced that was fully undone
 (the message says the change was rolled back). Exit code 4 means the outcome is
-uncertain: a rename succeeded but the directory sync failed, or a rollback of
-`register` itself failed. Run `diagnose` (and inspect the file's state) before
-retrying; never blindly repeat the command.
+uncertain: a rename succeeded but the directory sync failed, the status output
+of `stage`, `cutover` or `rollback` failed after the change was committed (the
+message says what was committed and never claims "unchanged"), or the automatic
+undo of `register` failed. The undo only overwrites the exact file `register`
+wrote (same device, inode, size and mtime); if another writer changed it since,
+nothing is overwritten and the exit code is 4. Run `diagnose` (and inspect the
+file's state) before retrying; never blindly repeat the command.
 
 `register --emit-token` is transactional after the registry is replaced: the
 token is written to stdout first and the status to stderr afterwards; a failure
@@ -135,21 +147,52 @@ paths below are placeholders.
 
 2. Register the producer and install its token on the producer node in one
    pipeline. The token travels only through the pipe, and `ssh` must not
-   allocate a terminal (no `-t`):
+   allocate a terminal (no `-t`). A plain `a | b` hides a failure of `a` when
+   `b` succeeds, and `register` can exit 3 *after* emitting the token (it rolled
+   itself back because a later write failed) while `stage` still exits 0. Run
+   it as a script that checks both ends:
 
-   ```sh
+   ```bash
+   set -euo pipefail
+   set +e
    sudo scripts/producer-token-ops.py register \
      --server-env <heimdall-env-file> \
      --id <producer-id> --host <fleet-host-id> --service <service-id> \
      --emit-token \
    | ssh <producer-node> \
      'sudo <path-to>/producer-token-ops.py stage --producer-env <producer-env-file>'
+   status=("${PIPESTATUS[@]}")
+   set -e
+   echo "register=${status[0]} stage=${status[1]}"
+   if [ "${status[0]}" -ne 0 ] || [ "${status[1]}" -ne 0 ]; then
+     echo "do NOT run cutover; follow the reconciliation steps" >&2
+     exit 1
+   fi
    ```
 
-   Never run `register --emit-token` without a token consumer on the pipe. If
-   the pipeline fails, assume the token was not delivered and re-run with
-   `--replace` to issue a new one. If the write to stdout itself fails,
-   `register` restores the registry.
+   Never run `register --emit-token` without a token consumer on the pipe.
+
+   **Reconciliation.** Treat any non-zero status, and in particular exit code
+   4 from either side, as unresolved until you have checked both ends:
+
+   - `register` failed (3 or 4) but `stage` succeeded: the producer holds a
+     pending token that the server may not have. On the server, run
+     `diagnose` to see what the registry actually contains. On the producer,
+     discard the staged value before retrying: either re-run the whole step
+     (the next `stage` overwrites the pending key) or delete the pending line
+     from the producer env file with an editor without displaying values. Use
+     `rollback` only when this was the first helper change to that file, since
+     it restores the file to its state before the first change and would also
+     undo earlier completed rollouts.
+   - `register` succeeded but `stage` failed: the server has a token nobody
+     holds. Re-run the step with `--replace` to issue a new one.
+   - Both failed or the status is exit code 4: run `diagnose` on the server
+     and inspect the producer env file's pending key (never its value), then
+     retry with `--replace` only once the state is understood.
+
+   Never run `cutover` unless both statuses are 0 and `diagnose` on the server
+   shows the producer id. Cutting over to a token the server does not know
+   locks the producer out of all writes.
 
 3. Restart or reload Heimdall with your normal service procedure so it reads
    the new registry, then run `diagnose` again and check the id and scopes.

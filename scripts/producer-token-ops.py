@@ -71,6 +71,14 @@ class UncertainError(OpsError):
 class PostReplaceError(UncertainError):
     """The rename succeeded but the directory fsync afterwards failed."""
 
+    def __init__(self, message: str, ident: "Optional[tuple[int, int, int, int]]" = None) -> None:
+        super().__init__(message)
+        self.ident = ident
+
+
+class ChangedError(OpsError):
+    """The live file no longer matches what this operation read or wrote."""
+
 
 def fail(message: str) -> NoReturn:
     raise OpsError(message)
@@ -187,9 +195,9 @@ def credential_values(producers: list, legacy_token: str) -> "set[str]":
     return values
 
 
-def echoes_credential(producers: list, legacy_token: str) -> bool:
-    """True when an id, host or service equals any registry or legacy token."""
-    secrets_seen = credential_values(producers, legacy_token)
+def echoes_credential(producers: list, legacy_token: str, extra: "frozenset[str]" = frozenset()) -> bool:
+    """True when an id, host or service equals any registry, legacy or extra token."""
+    secrets_seen = credential_values(producers, legacy_token) | set(extra)
     for producer in producers:
         for value in [producer["id"], *producer["hosts"], *producer["services"]]:
             if value in secrets_seen:
@@ -358,12 +366,14 @@ def atomic_replace(
     uid: int,
     gid: int,
     expect: "Optional[tuple[int, int, int, int]]",
-) -> None:
+) -> "tuple[int, int, int, int]":
     """Replace the live file atomically, relative to the pinned directory.
 
     With expect set, refuse if the live file's dev/ino/size/mtime changed since
     it was read. A failure after the rename (directory fsync) raises
     PostReplaceError: the new content is in place but not confirmed durable.
+    Returns the identity (dev/ino/size/mtime) of the file that was put in place
+    so a later automatic restore can insist nobody else changed it since.
     """
     temp = f".{txn.name}.producer-token-{secrets.token_hex(6)}"
     descriptor = os.open(
@@ -378,15 +388,20 @@ def atomic_replace(
                 fail("cannot preserve file owner/group on the rewritten file")
             write_all(descriptor, data)
             os.fsync(descriptor)
+            written = identity(os.fstat(descriptor))
         finally:
             os.close(descriptor)
         if expect is not None:
             try:
                 current = identity(os.stat(txn.name, dir_fd=txn.fd, follow_symlinks=False))
             except OSError as exc:
-                fail(f"environment file disappeared during the operation: {exc.strerror}")
+                raise ChangedError(
+                    f"environment file disappeared during the operation: {exc.strerror}"
+                ) from None
             if current != expect:
-                fail("environment file changed during the operation; refusing to overwrite it")
+                raise ChangedError(
+                    "environment file changed during the operation; refusing to overwrite it"
+                )
         os.replace(temp, txn.name, src_dir_fd=txn.fd, dst_dir_fd=txn.fd)
     except BaseException:
         try:
@@ -399,8 +414,10 @@ def atomic_replace(
     except OSError as exc:
         raise PostReplaceError(
             f"the file was replaced but the directory sync failed ({exc.strerror}); "
-            "the outcome is uncertain, inspect with diagnose"
+            "the outcome is uncertain, inspect with diagnose",
+            written,
         ) from None
+    return written
 
 
 def backup_name(name: str) -> str:
@@ -452,12 +469,12 @@ def ensure_backup(txn: Txn, env: EnvFile) -> str:
     return "created"
 
 
-def commit(txn: Txn, env: EnvFile, new_lines: "list[str]") -> str:
+def commit(txn: Txn, env: EnvFile, new_lines: "list[str]") -> "tuple[str, tuple[int, int, int, int]]":
     backup = ensure_backup(txn, env)
-    atomic_replace(
+    written = atomic_replace(
         txn, "\n".join(new_lines).encode("utf-8"), env.mode, env.uid, env.gid, env.ident
     )
-    return backup
+    return backup, written
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +491,11 @@ class Assignment:
     def __init__(self, index: int, key: str, rest: str) -> None:
         self.index = index
         self.key = key
-        stripped = rest.strip()
+        # systemd strips only ASCII space/tab around an unquoted value and
+        # nothing inside quotes; any non-ASCII character is refused outright.
+        stripped = rest.strip(" \t")
+        if not stripped.isascii():
+            fail(f"{key} value contains non-ASCII characters; unsupported, refusing")
         if "\\" in stripped:
             fail(f"{key} value contains a backslash; unsupported, refusing")
         wrapper = ""
@@ -552,6 +573,21 @@ def write_status(stream: Any, lines: "list[str]") -> None:
     stream.flush()
 
 
+def announce_committed(lines: "list[str]", what: str, next_step: str) -> None:
+    """Print the status of a change that is already committed.
+
+    A broken stdout must never turn into a generic failure that claims the
+    files are unchanged: report the committed state and how to reconcile.
+    """
+    try:
+        write_status(sys.stdout, lines)
+    except Exception as exc:  # noqa: BLE001 - reported as uncertain, type only
+        raise UncertainError(
+            f"{what}, but writing the status failed ({type(exc).__name__}); "
+            f"the files were changed, run diagnose / {next_step}"
+        ) from None
+
+
 def diagnose(args: argparse.Namespace) -> int:
     with Txn(args.server_env, check_dir=False, lock=False) as txn:
         env = read_env(txn, txn.name, "server environment file")
@@ -559,6 +595,12 @@ def diagnose(args: argparse.Namespace) -> int:
     legacy = legacy_found[0].value if len(legacy_found) == 1 else ""
     legacy_present = any(item.value for item in legacy_found)
     print(f"legacy_fleet_token={'present' if legacy_present else 'absent'}")
+    if len(legacy_found) > 1:
+        # Which value is effective is ambiguous; print no registry metadata at
+        # all, since it could equal the effective legacy credential.
+        print("registry_valid=no")
+        print(f"reason=more than one {LEGACY_KEY} assignment")
+        return 2
 
     found = assignments(env.lines, REGISTRY_KEY)
     if not found:
@@ -590,10 +632,21 @@ def diagnose(args: argparse.Namespace) -> int:
     return 0
 
 
-def restore_previous(txn: Txn, env: EnvFile) -> None:
-    """Put the pre-register content back; failure means the outcome is uncertain."""
+def restore_previous(
+    txn: Txn, env: EnvFile, committed: "Optional[tuple[int, int, int, int]]"
+) -> None:
+    """Put the pre-register content back, but only over the file we committed.
+
+    If another writer changed the file since, nothing is overwritten and the
+    outcome is reported as uncertain.
+    """
     try:
-        atomic_replace(txn, env.data, env.mode, env.uid, env.gid, None)
+        atomic_replace(txn, env.data, env.mode, env.uid, env.gid, committed)
+    except ChangedError:
+        raise UncertainError(
+            "uncertain, another writer changed the file after the change was committed; "
+            "the previous registry was not restored, run diagnose"
+        ) from None
     except BaseException as exc:  # noqa: BLE001 - reported as uncertain, type only
         raise UncertainError(
             f"could not restore the previous registry ({type(exc).__name__}); "
@@ -620,6 +673,8 @@ def register(args: argparse.Namespace) -> int:
                 fail(f"existing registry is invalid ({reason}); run diagnose first")
             if echoes_credential(producers, legacy):
                 fail("existing registry has an id or scope equal to a credential; refusing")
+        # Tokens about to be replaced or dropped must not be echoed either.
+        original_values = frozenset(credential_values(producers, legacy))
 
         token = secrets.token_urlsafe(32)
         record = {"id": args.id, "token": token, "hosts": hosts, "services": services}
@@ -641,16 +696,16 @@ def register(args: argparse.Namespace) -> int:
             fail(f"resulting registry would be invalid ({reason})")
         if validated != producers:
             fail("resulting registry did not round-trip; refusing to write")
-        if echoes_credential(validated, legacy):
+        if echoes_credential(validated, legacy, original_values):
             fail("an id or scope would equal a credential; refusing")
 
         new_lines = set_line(env.lines, existing, f"{REGISTRY_KEY}='{text}'")
         try:
-            backup = commit(txn, env, new_lines)
-        except PostReplaceError:
+            backup, committed = commit(txn, env, new_lines)
+        except PostReplaceError as exc:
             if not emit:
                 raise
-            restore_previous(txn, env)
+            restore_previous(txn, env, exc.ident)
             fail("directory sync failed after the registry was replaced; the change was rolled back")
 
         status = [
@@ -667,7 +722,7 @@ def register(args: argparse.Namespace) -> int:
             else:
                 write_status(sys.stdout, status)
         except BaseException as exc:  # noqa: BLE001 - restore, then report type only
-            restore_previous(txn, env)
+            restore_previous(txn, env, committed)
             if isinstance(exc, KeyboardInterrupt):
                 raise
             fail(
@@ -703,8 +758,12 @@ def stage(args: argparse.Namespace) -> int:
         env = read_env(txn, txn.name, "producer environment file")
         existing = single_assignment(env.lines, args.pending_key, "producer environment", False)
         new_lines = set_line(env.lines, existing, f"{args.pending_key}={token}")
-        backup = commit(txn, env, new_lines)
-    print(f"staged pending_key={args.pending_key} backup={backup}")
+        backup, _ = commit(txn, env, new_lines)
+    announce_committed(
+        [f"staged pending_key={args.pending_key} backup={backup}"],
+        f"the pending token was committed to {args.pending_key}",
+        f"inspect {args.pending_key} in the producer env file (its value is never shown)",
+    )
     return 0
 
 
@@ -724,8 +783,13 @@ def cutover(args: argparse.Namespace) -> int:
         new_lines = list(env.lines)
         new_lines[active.index] = f"{args.active_key}={pending.value}"
         del new_lines[pending.index]
-        backup = commit(txn, env, new_lines)
-    print(f"cutover active_key={args.active_key} pending_key={args.pending_key} removed=yes backup={backup}")
+        backup, _ = commit(txn, env, new_lines)
+    announce_committed(
+        [f"cutover active_key={args.active_key} pending_key={args.pending_key} removed=yes backup={backup}"],
+        f"the cutover was committed ({args.active_key} now holds the former pending value, "
+        f"{args.pending_key} was removed)",
+        "do not re-run it; restart the producer only after inspecting the file, or use rollback",
+    )
     return 0
 
 
@@ -739,7 +803,11 @@ def rollback(args: argparse.Namespace) -> int:
             print("rollback=unchanged (file already matches the backup)")
             return 0
         atomic_replace(txn, backup.data, env.mode, env.uid, env.gid, env.ident)
-    print("rollback=restored backup_kept=yes")
+    announce_committed(
+        ["rollback=restored backup_kept=yes"],
+        "the backup was restored over the file",
+        "inspect the file before restarting the service",
+    )
     return 0
 
 
