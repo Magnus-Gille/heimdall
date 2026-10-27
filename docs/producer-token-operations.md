@@ -36,28 +36,83 @@ use `diagnose`.
 
 Every env file must be a regular, non-symlink file owned by the current user
 (under `sudo`, also by `SUDO_UID`) with no group/other permission bits, or the
-command refuses. Writes are atomic (temp file in the same directory, fsync,
-rename) and preserve mode, owner and group. Other lines are preserved
-byte-for-byte. Before the first modification the helper creates
-`<file>.pre-producer-tokens` (mode 600, same content as the file before the
-change) if it does not already exist; it is never overwritten, so it always
-holds the state before the first helper change. It contains the old
+command refuses.
+
+Write transactions (`register`, `stage`, `cutover`, `rollback`) additionally:
+
+- require the parent directory to be a real directory (not a symlink), owned
+  by root or the current user, and not group/other-writable;
+- hold that directory open for the whole operation and do the temp-file
+  create, backup link, rename and directory fsync relative to it, under an
+  exclusive lock on it;
+- refuse to replace the file if its device, inode, size or mtime changed since
+  it was read; and
+- replace the file atomically (private temp file, fsync, rename, directory
+  fsync), preserving mode, owner and group. Other lines are preserved
+  byte-for-byte.
+
+Before the first modification the helper publishes `<file>.pre-producer-tokens`
+(mode 600, the content before the change): it is written to a private temp
+file, fsynced, then linked into place so it is never visible half-written and
+never overwritten. An already existing backup is validated first (regular,
+non-symlink, allowed owner, no group/other bits, size limit, supported subset)
+and the command refuses, with the live file untouched, if it fails. The backup
+always holds the state before the first helper change and contains the old
 credentials: delete it once the rollout is verified and you no longer need
 `rollback`.
 
-A key that must be read or modified and is assigned more than once is refused.
-Values may be unquoted, single- or double-quoted, and the line may start with
-`export `; an edited line keeps its prefix and quoting style.
+### Supported EnvironmentFile subset
+
+systemd parses `EnvironmentFile=` differently from a shell, so the helper
+accepts only a conservative subset and refuses (exit 3, file unchanged, with a
+secret-free message) anything else in a file it must read or modify:
+
+- no `export` prefix on any key the helper reads or writes (systemd does not
+  accept it);
+- no value, anywhere in the file, that opens a quote not closed on the same
+  line (a multi-line quoted value could hide a fake assignment);
+- no backslash in any value the helper reads or writes, and no line anywhere
+  ending in a backslash (line continuation, including in comments);
+- no carriage returns: CRLF files are refused, not edited;
+- for the keys the helper reads or writes, quotes only as one wrapping pair
+  (`KEY=value`, `KEY='value'` or `KEY="value"`); and
+- a key that must be read or modified and is assigned more than once.
+
+The helper always writes plain `KEY=value` (tokens) or `KEY='json'` (the
+registry), never an `export` prefix. A double-quoted registry is refused
+because JSON needs backslash escapes there; convert it to the single-quoted
+form by hand first.
+
+### Never echoing a credential
+
+`register` refuses an existing or resulting registry in which any id, host or
+service equals any token in the registry or the legacy fleet token, because
+`diagnose` and the status output print ids and scopes. `diagnose` prints
+`<redacted>` for any id, host or service equal to such a value (and still
+validates normally).
 
 ## Commands
 
 | Command | Purpose | Exit |
 | --- | --- | --- |
-| `diagnose --server-env PATH` | Registry present/valid, producer count, each id with its hosts/services, legacy token present (yes/no). | 0 valid, 1 absent, 2 invalid (secret-free reason), 3 refused |
-| `register --server-env PATH --id ID [--host H ...] [--service S ...] [--replace] [--emit-token]` | Generate a token and add (or with `--replace`, rotate) the record; validates the whole registry with the same rules as `src/fleet/producer-auth.js`; writes one `HEIMDALL_INGEST_PRODUCERS_JSON='...'` line. | 0 / 3 |
-| `stage --producer-env PATH [--pending-key KEY]` | Read exactly one token line from stdin and store it as `KEY` (default `HEIMDALL_PRODUCER_TOKEN_PENDING`). | 0 / 3 |
-| `cutover --producer-env PATH --active-key KEY [--pending-key KEY]` | Move the pending value into the active key and delete the pending line. | 0 / 3 |
-| `rollback --env PATH` | Restore `<file>.pre-producer-tokens` over the file (server or producer). The backup is kept. | 0 / 3 |
+| `diagnose --server-env PATH` | Registry present/valid, producer count, each id with its hosts/services, legacy token present (yes/no). | 0 valid, 1 absent, 2 invalid (secret-free reason), 3 refused or failed |
+| `register --server-env PATH --id ID [--host H ...] [--service S ...] [--replace] [--emit-token]` | Generate a token and add (or with `--replace`, rotate) the record; validates the whole registry with the same rules as `src/fleet/producer-auth.js`; writes one `HEIMDALL_INGEST_PRODUCERS_JSON='...'` line. | 0 / 3 / 4 |
+| `stage --producer-env PATH [--pending-key KEY]` | Read exactly one token line from stdin and store it as `KEY` (default `HEIMDALL_PRODUCER_TOKEN_PENDING`). | 0 / 3 / 4 |
+| `cutover --producer-env PATH --active-key KEY [--pending-key KEY]` | Move the pending value into the active key and delete the pending line. | 0 / 3 / 4 |
+| `rollback --env PATH` | Restore `<file>.pre-producer-tokens` over the file (server or producer). The backup is kept. | 0 / 3 / 4 |
+
+Exit code 3 means refused or failed with the files unchanged; for `register`
+it also covers a failure after the registry was replaced that was fully undone
+(the message says the change was rolled back). Exit code 4 means the outcome is
+uncertain: a rename succeeded but the directory sync failed, or a rollback of
+`register` itself failed. Run `diagnose` (and inspect the file's state) before
+retrying; never blindly repeat the command.
+
+`register --emit-token` is transactional after the registry is replaced: the
+token is written to stdout first and the status to stderr afterwards; a failure
+of either (or of the directory sync) restores the previous registry and exits
+3. Without `--emit-token` a directory-sync failure after the replace exits 4,
+and a failed status write restores the registry and exits 3.
 
 Registry rules enforced (kept in lockstep with `parseProducerRegistry` by a
 test that runs both implementations on the same inputs): unique id matching

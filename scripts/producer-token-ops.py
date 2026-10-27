@@ -12,13 +12,16 @@ Output is an allowlisted summary (ids, scopes, counts, states). The single
 exception is "register --emit-token", which writes the new token to a
 non-terminal stdout so it can be piped straight into "stage" on another node.
 
-Exit codes: 0 success; 3 refused or failed (message on stderr). "diagnose"
+Exit codes: 0 success; 3 refused or failed with the files unchanged (or, for
+register, restored); 4 uncertain outcome (a change may have been applied but
+could not be confirmed or undone; inspect with "diagnose"). "diagnose"
 additionally uses 1 (registry absent) and 2 (registry invalid).
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -27,7 +30,6 @@ import re
 import secrets
 import stat
 import sys
-import tempfile
 import traceback
 from typing import Any, NoReturn, Optional
 
@@ -37,6 +39,7 @@ LEGACY_KEY = "HEIMDALL_FLEET_TOKEN"
 DEFAULT_PENDING_KEY = "HEIMDALL_PRODUCER_TOKEN_PENDING"
 BACKUP_SUFFIX = ".pre-producer-tokens"
 MAX_ENV_BYTES = 1024 * 1024
+REDACTED = "<redacted>"
 
 # Mirrors src/fleet/producer-auth.js and src/fleet/validate.js.
 ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -59,6 +62,14 @@ LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 class OpsError(RuntimeError):
     """Expected operational failure whose message never includes a secret."""
+
+
+class UncertainError(OpsError):
+    """A change may have been applied but could not be confirmed or undone."""
+
+
+class PostReplaceError(UncertainError):
+    """The rename succeeded but the directory fsync afterwards failed."""
 
 
 def fail(message: str) -> NoReturn:
@@ -164,13 +175,75 @@ def serialize_registry(producers: list) -> str:
             record["services"] = producer["services"]
         records.append(record)
     text = json.dumps(records, separators=(",", ":"), ensure_ascii=True)
-    if "'" in text or "\n" in text or "\r" in text:
+    if any(char in text for char in ("'", "\\", "\n", "\r")):
         fail("registry contains a character that cannot be single-quoted safely")
     return text
 
 
+def credential_values(producers: list, legacy_token: str) -> "set[str]":
+    values = {producer["token"] for producer in producers}
+    if legacy_token:
+        values.add(legacy_token)
+    return values
+
+
+def echoes_credential(producers: list, legacy_token: str) -> bool:
+    """True when an id, host or service equals any registry or legacy token."""
+    secrets_seen = credential_values(producers, legacy_token)
+    for producer in producers:
+        for value in [producer["id"], *producer["hosts"], *producer["services"]]:
+            if value in secrets_seen:
+                return True
+    return False
+
+
 # ---------------------------------------------------------------------------
-# Private env file handling
+# Supported EnvironmentFile subset
+# ---------------------------------------------------------------------------
+# systemd parses EnvironmentFile differently from a shell (no "export", quoted
+# values can span lines, backslash escapes and line continuations). Rather than
+# emulate it, the helper accepts a conservative subset and refuses the rest:
+#   * no carriage returns anywhere, and no line ending in a backslash;
+#   * every quote opened in a value is closed on the same line;
+#   * for any key the helper reads or writes: no "export" prefix, no
+#     backslash in the value, and quotes only as one wrapping pair.
+
+def unterminated_quote(value: str) -> bool:
+    state = ""
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if state == "'":
+            if char == "'":
+                state = ""
+        elif state == '"':
+            if char == "\\":
+                index += 1
+            elif char == '"':
+                state = ""
+        elif char == "\\":
+            index += 1
+        elif char in "'\"":
+            state = char
+        index += 1
+    return bool(state)
+
+
+def check_subset(lines: "list[str]", label: str) -> None:
+    for number, line in enumerate(lines, start=1):
+        if "\r" in line:
+            fail(f"{label} has carriage returns (CRLF); unsupported, refusing (line {number})")
+        if line.endswith("\\"):
+            fail(f"{label} has a line ending in a backslash; unsupported, refusing (line {number})")
+        stripped = line.lstrip(" \t")
+        if not stripped or stripped[0] in "#;":
+            continue
+        if "=" in stripped and unterminated_quote(stripped.partition("=")[2]):
+            fail(f"{label} has a quoted value not closed on its line; unsupported, refusing (line {number})")
+
+
+# ---------------------------------------------------------------------------
+# Pinned-directory transaction and private env file handling
 # ---------------------------------------------------------------------------
 
 def allowed_uids() -> "set[int]":
@@ -181,142 +254,214 @@ def allowed_uids() -> "set[int]":
     return uids
 
 
+class Txn:
+    """Holds the parent directory open (no symlink following) for a whole operation."""
+
+    def __init__(self, path: Path, check_dir: bool, lock: bool) -> None:
+        if not path.is_absolute() or not path.name:
+            fail("environment file path must be absolute and name a file")
+        self.dir_path = path.parent
+        self.name = path.name
+        self.check_dir = check_dir
+        self.lock = lock
+        self.fd = -1
+
+    def shown(self, name: str) -> str:
+        return str(self.dir_path / name)
+
+    def __enter__(self) -> "Txn":
+        try:
+            self.fd = os.open(self.dir_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            fail(f"cannot open environment directory (missing, symlink, or unreadable): {exc.strerror}")
+        try:
+            info = os.fstat(self.fd)
+            if self.check_dir:
+                if info.st_uid != 0 and info.st_uid not in allowed_uids():
+                    fail("environment directory is not owned by root or the current user")
+                if stat.S_IMODE(info.st_mode) & 0o022:
+                    fail("environment directory must not be group/world writable")
+            if self.lock:
+                fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(self.fd)
+            self.fd = -1
+            raise
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.fd >= 0:
+            if self.lock:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            os.close(self.fd)
+            self.fd = -1
+
+
+def identity(info: os.stat_result) -> "tuple[int, int, int, int]":
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
 class EnvFile:
-    def __init__(self, path: Path, data: bytes, mode: int, uid: int, gid: int) -> None:
-        self.path = path
+    def __init__(self, name: str, data: bytes, info: os.stat_result) -> None:
+        self.name = name
         self.data = data
-        self.mode = mode
-        self.uid = uid
-        self.gid = gid
+        self.mode = stat.S_IMODE(info.st_mode)
+        self.uid = info.st_uid
+        self.gid = info.st_gid
+        self.ident = identity(info)
         self.text = data.decode("utf-8")
         self.lines = self.text.split("\n")
 
 
-def read_env(path: Path, label: str = "environment file") -> EnvFile:
-    if not path.is_absolute():
-        fail(f"{label} path must be absolute")
+def read_env(txn: Txn, name: str, label: str, strict: bool = True) -> EnvFile:
+    shown = txn.shown(name)
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=txn.fd)
     except OSError as exc:
-        fail(f"cannot open {label} {path} (missing, symlink, or unreadable): {exc.strerror}")
+        fail(f"cannot open {label} {shown} (missing, symlink, or unreadable): {exc.strerror}")
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
-            fail(f"{label} is not a regular file: {path}")
+            fail(f"{label} is not a regular file: {shown}")
         if info.st_uid not in allowed_uids():
-            fail(f"{label} is not owned by the current user: {path}")
-        mode = stat.S_IMODE(info.st_mode)
-        if mode & 0o077:
-            fail(f"{label} must not be group/world accessible: {path}")
+            fail(f"{label} is not owned by the current user: {shown}")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            fail(f"{label} must not be group/world accessible: {shown}")
         if info.st_size > MAX_ENV_BYTES:
-            fail(f"{label} is unexpectedly large: {path}")
+            fail(f"{label} is unexpectedly large: {shown}")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             data = handle.read(MAX_ENV_BYTES + 1)
     finally:
         os.close(descriptor)
+    if len(data) > MAX_ENV_BYTES:
+        fail(f"{label} is unexpectedly large: {shown}")
     try:
-        return EnvFile(path, data, mode, info.st_uid, info.st_gid)
+        env = EnvFile(name, data, info)
     except UnicodeError:
-        fail(f"{label} is not valid UTF-8: {path}")
+        fail(f"{label} is not valid UTF-8: {shown}")
+    if strict:
+        check_subset(env.lines, label)
+    return env
 
 
-def atomic_write(path: Path, data: bytes, mode: int, uid: int, gid: int) -> None:
-    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.producer-token-", dir=path.parent)
-    try:
-        os.fchmod(descriptor, mode)
-        try:
-            os.fchown(descriptor, uid, gid)
-        except PermissionError:
-            fail("cannot preserve file owner/group on the rewritten file")
-        with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            descriptor = -1
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except BaseException:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            os.unlink(temp_name)
-        except FileNotFoundError:
-            pass
-        raise
+def write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        view = view[written:]
 
 
-def backup_path(path: Path) -> Path:
-    return path.with_name(path.name + BACKUP_SUFFIX)
+def atomic_replace(
+    txn: Txn,
+    data: bytes,
+    mode: int,
+    uid: int,
+    gid: int,
+    expect: "Optional[tuple[int, int, int, int]]",
+) -> None:
+    """Replace the live file atomically, relative to the pinned directory.
 
-
-def ensure_backup(env: EnvFile) -> str:
-    """Create the one-time pre-modification backup; return created|existing."""
-    target = backup_path(env.path)
-    try:
-        info = target.lstat()
-    except FileNotFoundError:
-        info = None
-    if info is not None:
-        if not stat.S_ISREG(info.st_mode):
-            fail(f"backup path is not a regular file: {target}")
-        return "existing"
+    With expect set, refuse if the live file's dev/ino/size/mtime changed since
+    it was read. A failure after the rename (directory fsync) raises
+    PostReplaceError: the new content is in place but not confirmed durable.
+    """
+    temp = f".{txn.name}.producer-token-{secrets.token_hex(6)}"
     descriptor = os.open(
-        target,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
+        temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=txn.fd
     )
     try:
-        os.fchmod(descriptor, 0o600)
-        if os.geteuid() == 0:
-            os.fchown(descriptor, env.uid, env.gid)
-        with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            descriptor = -1
-            handle.write(env.data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        if descriptor >= 0:
-            os.close(descriptor)
         try:
-            os.unlink(target)
+            os.fchmod(descriptor, mode)
+            try:
+                os.fchown(descriptor, uid, gid)
+            except PermissionError:
+                fail("cannot preserve file owner/group on the rewritten file")
+            write_all(descriptor, data)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if expect is not None:
+            try:
+                current = identity(os.stat(txn.name, dir_fd=txn.fd, follow_symlinks=False))
+            except OSError as exc:
+                fail(f"environment file disappeared during the operation: {exc.strerror}")
+            if current != expect:
+                fail("environment file changed during the operation; refusing to overwrite it")
+        os.replace(temp, txn.name, src_dir_fd=txn.fd, dst_dir_fd=txn.fd)
+    except BaseException:
+        try:
+            os.unlink(temp, dir_fd=txn.fd)
         except FileNotFoundError:
             pass
         raise
+    try:
+        os.fsync(txn.fd)
+    except OSError as exc:
+        raise PostReplaceError(
+            f"the file was replaced but the directory sync failed ({exc.strerror}); "
+            "the outcome is uncertain, inspect with diagnose"
+        ) from None
+
+
+def backup_name(name: str) -> str:
+    return name + BACKUP_SUFFIX
+
+
+def ensure_backup(txn: Txn, env: EnvFile) -> str:
+    """Return created|existing; an existing backup is validated first.
+
+    The backup is written to a private temp file, fsynced, then published with
+    link() so it is complete the moment it becomes visible and never
+    overwrites an existing one.
+    """
+    target = backup_name(txn.name)
+    try:
+        os.stat(target, dir_fd=txn.fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        read_env(txn, target, "pre-producer-tokens backup", strict=True)
+        return "existing"
+    temp = f".{target}.tmp-{secrets.token_hex(6)}"
+    descriptor = os.open(
+        temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=txn.fd
+    )
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)
+            if os.geteuid() == 0:
+                os.fchown(descriptor, env.uid, env.gid)
+            write_all(descriptor, env.data)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(temp, target, src_dir_fd=txn.fd, dst_dir_fd=txn.fd)
+            created = True
+        except FileExistsError:
+            created = False
+    finally:
+        try:
+            os.unlink(temp, dir_fd=txn.fd)
+        except FileNotFoundError:
+            pass
+    if not created:
+        read_env(txn, target, "pre-producer-tokens backup", strict=True)
+        return "existing"
+    os.fsync(txn.fd)
     return "created"
 
 
-class DirLock:
-    """Exclusive advisory lock on the file's directory (no stray lock files)."""
-
-    def __init__(self, path: Path) -> None:
-        self.directory = path.parent
-        self.descriptor = -1
-
-    def __enter__(self) -> "DirLock":
-        try:
-            self.descriptor = os.open(self.directory, os.O_RDONLY)
-        except OSError as exc:
-            fail(f"cannot open environment directory: {exc.strerror}")
-        fcntl.flock(self.descriptor, fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        fcntl.flock(self.descriptor, fcntl.LOCK_UN)
-        os.close(self.descriptor)
-
-
-def commit(env: EnvFile, new_lines: "list[str]") -> str:
-    backup = ensure_backup(env)
-    atomic_write(env.path, "\n".join(new_lines).encode("utf-8"), env.mode, env.uid, env.gid)
+def commit(txn: Txn, env: EnvFile, new_lines: "list[str]") -> str:
+    backup = ensure_backup(txn, env)
+    atomic_replace(
+        txn, "\n".join(new_lines).encode("utf-8"), env.mode, env.uid, env.gid, env.ident
+    )
     return backup
 
 
 # ---------------------------------------------------------------------------
-# Assignment parsing / editing
+# Assignment parsing / editing (plain KEY=value output, never "export")
 # ---------------------------------------------------------------------------
 
 def check_key(key: str) -> str:
@@ -326,37 +471,32 @@ def check_key(key: str) -> str:
 
 
 class Assignment:
-    def __init__(self, index: int, lead: str, key: str, rest: str) -> None:
+    def __init__(self, index: int, key: str, rest: str) -> None:
         self.index = index
-        self.lead = lead
         self.key = key
         stripped = rest.strip()
-        self.quote = ""
-        self.value = stripped
-        self.valid = True
+        if "\\" in stripped:
+            fail(f"{key} value contains a backslash; unsupported, refusing")
+        wrapper = ""
         if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "'\"":
-            self.quote = stripped[0]
-            inner = stripped[1:-1]
-            if self.quote == '"':
-                if re.search(r"\\[^\"\\]", inner):
-                    self.valid = False
-                inner = re.sub(r"\\([\"\\])", r"\1", inner)
-            elif "'" in inner:
-                self.valid = False
-            self.value = inner
+            wrapper = stripped[0]
+            stripped = stripped[1:-1]
+        # The other kind of quote is literal inside a wrapping pair; the
+        # wrapper itself may not recur, and unquoted values may hold no quote.
+        if (wrapper and wrapper in stripped) or (not wrapper and ("'" in stripped or '"' in stripped)):
+            fail(f"{key} value has unsupported quoting; refusing")
+        self.value = stripped
 
 
 def assignments(lines: "list[str]", key: str) -> "list[Assignment]":
-    pattern = re.compile(
-        rf"^([ \t]*(?:export[ \t]+)?){re.escape(key)}[ \t]*=(.*)$"
-    )
+    pattern = re.compile(rf"^[ \t]*(export[ \t]+)?{re.escape(key)}[ \t]*=(.*)$")
     found = []
     for index, line in enumerate(lines):
         match = pattern.match(line)
         if match:
-            if line.endswith("\r"):
-                fail(f"{key} assignment uses CRLF line endings; refusing to edit")
-            found.append(Assignment(index, match.group(1), key, match.group(2)))
+            if match.group(1):
+                fail(f"{key} is assigned with an export prefix, which systemd does not accept; refusing")
+            found.append(Assignment(index, key, match.group(2)))
     return found
 
 
@@ -371,11 +511,6 @@ def single_assignment(lines: "list[str]", key: str, label: str, required: bool) 
     return found[0]
 
 
-def assignment_line(assignment: Assignment, value: str) -> str:
-    quote = assignment.quote if assignment.valid else ""
-    return f"{assignment.lead}{assignment.key}={quote}{value}{quote}"
-
-
 def append_line(lines: "list[str]", line: str) -> "list[str]":
     """Append a line, keeping the file's trailing-newline convention."""
     result = list(lines)
@@ -388,21 +523,12 @@ def append_line(lines: "list[str]", line: str) -> "list[str]":
     return result
 
 
-def set_token(lines: "list[str]", key: str, token: str, label: str) -> "list[str]":
-    existing = single_assignment(lines, key, label, required=False)
+def set_line(lines: "list[str]", existing: Optional[Assignment], line: str) -> "list[str]":
     if existing:
         result = list(lines)
-        result[existing.index] = assignment_line(existing, token)
+        result[existing.index] = line
         return result
-    return append_line(lines, f"{key}={token}")
-
-
-def set_registry(lines: "list[str]", existing: Optional[Assignment], text: str) -> "list[str]":
-    if existing:
-        result = list(lines)
-        result[existing.index] = f"{existing.lead}{REGISTRY_KEY}='{text}'"
-        return result
-    return append_line(lines, f"{REGISTRY_KEY}='{text}'")
+    return append_line(lines, line)
 
 
 # ---------------------------------------------------------------------------
@@ -421,8 +547,14 @@ def is_tty(stream: Any) -> bool:
         return False
 
 
+def write_status(stream: Any, lines: "list[str]") -> None:
+    stream.write("\n".join(lines) + "\n")
+    stream.flush()
+
+
 def diagnose(args: argparse.Namespace) -> int:
-    env = read_env(args.server_env, "server environment file")
+    with Txn(args.server_env, check_dir=False, lock=False) as txn:
+        env = read_env(txn, txn.name, "server environment file")
     legacy_found = assignments(env.lines, LEGACY_KEY)
     legacy = legacy_found[0].value if len(legacy_found) == 1 else ""
     legacy_present = any(item.value for item in legacy_found)
@@ -437,45 +569,57 @@ def diagnose(args: argparse.Namespace) -> int:
         print("registry_valid=no")
         print("reason=more than one registry assignment")
         return 2
-    if not found[0].valid:
-        print("registry_valid=no")
-        print("reason=value has unsupported quoting")
-        return 2
     producers, reason = parse_registry(found[0].value, legacy)
     if producers is None:
         print("registry_valid=no")
         print(f"reason={reason}")
         return 2
+    secret_values = credential_values(producers, legacy)
+
+    def shown(values: "list[str]") -> str:
+        return ",".join(REDACTED if value in secret_values else value for value in values) or "-"
+
     print("registry_valid=yes")
     print(f"producers={len(producers)}")
     for producer in producers:
         print(
-            f"producer id={producer['id']} "
-            f"hosts={','.join(producer['hosts']) or '-'} "
-            f"services={','.join(producer['services']) or '-'}"
+            f"producer id={shown([producer['id']])} "
+            f"hosts={shown(producer['hosts'])} "
+            f"services={shown(producer['services'])}"
         )
     return 0
 
 
+def restore_previous(txn: Txn, env: EnvFile) -> None:
+    """Put the pre-register content back; failure means the outcome is uncertain."""
+    try:
+        atomic_replace(txn, env.data, env.mode, env.uid, env.gid, None)
+    except BaseException as exc:  # noqa: BLE001 - reported as uncertain, type only
+        raise UncertainError(
+            f"could not restore the previous registry ({type(exc).__name__}); "
+            "the outcome is uncertain, run diagnose"
+        ) from None
+
+
 def register(args: argparse.Namespace) -> int:
-    if args.emit_token and is_tty(sys.stdout):
+    emit = bool(args.emit_token)
+    if emit and is_tty(sys.stdout):
         fail("refusing --emit-token: stdout is a terminal; pipe it into the stage command")
-    note = (lambda message: print(message, file=sys.stderr)) if args.emit_token else print
     hosts = list(args.host or [])
     services = list(args.service or [])
     if not hosts and not services:
         fail("register needs at least one --host or --service scope")
-    with DirLock(args.server_env):
-        env = read_env(args.server_env, "server environment file")
+    with Txn(args.server_env, check_dir=True, lock=True) as txn:
+        env = read_env(txn, txn.name, "server environment file")
         legacy = legacy_token(env, "server environment")
         existing = single_assignment(env.lines, REGISTRY_KEY, "server environment", False)
         producers: list = []
         if existing:
-            if not existing.valid:
-                fail("existing registry value has unsupported quoting")
             producers, reason = parse_registry(existing.value, legacy)
             if producers is None:
                 fail(f"existing registry is invalid ({reason}); run diagnose first")
+            if echoes_credential(producers, legacy):
+                fail("existing registry has an id or scope equal to a credential; refusing")
 
         token = secrets.token_urlsafe(32)
         record = {"id": args.id, "token": token, "hosts": hosts, "services": services}
@@ -497,19 +641,39 @@ def register(args: argparse.Namespace) -> int:
             fail(f"resulting registry would be invalid ({reason})")
         if validated != producers:
             fail("resulting registry did not round-trip; refusing to write")
+        if echoes_credential(validated, legacy):
+            fail("an id or scope would equal a credential; refusing")
 
-        backup = commit(env, set_registry(env.lines, existing, text))
-        note(f"registered id={args.id} action={action} producers={len(validated)}")
-        note(f"hosts={','.join(hosts) or '-'} services={','.join(services) or '-'}")
-        note(f"backup={backup} token={'emitted-to-stdout' if args.emit_token else 'stored-not-shown'}")
-        if args.emit_token:
-            try:
+        new_lines = set_line(env.lines, existing, f"{REGISTRY_KEY}='{text}'")
+        try:
+            backup = commit(txn, env, new_lines)
+        except PostReplaceError:
+            if not emit:
+                raise
+            restore_previous(txn, env)
+            fail("directory sync failed after the registry was replaced; the change was rolled back")
+
+        status = [
+            f"registered id={args.id} action={action} producers={len(validated)}",
+            f"hosts={','.join(hosts) or '-'} services={','.join(services) or '-'}",
+            f"backup={backup} token={'emitted-to-stdout' if emit else 'stored-not-shown'}",
+        ]
+        try:
+            if emit:
+                # Token first, then status; either failing undoes the change.
                 sys.stdout.write(token + "\n")
                 sys.stdout.flush()
-            except OSError as exc:
-                # The token was not delivered: put the registry back.
-                atomic_write(env.path, env.data, env.mode, env.uid, env.gid)
-                fail(f"could not write the token to stdout ({exc.strerror}); registry restored")
+                write_status(sys.stderr, status)
+            else:
+                write_status(sys.stdout, status)
+        except BaseException as exc:  # noqa: BLE001 - restore, then report type only
+            restore_previous(txn, env)
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            fail(
+                f"writing the output failed ({type(exc).__name__}); "
+                "the registry change was rolled back"
+            )
     return 0
 
 
@@ -535,10 +699,11 @@ def read_stdin_token() -> str:
 def stage(args: argparse.Namespace) -> int:
     check_key(args.pending_key)
     token = read_stdin_token()
-    with DirLock(args.producer_env):
-        env = read_env(args.producer_env, "producer environment file")
-        new_lines = set_token(env.lines, args.pending_key, token, "producer environment")
-        backup = commit(env, new_lines)
+    with Txn(args.producer_env, check_dir=True, lock=True) as txn:
+        env = read_env(txn, txn.name, "producer environment file")
+        existing = single_assignment(env.lines, args.pending_key, "producer environment", False)
+        new_lines = set_line(env.lines, existing, f"{args.pending_key}={token}")
+        backup = commit(txn, env, new_lines)
     print(f"staged pending_key={args.pending_key} backup={backup}")
     return 0
 
@@ -548,30 +713,32 @@ def cutover(args: argparse.Namespace) -> int:
     check_key(args.pending_key)
     if args.active_key == args.pending_key:
         fail("active and pending keys must differ")
-    with DirLock(args.producer_env):
-        env = read_env(args.producer_env, "producer environment file")
+    with Txn(args.producer_env, check_dir=True, lock=True) as txn:
+        env = read_env(txn, txn.name, "producer environment file")
         pending = single_assignment(env.lines, args.pending_key, "producer environment", True)
         active = single_assignment(env.lines, args.active_key, "producer environment", True)
-        if not pending.valid or not TOKEN_RE.fullmatch(pending.value):
+        if not TOKEN_RE.fullmatch(pending.value):
             fail("pending value is empty or is not a valid token; stage it first")
-        if active.valid and active.value == pending.value:
+        if active.value == pending.value:
             fail("pending token already equals the active token")
         new_lines = list(env.lines)
-        new_lines[active.index] = assignment_line(active, pending.value)
+        new_lines[active.index] = f"{args.active_key}={pending.value}"
         del new_lines[pending.index]
-        backup = commit(env, new_lines)
+        backup = commit(txn, env, new_lines)
     print(f"cutover active_key={args.active_key} pending_key={args.pending_key} removed=yes backup={backup}")
     return 0
 
 
 def rollback(args: argparse.Namespace) -> int:
-    with DirLock(args.env):
-        env = read_env(args.env, "environment file")
-        backup = read_env(backup_path(args.env), "pre-producer-tokens backup")
+    with Txn(args.env, check_dir=True, lock=True) as txn:
+        # The live file may be in any state (that is why we are rolling back);
+        # the backup must satisfy every check, including the supported subset.
+        env = read_env(txn, txn.name, "environment file", strict=False)
+        backup = read_env(txn, backup_name(txn.name), "pre-producer-tokens backup", strict=True)
         if backup.data == env.data:
             print("rollback=unchanged (file already matches the backup)")
             return 0
-        atomic_write(env.path, backup.data, env.mode, env.uid, env.gid)
+        atomic_replace(txn, backup.data, env.mode, env.uid, env.gid, env.ident)
     print("rollback=restored backup_kept=yes")
     return 0
 
@@ -607,6 +774,13 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
+def report(message: str) -> None:
+    try:
+        print(message, file=sys.stderr)
+    except (OSError, ValueError):
+        pass
+
+
 def main(argv: "Optional[list[str]]" = None) -> int:
     args = parser().parse_args(argv)
     handlers = {
@@ -618,17 +792,19 @@ def main(argv: "Optional[list[str]]" = None) -> int:
     }
     try:
         return handlers[args.command](args)
+    except UncertainError as exc:
+        report(f"error={exc}")
+        return 4
     except OpsError as exc:
-        print(f"error={exc}", file=sys.stderr)
+        report(f"error={exc}")
         return 3
     except KeyboardInterrupt:
-        print("error=interrupted", file=sys.stderr)
+        report("error=interrupted")
         return 130
     except Exception as exc:  # noqa: BLE001 - report type and location only
         frame = traceback.extract_tb(exc.__traceback__)[-1]
-        print(
-            f"error=unexpected {type(exc).__name__} at {Path(frame.filename).name}:{frame.lineno}",
-            file=sys.stderr,
+        report(
+            f"error=unexpected {type(exc).__name__} at {Path(frame.filename).name}:{frame.lineno}"
         )
         return 3
 
