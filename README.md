@@ -97,6 +97,8 @@ Important settings:
   distinct `token`, and one or both non-empty `hosts` and `services` lists; there
   are no wildcard scopes. Host scopes use fleet host ids; service scopes match
   the exact stored panel service id. Invalid configuration disables both writes.
+  Register producers and install their tokens without ever exposing them using
+  [docs/producer-token-operations.md](docs/producer-token-operations.md).
 - `HEIMDALL_FLEET_TOKEN` is retained as an operator credential for full panel
   read-back only. It cannot write fleet metrics or panels.
 - `HEIMDALL_ALERT_TOKEN` authenticates `/api/alerts` ingestion.
