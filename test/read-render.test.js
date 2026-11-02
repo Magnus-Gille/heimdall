@@ -85,6 +85,11 @@ describe('readArticlePage — XSS sanitization (heimdall#46)', () => {
     return readArticlePage('test', { slug: 'x', title: 'X', mtimeIso: '', wordCount: 1, markdown }, {});
   }
 
+  function renderBody(markdown) {
+    const html = render(markdown);
+    return html.match(/<article\b[^>]*class="reader-article"[^>]*>([\s\S]*?)<\/article>/)[1];
+  }
+
   it('strips raw <script> tags from markdown output', () => {
     const html = render('<script>alert(1)</script>\n\nSafe text.');
     assert.doesNotMatch(html, /<script>/);
@@ -134,6 +139,50 @@ describe('readArticlePage — XSS sanitization (heimdall#46)', () => {
     const html = render('<a href="https://example.com" target="_blank" rel="opener">link</a>');
     assert.doesNotMatch(html, /rel="opener"/);
     assert.match(html, /rel="noopener noreferrer"/);
+  });
+
+  it('rejects mixed-case, entity-encoded and control-character URL schemes', () => {
+    const html = render([
+      '<a href="JaVaScRiPt:alert(1)">mixed</a>',
+      '<a href="j&#x61;vascript:alert(2)">entity</a>',
+      '<a href="java\u0000script:alert(3)">control</a>',
+    ].join(' '));
+    assert.doesNotMatch(html, /javascript\s*:/i);
+    assert.doesNotMatch(html, /alert\([123]\)/);
+  });
+
+  it('strips event handlers and malformed dangerous markup', () => {
+    const html = render('<p>Safe<img src="https://example.com/x.png" onerror="alert(1)"><a href="https://example.com" onclick="alert(2)">link</a></p><img src=x onload=alert(3)><');
+    assert.doesNotMatch(html, /\bon(?:error|click|load)\s*=/i);
+    assert.doesNotMatch(html, /alert\([123]\)/);
+    assert.match(html, /Safe/);
+  });
+
+  it('strips meta refresh javascript/data URLs', () => {
+    const body = renderBody('<meta http-equiv="refresh" content="0;url=javascript:alert(1)"><meta http-equiv="refresh" content="0;url=data:text/html,evil">Safe');
+    assert.doesNotMatch(body, /<meta\b/i);
+    assert.doesNotMatch(body, /javascript:|data:text\/html/i);
+    assert.match(body, /Safe/);
+  });
+
+  it('strips SVG, SMIL and namespace-prefixed executable elements and attributes', () => {
+    const body = renderBody([
+      '<svg onload="alert(1)"><script>alert(2)</script><a xlink:href="javascript:alert(3)"><animate attributeName="href" values="javascript:alert(4)" /></a></svg>',
+      '<svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:script>bad</svg:script><svg:a svg:onload="alert(5)">prefixed</svg:a><svg:set attributeName="href" to="javascript:HEIMDALL_TEST_MARKER" /><svg:animate attributeName="href" values="javascript:HEIMDALL_TEST_MARKER" /></svg:svg>',
+    ].join(' '));
+    assert.doesNotMatch(body, /<\/?(?:svg|script|animate)(?:\s|>)/i);
+    assert.doesNotMatch(body, /<\/?svg:(?:svg|script|a|set|animate)\b/i);
+    assert.doesNotMatch(body, /<[^>]*(?:xlink:href|svg:onload|onload|attributeName|to|values)\s*=/i);
+  });
+
+  it('preserves ordinary rich article markup, https links and data images', () => {
+    const html = render('<h2>Heading</h2><p><strong>bold</strong> <em>em</em> <code>code</code></p><p><a href="https://example.com">https</a> <img src="data:image/png;base64,AAAA" alt="pixel"></p>');
+    assert.match(html, /<h2>Heading<\/h2>/);
+    assert.match(html, /<strong>bold<\/strong>/);
+    assert.match(html, /<em>em<\/em>/);
+    assert.match(html, /<code>code<\/code>/);
+    assert.match(html, /href="https:\/\/example\.com"/);
+    assert.match(html, /src="data:image\/png;base64,AAAA"/);
   });
 });
 
