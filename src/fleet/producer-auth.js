@@ -109,7 +109,70 @@ function constantTimeEqual(a, b) {
   try { return timingSafeEqual(ab, bb); } catch { return false; }
 }
 
+// --- Rejection logging (HEIM-103) -------------------------------------------
+// Log lines are built ONLY from fixed enums, the registry-assigned producer id
+// and the (pattern-checked) claimed host/service. The token, the Authorization
+// header and any parse error text are never passed in, so they cannot leak.
+
+const REJECTION_WINDOW_MS = 60_000;
+const REJECTION_MAX_KEYS = 256;
+const REASONS = {
+  503: 'registry-unavailable',
+  401: 'unknown-token',
+};
+
+function safeLabel(value, pattern) {
+  return typeof value === 'string' && value.length <= 253 && pattern.test(value) ? value : '-';
+}
+
+/**
+ * Create a rate-limited rejection logger. The first rejection per
+ * (status, reason, producer, target) in a window is logged immediately; later
+ * ones are only counted and reported as `suppressed` on the first rejection
+ * of the next window for that key. The key map is bounded.
+ */
+function createRejectionLogger({ log = (line) => console.warn(line), now = Date.now, windowMs = REJECTION_WINDOW_MS } = {}) {
+  const buckets = new Map();
+  return function logRejection({ status, reason, producerId, target, endpoint }) {
+    const entry = {
+      event: 'ingest_rejected',
+      status,
+      reason: reason || REASONS[status] || 'rejected',
+      producer: safeLabel(producerId, ID_RE),
+      target: safeLabel(target, HOSTNAME_RE) !== '-' ? target : safeLabel(target, SERVICE_RE),
+      endpoint: typeof endpoint === 'string' && /^\/[a-z0-9/_-]{0,64}$/.test(endpoint) ? endpoint : '-',
+    };
+    const t = now();
+    let key = `${entry.status}|${entry.reason}|${entry.producer}|${entry.target}|${entry.endpoint}`;
+    if (!buckets.has(key) && buckets.size >= REJECTION_MAX_KEYS) {
+      for (const [k, b] of buckets) if (t - b.start >= windowMs && !b.suppressed) buckets.delete(k);
+      if (buckets.size >= REJECTION_MAX_KEYS) key = 'overflow';
+    }
+    const bucket = buckets.get(key);
+    if (bucket && t - bucket.start < windowMs) { bucket.suppressed += 1; return; }
+    const suppressed = bucket ? bucket.suppressed : 0;
+    buckets.set(key, { start: t, suppressed: 0 });
+    log(JSON.stringify(suppressed ? { ...entry, suppressed_since_last: suppressed, window_s: windowMs / 1000 } : entry));
+  };
+}
+
+const logIngestRejection = createRejectionLogger();
+
+/** One startup line: registry ok (with producer count) or invalid (never why). */
+function logRegistryStatus(raw, legacyFleetToken = '', log = { info: console.log, warn: console.warn }) {
+  const registry = loadProducerRegistry(raw, legacyFleetToken);
+  if (registry.ok) {
+    log.info(`producer ingest registry ok: ${registry.producers.length} producer(s)`);
+  } else {
+    log.warn('producer ingest registry INVALID or missing: ingest is rejecting all producer writes with 503');
+  }
+  return registry.ok;
+}
+
 module.exports = {
+  createRejectionLogger,
+  logIngestRejection,
+  logRegistryStatus,
   loadProducerRegistry,
   authenticateProducer,
   authorizeProducerHost,

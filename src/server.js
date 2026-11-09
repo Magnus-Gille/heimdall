@@ -38,7 +38,7 @@ const { detectCausalityHint } = require('./causality');
 // v2 platform: fleet telemetry (push-agent ingest + fleet view)
 const { reconcileFleetHostConfig } = require('./db');
 const { handlePush } = require('./fleet/ingest');
-const { authenticateProducer, authorizeProducerService, isOperatorReadToken } = require('./fleet/producer-auth');
+const { authenticateProducer, authorizeProducerService, isOperatorReadToken, logRegistryStatus } = require('./fleet/producer-auth');
 const { fleetPage, fleetGridFragment } = require('./fleet/render');
 const { loadFleetConfig } = require('./fleet/config');
 // v2 platform: self-describing service contract + discovery
@@ -1248,6 +1248,7 @@ app.listen({ host: HOST, port: PORT }, (err, address) => {
     process.exit(1);
   }
   console.log(`Heimdall dashboard running at ${address}`);
+  logRegistryStatus(process.env.HEIMDALL_INGEST_PRODUCERS_JSON || '', process.env.HEIMDALL_FLEET_TOKEN || '');
 
   // Service discovery: poll the registry shortly after boot, then every 60s.
   // The registry is reloaded each tick so a grimnir services.json change is
