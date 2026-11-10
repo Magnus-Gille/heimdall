@@ -552,6 +552,61 @@ describe('code-health objective backend', () => {
     await assert.rejects(parseObjectiveArtifact(zipStored(priorEntries), provenance), /scope registry differs from the pinned producer registry/);
   });
 
+  describe('Saga scope inventory', () => {
+    const runId = 818;
+    const provenance = {
+      repositoryOwner: 'Magnus-Gille', repositoryName: 'sagascript', headSha: COMMIT,
+      runId, attempt: 1, artifactCreatedAt: '2026-10-10T10:02:00Z',
+    };
+    const withRegistry = (mutate) => {
+      const archive = makeObjectiveArchive('sagascript', runId, 1);
+      const registry = clone(sagaRegistry);
+      mutate(registry);
+      return zipStored([...parseZipArchive(archive).files.entries()].map(([name, bytes]) => [
+        name, name === 'scope-registry.json' ? JSON.stringify(registry) : bytes,
+      ]));
+    };
+    const rejects = (mutate, pattern) => assert.rejects(parseObjectiveArtifact(withRegistry(mutate), provenance), pattern);
+    const malformed = /complexity scope inventory is malformed/;
+    const differs = /differs from the pinned producer registry/;
+
+    it('accepts membership drift in complexity scope file lists', async () => {
+      const parsed = await parseObjectiveArtifact(withRegistry((registry) => {
+        const { scopes } = registry.complexity;
+        const moved = scopes['rust-cli'].pop();
+        scopes['rust-core'].push(moved, 'src-tauri/crates/synthetic/src/brand_new.rs');
+        scopes['rust-cli'].reverse();
+      }), provenance);
+      assert.equal(parsed.snapshots.length, sagaRegistry.scopes.length);
+    });
+
+    it('still rejects non-inventory registry changes', async () => {
+      await rejects((r) => { r.scopes.find((s) => s.name === 'rust-cli').slots.coverage.scope_version = 'changed'; }, differs);
+      await rejects((r) => { delete r.coverage.rust_cli; }, differs);
+      await rejects((r) => { r.complexity.threshold = r.complexity.threshold === 99 ? 98 : 99; }, differs);
+      await rejects((r) => { r.complexity.algorithm = `${r.complexity.algorithm}-changed`; }, differs);
+    });
+
+    it('rejects malformed scope inventories', async () => {
+      await rejects((r) => { r.complexity.scopes['rust-extra'] = ['src/extra.rs']; }, malformed);
+      await rejects((r) => { delete r.complexity.scopes['rust-cli']; }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-cli'] = 'src/a.rs'; }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-cli'] = []; }, malformed);
+      await rejects((r) => { r.complexity.scopes = []; }, malformed);
+      await rejects((r) => { r.complexity = []; }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('../outside.rs'); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('/abs/path.rs'); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push(42); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push(r.complexity.scopes['rust-core'][0]); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push(r.complexity.scopes['rust-cli'][0]); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('src/synthetic/other.py'); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('src/synthetic/noext'); }, malformed);
+      await rejects((r) => {
+        r.complexity.scopes['rust-core'] = Array.from({ length: 2001 }, (_, i) => `src/synthetic/f${i}.rs`);
+      }, malformed);
+    });
+  });
+
   it('fails closed on duplicate and traversing archive entries', () => {
     assert.throws(() => parseZipArchive(zipStored([['../outside.json', '{}']])), /unsafe member path/);
     assert.throws(() => parseZipArchive(zipStored([['manifest.json', '{}'], ['manifest.json', '{}']])), /duplicate member/);
