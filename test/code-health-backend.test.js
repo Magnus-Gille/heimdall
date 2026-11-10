@@ -580,6 +580,13 @@ describe('code-health objective backend', () => {
       assert.equal(parsed.snapshots.length, sagaRegistry.scopes.length);
     });
 
+    it('accepts the inventory size boundaries', async () => {
+      await parseObjectiveArtifact(withRegistry((r) => { r.complexity.scopes['rust-cli'] = ['src/synthetic/only.rs']; }), provenance);
+      await parseObjectiveArtifact(withRegistry((r) => {
+        r.complexity.scopes['rust-core'] = Array.from({ length: 2000 }, (_, i) => `src/synthetic/f${i}.rs`);
+      }), provenance);
+    });
+
     it('still rejects non-inventory registry changes', async () => {
       await rejects((r) => { r.scopes.find((s) => s.name === 'rust-cli').slots.coverage.scope_version = 'changed'; }, differs);
       await rejects((r) => { delete r.coverage.rust_cli; }, differs);
@@ -594,6 +601,16 @@ describe('code-health objective backend', () => {
       await rejects((r) => { r.complexity.scopes['rust-cli'] = []; }, malformed);
       await rejects((r) => { r.complexity.scopes = []; }, malformed);
       await rejects((r) => { r.complexity = []; }, malformed);
+      await rejects((r) => { r.complexity = null; }, malformed);
+      await rejects((r) => { r.complexity.scopes = null; }, malformed);
+      await rejects((r) => { r.complexity.scopes = 'rust-core'; }, malformed);
+      await rejects((r) => {
+        Object.defineProperty(r.complexity.scopes, '__proto__', { value: ['src/synthetic/a.rs'], enumerable: true });
+      }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('src\\synthetic\\a.rs'); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('src/synthetic/a\0.rs'); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push('C:/synthetic/a.rs'); }, malformed);
+      await rejects((r) => { r.complexity.scopes['rust-core'].push(`${'a/'.repeat(120)}b.rs`); }, malformed);
       await rejects((r) => { r.complexity.scopes['rust-core'].push('../outside.rs'); }, malformed);
       await rejects((r) => { r.complexity.scopes['rust-core'].push('/abs/path.rs'); }, malformed);
       await rejects((r) => { r.complexity.scopes['rust-core'].push(42); }, malformed);
