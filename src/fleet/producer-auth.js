@@ -113,46 +113,103 @@ function constantTimeEqual(a, b) {
 // Log lines are built ONLY from fixed enums, the registry-assigned producer id
 // and the (pattern-checked) claimed host/service. The token, the Authorization
 // header and any parse error text are never passed in, so they cannot leak.
+// Claimed host/service values are client-controlled, so they are additionally
+// redacted when they equal or contain any configured credential.
 
 const REJECTION_WINDOW_MS = 60_000;
 const REJECTION_MAX_KEYS = 256;
+const REDACTED = '[redacted]';
 const REASONS = {
   503: 'registry-unavailable',
   401: 'unknown-token',
 };
 
+/**
+ * Build a predicate-based redactor from the raw registry JSON and the legacy
+ * fleet token. Tokens are collected leniently (even from an otherwise invalid
+ * registry) and are only ever compared against, never emitted.
+ */
+function createSecretRedactor(rawRegistry, legacyFleetToken = '') {
+  const secrets = [];
+  if (typeof legacyFleetToken === 'string' && legacyFleetToken) secrets.push(legacyFleetToken);
+  try {
+    const parsed = JSON.parse(rawRegistry);
+    if (Array.isArray(parsed)) {
+      for (const r of parsed) {
+        if (r && typeof r === 'object' && typeof r.token === 'string' && r.token) secrets.push(r.token);
+      }
+    }
+  } catch { /* unparseable registry: only the legacy token is known */ }
+  const lowered = secrets.map((s) => s.toLowerCase());
+  return function redact(value) {
+    if (typeof value !== 'string' || !value) return value;
+    const v = value.toLowerCase();
+    return secrets.some((s, i) => value.includes(s) || v.includes(lowered[i])) ? REDACTED : value;
+  };
+}
+
 function safeLabel(value, pattern) {
+  if (value === REDACTED) return REDACTED;
   return typeof value === 'string' && value.length <= 253 && pattern.test(value) ? value : '-';
 }
 
 /**
  * Create a rate-limited rejection logger. The first rejection per
- * (status, reason, producer, target) in a window is logged immediately; later
- * ones are only counted and reported as `suppressed` on the first rejection
- * of the next window for that key. The key map is bounded.
+ * (status, reason, producer, target, endpoint) in a window is logged
+ * immediately; later ones are only counted and reported as
+ * `suppressed_since_last` by the next rejection of the same key, or when the
+ * expired bucket is evicted. The key table is bounded; keys that do not fit go
+ * to an explicit aggregate `ingest_rejected_overflow` line with a count.
  */
-function createRejectionLogger({ log = (line) => console.warn(line), now = Date.now, windowMs = REJECTION_WINDOW_MS } = {}) {
+function createRejectionLogger({ log = (line) => console.warn(line), now = Date.now, windowMs = REJECTION_WINDOW_MS, maxKeys = REJECTION_MAX_KEYS } = {}) {
   const buckets = new Map();
-  return function logRejection({ status, reason, producerId, target, endpoint }) {
+  let overflow = null; // { start, count }
+  const emit = (obj) => log(JSON.stringify(obj));
+  const summary = (entry, suppressed) => (suppressed
+    ? { ...entry, suppressed_since_last: suppressed, window_s: windowMs / 1000 } : entry);
+
+  function evictExpired(t) {
+    for (const [k, b] of buckets) {
+      if (t - b.start < windowMs) continue;
+      buckets.delete(k);
+      if (b.suppressed) emit(summary(b.entry, b.suppressed));
+    }
+  }
+
+  function flushOverflow(t) {
+    if (!overflow || t - overflow.start < windowMs) return;
+    if (overflow.count > 1) emit({ event: 'ingest_rejected_overflow', count: overflow.count, window_s: windowMs / 1000 });
+    overflow = null;
+  }
+
+  function overflowHit(t) {
+    if (overflow) { overflow.count += 1; return; }
+    overflow = { start: t, count: 1 };
+    emit({ event: 'ingest_rejected_overflow', count: 1, window_s: windowMs / 1000, note: 'rejection key table full; further rejections are aggregated' });
+  }
+
+  return function logRejection({ status, reason, producerId, target, endpoint, redact = (v) => v }) {
     const entry = {
       event: 'ingest_rejected',
       status,
       reason: reason || REASONS[status] || 'rejected',
-      producer: safeLabel(producerId, ID_RE),
-      target: safeLabel(target, HOSTNAME_RE) !== '-' ? target : safeLabel(target, SERVICE_RE),
+      producer: safeLabel(redact(producerId), ID_RE),
+      target: redact(target) === REDACTED ? REDACTED
+        : (safeLabel(target, HOSTNAME_RE) !== '-' ? target : safeLabel(target, SERVICE_RE)),
       endpoint: typeof endpoint === 'string' && /^\/[a-z0-9/_-]{0,64}$/.test(endpoint) ? endpoint : '-',
     };
     const t = now();
-    let key = `${entry.status}|${entry.reason}|${entry.producer}|${entry.target}|${entry.endpoint}`;
-    if (!buckets.has(key) && buckets.size >= REJECTION_MAX_KEYS) {
-      for (const [k, b] of buckets) if (t - b.start >= windowMs && !b.suppressed) buckets.delete(k);
-      if (buckets.size >= REJECTION_MAX_KEYS) key = 'overflow';
+    flushOverflow(t);
+    const key = `${entry.status}|${entry.reason}|${entry.producer}|${entry.target}|${entry.endpoint}`;
+    if (!buckets.has(key) && buckets.size >= maxKeys) {
+      evictExpired(t);
+      if (buckets.size >= maxKeys) { overflowHit(t); return; }
     }
     const bucket = buckets.get(key);
     if (bucket && t - bucket.start < windowMs) { bucket.suppressed += 1; return; }
     const suppressed = bucket ? bucket.suppressed : 0;
-    buckets.set(key, { start: t, suppressed: 0 });
-    log(JSON.stringify(suppressed ? { ...entry, suppressed_since_last: suppressed, window_s: windowMs / 1000 } : entry));
+    buckets.set(key, { start: t, suppressed: 0, entry });
+    emit(summary(entry, suppressed));
   };
 }
 
@@ -171,6 +228,7 @@ function logRegistryStatus(raw, legacyFleetToken = '', log = { info: console.log
 
 module.exports = {
   createRejectionLogger,
+  createSecretRedactor,
   logIngestRejection,
   logRegistryStatus,
   loadProducerRegistry,

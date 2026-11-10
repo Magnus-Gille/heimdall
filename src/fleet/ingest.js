@@ -1,6 +1,6 @@
 'use strict';
 
-const { authenticateProducer, authorizeProducerHost, logIngestRejection } = require('./producer-auth');
+const { authenticateProducer, authorizeProducerHost, logIngestRejection, createSecretRedactor } = require('./producer-auth');
 const { validatePushPayload } = require('./validate');
 const { recordFleetPush } = require('../db');
 const { negotiationResponse } = require('./capabilities');
@@ -34,6 +34,7 @@ function handlePush(db, opts) {
     rejectionLog({
       status: authorization.status || 403, reason: 'host-not-authorized',
       producerId: auth.producer.id, target: payload.hostname, endpoint: '/api/fleet/push',
+      redact: createSecretRedactor(producerRegistryJson, legacyFleetToken),
     });
     return { status: authorization.status || 403, body: { error: authorization.error } };
   }

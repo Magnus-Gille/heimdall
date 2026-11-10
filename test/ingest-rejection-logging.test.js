@@ -123,6 +123,32 @@ describe('ingest rejection logging', () => {
     assert.ok(!/authorization|bearer|basic /i.test(all), 'Authorization header material in logs');
   });
 
+  it('redacts credential-valued hostname/service on both endpoints (registry and legacy tokens)', () => {
+    const SVC_TOKEN = 'svc-secret-token-abc123';
+    const registry = JSON.stringify([
+      { id: 'orin-agent', token: ORIN_TOKEN, hosts: ['orin'], services: ['orin-metrics'] },
+      { id: 'svc-agent', token: SVC_TOKEN, services: ['svc-a'], hosts: ['svc-h'] },
+    ]);
+    const legacyLower = 'legacy-lower-token-zz9';
+    const h = harness();
+    const cases = [
+      () => handlePush(tmpDb(), { authHeader: `Bearer ${ORIN_TOKEN}`, producerRegistryJson: registry, legacyFleetToken: LEGACY, body: { hostname: ORIN_TOKEN, cpu_pct: 1 }, rejectionLog: h.rejectionLog }),
+      () => handlePush(tmpDb(), { authHeader: `Bearer ${ORIN_TOKEN}`, producerRegistryJson: registry, legacyFleetToken: LEGACY, body: { hostname: `${SVC_TOKEN}.example`, cpu_pct: 1 }, rejectionLog: h.rejectionLog }),
+      () => handlePush(tmpDb(), { authHeader: `Bearer ${ORIN_TOKEN}`, producerRegistryJson: registry, legacyFleetToken: LEGACY, body: { hostname: LEGACY, cpu_pct: 1 }, rejectionLog: h.rejectionLog }),
+      () => handlePush(tmpDb(), { authHeader: `Bearer ${ORIN_TOKEN}`, producerRegistryJson: registry, legacyFleetToken: legacyLower.toUpperCase(), body: { hostname: legacyLower, cpu_pct: 1 }, rejectionLog: h.rejectionLog }),
+      () => panel(h, `Bearer ${ORIN_TOKEN}`, SVC_TOKEN, registry),
+      () => handlePanelIngest(tmpDb(), { authHeader: `Bearer ${ORIN_TOKEN}`, producerRegistryJson: registry, legacyFleetToken: 'legacy-svc-token-q5',
+        body: { service: 'legacy-svc-token-q5', panel: 'p', kind: 'stat', value: 1 }, rejectionLog: h.rejectionLog }),
+    ];
+    for (const c of cases) assert.equal(c().status, 403);
+    assert.equal(h.lines.length, 2); // identical redacted keys collapse per endpoint
+    const all = h.lines.join('\n');
+    for (const secret of [ORIN_TOKEN, SVC_TOKEN, LEGACY, legacyLower, 'legacy-svc-token-q5']) {
+      assert.ok(!all.toLowerCase().includes(secret.toLowerCase()), 'credential echoed in log');
+    }
+    for (const l of h.lines) assert.equal(JSON.parse(l).target, '[redacted]');
+  });
+
   it('rate limits: first per key logged, then a suppressed count per window', () => {
     const h = harness(); const db = tmpDb();
     for (let i = 0; i < 5; i += 1) push(h, db, `Bearer ${BAD_TOKEN}`);
@@ -169,3 +195,46 @@ describe('registry startup line', () => {
     }
   });
 });
+
+describe('rejection logger table bounds', () => {
+  function mk(maxKeys = 4) {
+    const lines = []; let t = 5_000;
+    const lg = createRejectionLogger({ log: (l) => lines.push(JSON.parse(l)), now: () => t, windowMs: 1000, maxKeys });
+    return { lines, lg, advance: (ms) => { t += ms; } };
+  }
+  const rej = (status, target, reason) => ({ status, reason, producerId: 'orin-agent', target, endpoint: '/api/panels' });
+
+  it('frees expired buckets (even with suppressed counts) so new keys are not forced into overflow', () => {
+    const m = mk();
+    for (let i = 0; i < 4; i += 1) { m.lg(rej(403, `h${i}`, 'host-not-authorized')); m.lg(rej(403, `h${i}`, 'host-not-authorized')); }
+    assert.equal(m.lines.length, 4);
+    m.advance(1001);
+    m.lg(rej(401, 'new-key'));
+    // 4 summaries (one per evicted key, each attributed to its own identity) + the new key line
+    const sums = m.lines.filter((l) => l.suppressed_since_last);
+    assert.deepEqual(sums.map((l) => [l.target, l.suppressed_since_last]), [['h0', 1], ['h1', 1], ['h2', 1], ['h3', 1]]);
+    assert.ok(sums.every((l) => l.status === 403 && l.reason === 'host-not-authorized'));
+    const last = m.lines.at(-1);
+    assert.equal(last.event, 'ingest_rejected');
+    assert.equal(last.status, 401);
+    assert.ok(!m.lines.some((l) => l.event === 'ingest_rejected_overflow'));
+  });
+
+  it('aggregates genuinely overflowing keys without per-key identity, and reports counts', () => {
+    const m = mk(2);
+    m.lg(rej(403, 'a', 'host-not-authorized'));
+    m.lg(rej(403, 'b', 'host-not-authorized'));
+    for (let i = 0; i < 5; i += 1) m.lg(rej(401, `x${i}`));
+    const ov = m.lines.filter((l) => l.event === 'ingest_rejected_overflow');
+    assert.equal(ov.length, 1);
+    assert.equal(ov[0].count, 1);
+    assert.equal(ov[0].status, undefined);
+    assert.equal(ov[0].target, undefined);
+    m.advance(1001);
+    m.lg(rej(401, 'y')); // expired buckets freed; overflow total reported
+    const totals = m.lines.filter((l) => l.event === 'ingest_rejected_overflow' && l.count === 5);
+    assert.equal(totals.length, 1);
+    assert.equal(m.lines.at(-1).target, 'y');
+  });
+});
+

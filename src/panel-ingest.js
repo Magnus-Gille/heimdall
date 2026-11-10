@@ -18,7 +18,7 @@
  * table.rows ≤200, cols ≤20; a service may hold at most 50 distinct panels.
  */
 
-const { authenticateProducer, authorizeProducerService, logIngestRejection } = require('./fleet/producer-auth');
+const { authenticateProducer, authorizeProducerService, logIngestRejection, createSecretRedactor } = require('./fleet/producer-auth');
 const {
   upsertPanel, countPanelsForService, countPanels, countPanelServices, isRetiredPushedPanel,
 } = require('./db');
@@ -132,6 +132,7 @@ function handlePanelIngest(db, opts = {}) {
     rejectionLog({
       status: authorization.status || 403, reason: 'service-not-authorized',
       producerId: auth.producer.id, target: p.service, endpoint: '/api/panels',
+      redact: createSecretRedactor(producerRegistryJson, legacyFleetToken),
     });
     return { status: authorization.status || 403, body: { error: authorization.error } };
   }
