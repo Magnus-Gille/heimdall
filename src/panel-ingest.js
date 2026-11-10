@@ -18,7 +18,7 @@
  * table.rows ≤200, cols ≤20; a service may hold at most 50 distinct panels.
  */
 
-const { authenticateProducer, authorizeProducerService } = require('./fleet/producer-auth');
+const { authenticateProducer, authorizeProducerService, logIngestRejection, createSecretRedactor } = require('./fleet/producer-auth');
 const {
   upsertPanel, countPanelsForService, countPanels, countPanelServices, isRetiredPushedPanel,
 } = require('./db');
@@ -111,10 +111,12 @@ function handlePanelIngest(db, opts = {}) {
     countPanelsFn = countPanelsForService,
     countTotalFn = countPanels,
     countServicesFn = countPanelServices,
+    rejectionLog = logIngestRejection,
   } = opts;
 
   const auth = authenticateProducer(authHeader, producerRegistryJson, legacyFleetToken);
   if (!auth.ok) {
+    rejectionLog({ status: auth.status || 401, endpoint: '/api/panels' });
     return {
       status: auth.status || 401,
       body: { error: auth.error },
@@ -127,6 +129,11 @@ function handlePanelIngest(db, opts = {}) {
   const p = v.value;
   const authorization = authorizeProducerService(auth.producer, p.service);
   if (!authorization.ok) {
+    rejectionLog({
+      status: authorization.status || 403, reason: 'service-not-authorized',
+      producerId: auth.producer.id, target: p.service, endpoint: '/api/panels',
+      redact: createSecretRedactor(producerRegistryJson, legacyFleetToken),
+    });
     return { status: authorization.status || 403, body: { error: authorization.error } };
   }
 

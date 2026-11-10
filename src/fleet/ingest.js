@@ -1,6 +1,6 @@
 'use strict';
 
-const { authenticateProducer, authorizeProducerHost } = require('./producer-auth');
+const { authenticateProducer, authorizeProducerHost, logIngestRejection, createSecretRedactor } = require('./producer-auth');
 const { validatePushPayload } = require('./validate');
 const { recordFleetPush } = require('../db');
 const { negotiationResponse } = require('./capabilities');
@@ -16,18 +16,28 @@ function handlePush(db, opts) {
   const {
     authHeader = '', sourceIp = null, producerRegistryJson = '', legacyFleetToken = '',
     body, now = Date.now(),
-    configuredHostnames, aliases = {},
+    configuredHostnames, aliases = {}, rejectionLog = logIngestRejection,
   } = opts;
 
   const auth = authenticateProducer(authHeader, producerRegistryJson, legacyFleetToken);
-  if (!auth.ok) return { status: auth.status || 401, body: { error: auth.error } };
+  if (!auth.ok) {
+    rejectionLog({ status: auth.status || 401, endpoint: '/api/fleet/push' });
+    return { status: auth.status || 401, body: { error: auth.error } };
+  }
 
   const result = validatePushPayload(body);
   if (!result.ok) return { status: 400, body: { error: 'invalid payload', details: result.errors } };
 
   const payload = result.value;
   const authorization = authorizeProducerHost(auth.producer, payload.hostname, aliases);
-  if (!authorization.ok) return { status: authorization.status || 403, body: { error: authorization.error } };
+  if (!authorization.ok) {
+    rejectionLog({
+      status: authorization.status || 403, reason: 'host-not-authorized',
+      producerId: auth.producer.id, target: payload.hostname, endpoint: '/api/fleet/push',
+      redact: createSecretRedactor(producerRegistryJson, legacyFleetToken),
+    });
+    return { status: authorization.status || 403, body: { error: authorization.error } };
+  }
 
   const negotiation = payload.capability_contract;
   if (negotiation && negotiation.unsupportedRequired.length) {
