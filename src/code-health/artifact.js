@@ -14,6 +14,7 @@ const LIMITS = Object.freeze({
   jsonBytes: 8 * 1024 * 1024,
   pathLength: 240,
 });
+const SCOPE_INVENTORY_LIMIT = 2000;
 const MANIFEST_KEYS = Object.freeze(['contract_version', 'repo_owner', 'repo_name', 'commit_sha', 'snapshots', 'evidence_index']);
 const PRODUCER_AUXILIARY_FILES = Object.freeze({
   'gille-inference': Object.freeze([
@@ -278,9 +279,32 @@ function validateEvidenceIndex(evidenceIndex, snapshots, fileNames, repository) 
     const filePath = 'scope-registry.json';
     if (!referencedFiles.has(filePath) || !fileNames.has(filePath)) throw new Error('sagascript artifact omits its registered scope registry');
     const expectedRegistry = readJsonFileFromPath(path.join(__dirname, 'registries/sagascript/code-health-producer-v1.json'));
-    if (canonical(readJsonFile(fileNames, filePath)) !== canonical(expectedRegistry)) throw new Error('sagascript artifact scope registry differs from the pinned producer registry');
+    validateSagaScopeRegistry(readJsonFile(fileNames, filePath), expectedRegistry);
   }
   return referencedFiles;
+}
+
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+// Membership of complexity.scopes file lists varies per commit; everything else must equal the pin.
+function validateSagaScopeRegistry(actual, expected) {
+  const malformed = () => new Error('sagascript artifact complexity scope inventory is malformed');
+  if (!isPlainObject(actual) || !isPlainObject(actual.complexity) || !isPlainObject(actual.complexity.scopes)) throw malformed();
+  const names = Object.keys(expected.complexity.scopes).sort();
+  if (canonical(Object.keys(actual.complexity.scopes).sort()) !== canonical(names)) throw malformed();
+  const seen = new Set();
+  for (const name of names) {
+    const entries = actual.complexity.scopes[name];
+    if (!Array.isArray(entries) || entries.length < 1 || entries.length > SCOPE_INVENTORY_LIMIT) throw malformed();
+    const extensions = new Set(expected.complexity.scopes[name].map((entry) => path.posix.extname(entry)));
+    for (const entry of entries) {
+      const extension = typeof entry === 'string' ? path.posix.extname(entry) : '';
+      if (!safeArchivePath(entry) || !extension || !extensions.has(extension) || seen.has(entry)) throw malformed();
+      seen.add(entry);
+    }
+  }
+  const shallow = (registry) => ({ ...registry, complexity: { ...registry.complexity, scopes: names } });
+  if (canonical(shallow(actual)) !== canonical(shallow(expected))) throw new Error('sagascript artifact scope registry differs from the pinned producer registry');
 }
 
 function readJsonFileFromPath(file) {
