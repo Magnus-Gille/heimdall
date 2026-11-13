@@ -280,7 +280,14 @@ function createGitHubTransport({
   monotonicNow = () => performance.now(),
 } = {}) {
   const deadlines = new Map();
-  async function listArtifacts({ owner, repository, workflowPath, branch, events, artifactName }) {
+  /**
+   * `isSettled(runId, attempt)` is optional. When supplied, run attempts it
+   * reports as settled (already admitted) are dropped before the eligible-run
+   * limit and before any per-run request, and the result carries `settledRuns`.
+   * It is consulted only for listed runs that pass the run revision check.
+   * Without it the scan behaves exactly as an unfiltered scan.
+   */
+  async function listArtifacts({ owner, repository, workflowPath, branch, events, artifactName, isSettled }) {
     const source = pinnedSource(owner, repository, workflowPath);
     if (branch !== 'main' || artifactName !== 'code-health-v1'
       || !Array.isArray(events) || events.length !== TRUSTED_EVENTS.size
@@ -304,8 +311,25 @@ function createGitHubTransport({
 
     const listed = await collectRunPages(execFile, source, workflow.id, since, currentTime, deadline);
     let incomplete = listed.incomplete;
-    if (listed.runs.length > ELIGIBLE_RUN_LIMIT) incomplete = true;
-    const selectedRuns = listed.runs.slice(0, ELIGIBLE_RUN_LIMIT);
+    const filtering = typeof isSettled === 'function';
+    // Settled attempts are immutable evidence that was already admitted, so
+    // they neither count toward the limit nor cost a per-run request. Only a
+    // backlog of more unsettled runs than the limit is truncation. A listed
+    // run whose metadata fails the revision check is never treated as settled:
+    // it stays in the scan, where that check reports the cycle as incomplete,
+    // and the predicate only ever sees validated identifiers.
+    const settled = (run) => {
+      try {
+        validRunRevision(run, source, workflow.id);
+      } catch {
+        return false;
+      }
+      return isSettled(run.id, run.run_attempt) === true;
+    };
+    const unsettledRuns = filtering ? listed.runs.filter((run) => !settled(run)) : listed.runs;
+    const settledRuns = listed.runs.length - unsettledRuns.length;
+    if (unsettledRuns.length > ELIGIBLE_RUN_LIMIT) incomplete = true;
+    const selectedRuns = unsettledRuns.slice(0, ELIGIBLE_RUN_LIMIT);
     const candidates = [];
     const seenArtifactIds = new Set();
     for (const listedRun of selectedRuns) {
@@ -344,7 +368,7 @@ function createGitHubTransport({
         if (deadline.now() >= deadline.at) break;
       }
     }
-    return { candidates, incomplete };
+    return filtering ? { candidates, incomplete, settledRuns } : { candidates, incomplete };
   }
 
   async function downloadArtifact({ owner, repository, artifactId }) {

@@ -830,11 +830,25 @@ async function run() {
   // This path is default-off and isolated from the operational probes above.
   // It uses only the explicitly gated code-health sources and stores static
   // audit statuses; no request handler performs collection.
+  let codeHealthConfig = null;
   try {
-    const codeHealth = await runCodeHealthCollection(db, loadCodeHealthRuntimeConfig());
+    codeHealthConfig = loadCodeHealthRuntimeConfig();
+    const codeHealth = await runCodeHealthCollection(db, codeHealthConfig);
     if (codeHealth.status !== 'disabled') console.log(`  Code health collection: ${codeHealth.status}`);
   } catch {
     console.warn('  Code health collection failed');
+  }
+  // Stale objective evidence raises a warning per repository (never critical,
+  // so no push). Rules live in code-health-alerts.js.
+  try {
+    const { evaluateCodeHealthStalenessAlerts } = require('./code-health-alerts');
+    const staleness = evaluateCodeHealthStalenessAlerts(db, {
+      enabled: codeHealthConfig?.objectiveEnabled === true,
+      configured: codeHealthConfig?.objectiveConfigured === true,
+    });
+    if (staleness.stale.length) console.log(`  Code health stale: ${staleness.stale.map((item) => item.repository).join(', ')}`);
+  } catch (err) {
+    console.warn(`  Code health staleness check failed: ${err.message}`);
   }
 
   db.close();

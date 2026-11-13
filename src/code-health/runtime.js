@@ -35,7 +35,7 @@ async function runCodeHealthCollection(db, runtimeConfig, {
     }
   }
   const collectionStatuses = [objective?.status, ...subjective.map((item) => item.status)];
-  const partial = collectionStatuses.some((status) => !['committed', 'no-artifacts'].includes(status));
+  const partial = collectionStatuses.some((status) => !['committed', 'current', 'no-artifacts'].includes(status));
   return {
     status: enabled ? (partial ? 'partial' : 'completed') : runtimeConfig.status === 'rejected' ? 'rejected' : 'disabled',
     objective,
