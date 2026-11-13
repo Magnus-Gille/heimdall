@@ -2,7 +2,9 @@
 
 const { REPOSITORIES } = require('./registry');
 const { LIMITS, parseObjectiveArtifact } = require('./artifact');
-const { admitObjectiveArtifact, pruneExpiredEvidence, writeAudit, isoNow, objectiveSourceId } = require('./store');
+const {
+  admitObjectiveArtifact, pruneExpiredEvidence, writeAudit, isoNow, objectiveSourceId, recordRejectedRun, isRunSettled,
+} = require('./store');
 
 const DEFAULT_OBJECTIVE_SOURCE_CONFIG = Object.freeze({ enabled: false });
 const TRUSTED_EVENTS = new Set(['schedule', 'workflow_dispatch']);
@@ -49,10 +51,40 @@ function auditAttempt(db, now, source, operation, status) {
     repoOwner: source.owner, repoName: source.name, recordCount: 0 });
 }
 
+class StageRejection extends Error {
+  constructor(reasonCode) {
+    super(reasonCode);
+    this.reasonCode = reasonCode;
+  }
+}
+
+// Map a failed step to its bounded stage code. The original error message is
+// discarded except for the transport's own scan-deadline signal.
+async function stage(reasonCode, step) {
+  try {
+    return await step();
+  } catch (error) {
+    if (error?.message === 'github-scan-deadline-exceeded') throw error;
+    throw new StageRejection(reasonCode);
+  }
+}
+
+function sourceStatus({ unavailable, rejected, incomplete, admitted, current }) {
+  if (unavailable) return 'unavailable';
+  if (rejected > 0) return 'rejected';
+  if (incomplete) return 'incomplete';
+  if (admitted > 0) return 'committed';
+  return current ? 'current' : 'no-artifacts';
+}
+
 /**
  * Collect only completed, allowlisted schedule/manual workflow artifacts.
  * `transport` is an internal adapter over authenticated read-only GitHub data;
  * tests inject it. The archive's manifest never supplies this run provenance.
+ *
+ * Each source gets exactly one collector-level audit row per cycle, written
+ * last, by precedence unavailable > rejected > incomplete > committed >
+ * current (complete scan, nothing new) > no-artifacts.
  */
 async function collectObjectiveReports({
   db,
@@ -73,8 +105,17 @@ async function collectObjectiveReports({
   let replayed = 0;
   let rejected = 0;
   let unavailable = 0;
+  let skipped = 0;
   let incomplete = false;
+  const sources = [];
   for (const source of REPOSITORIES) {
+    const isSettled = (runId, attempt) => isRunSettled(db, source.owner, source.name, runId, attempt);
+    const tally = { unavailable: false, rejected: 0, incomplete: false, admitted: 0, current: false };
+    const finish = () => {
+      const status = sourceStatus(tally);
+      auditAttempt(db, isoNow(clock()), source, 'admit', status);
+      sources.push({ repository: source.name, status });
+    };
     let listing;
     try {
       listing = await transport.listArtifacts({
@@ -84,63 +125,84 @@ async function collectObjectiveReports({
         branch: 'main',
         events: [...TRUSTED_EVENTS],
         artifactName: 'code-health-v1',
+        isSettled,
       });
     } catch {
-      unavailable += 1;
-      auditAttempt(db, isoNow(clock()), source, 'admit', 'unavailable');
-      continue;
+      listing = null;
     }
     const candidates = Array.isArray(listing) ? listing : listing?.candidates;
     if (!Array.isArray(candidates)) {
       unavailable += 1;
-      auditAttempt(db, isoNow(clock()), source, 'admit', 'unavailable');
+      tally.unavailable = true;
+      finish();
       continue;
     }
-    let sourceIncomplete = !Array.isArray(listing) && listing.incomplete === true;
-    if (sourceIncomplete) incomplete = true;
-    if (candidates.length === 0 && !sourceIncomplete) {
-      auditAttempt(db, isoNow(clock()), source, 'admit', 'no-artifacts');
-    }
+    if (!Array.isArray(listing) && listing.incomplete === true) tally.incomplete = true;
+    if (!Array.isArray(listing) && Number.isSafeInteger(listing.settledRuns) && listing.settledRuns > 0) tally.current = true;
     for (const candidate of candidates) {
-      let provenance;
+      // Defence in depth for transports that ignore the predicate: a settled
+      // attempt is never downloaded or re-parsed.
+      if (isSettled(candidate?.run?.id, candidate?.run?.attempt)) {
+        skipped += 1;
+        tally.current = true;
+        continue;
+      }
+      let provenance = null;
       try {
-        provenance = validateTransportMetadata(candidate, source);
+        provenance = await stage('transport-provenance-invalid', () => validateTransportMetadata(candidate, source));
         // The transport receives only a provider artifact ID and fixed repository;
         // producer-controlled download URLs are never accepted or fetched here.
-        const archiveBytes = await transport.downloadArtifact({
-          owner: source.owner,
-          repository: source.name,
-          artifactId: provenance.artifactId,
+        const archiveBytes = await stage('artifact-download-failed', async () => {
+          const bytes = await transport.downloadArtifact({
+            owner: source.owner,
+            repository: source.name,
+            artifactId: provenance.artifactId,
+          });
+          if (!Buffer.isBuffer(bytes) && !(bytes instanceof Uint8Array)) throw new Error('artifact bytes are unavailable');
+          return bytes;
         });
-        if (!Buffer.isBuffer(archiveBytes) && !(archiveBytes instanceof Uint8Array)) throw new Error('artifact bytes are unavailable');
-        if (archiveBytes.byteLength !== provenance.artifactSize) throw new Error('artifact size does not match provider metadata');
-        const parsed = await parseObjectiveArtifact(Buffer.from(archiveBytes), provenance);
-        const result = await admitObjectiveArtifact(db, parsed, provenance, clock());
+        if (archiveBytes.byteLength !== provenance.artifactSize) throw new StageRejection('artifact-size-mismatch');
+        const parsed = await stage('artifact-parse-rejected', () => parseObjectiveArtifact(Buffer.from(archiveBytes), provenance));
+        const result = await stage('admission-rejected', () => admitObjectiveArtifact(db, parsed, provenance, clock()));
         admitted += result.admitted;
         replayed += result.replayed;
+        tally.admitted += result.admitted;
+        if (result.admitted === 0) tally.current = true;
       } catch (error) {
         if (error?.message === 'github-scan-deadline-exceeded') {
-          sourceIncomplete = true;
-          incomplete = true;
+          tally.incomplete = true;
           break;
         }
         rejected += 1;
-        auditAttempt(db, isoNow(clock()), source, 'admit', 'rejected');
+        tally.rejected += 1;
+        const reasonCode = error instanceof StageRejection ? error.reasonCode : 'admission-rejected';
+        recordRejectedRun(db, {
+          repoOwner: source.owner,
+          repoName: source.name,
+          runId: provenance?.runId ?? candidate?.run?.id,
+          attempt: provenance?.attempt ?? candidate?.run?.attempt,
+          reasonCode,
+          artifactId: provenance?.artifactId ?? null,
+          runCreatedAt: provenance?.runCreatedAt ?? null,
+        }, clock());
       }
     }
-    // Write this after candidate admissions so a successful artifact cannot
-    // obscure a truncated or ambiguous provider scan in the source status.
-    if (sourceIncomplete) auditAttempt(db, isoNow(clock()), source, 'admit', 'incomplete');
+    if (tally.incomplete) incomplete = true;
+    finish();
   }
   return {
     status: rejected > 0 ? (admitted + replayed > 0 ? 'partial' : 'rejected')
-      : unavailable > 0 || incomplete ? 'partial' : admitted + replayed > 0 ? 'committed' : 'no-artifacts',
+      : unavailable > 0 || incomplete ? 'partial'
+        : admitted > 0 ? 'committed'
+          : sources.some((item) => item.status === 'current') ? 'current' : 'no-artifacts',
     expired,
     admitted,
     replayed,
+    skipped,
     rejected,
     unavailable,
     incomplete,
+    sources,
   };
 }
 

@@ -431,6 +431,65 @@ const MIGRATIONS = [
         ON code_health_audit(source_id, id DESC);
     `,
   },
+  {
+    // Objective collection bookkeeping. One row per handled workflow run
+    // attempt: `admitted` rows are settled and skipped by later scans, while
+    // `rejected` rows stay unsettled and are retried every cycle. Rows expire
+    // well beyond the 30-day provider listing window, so pruning can never make
+    // an in-window run look unhandled. The audit status set gains `current`
+    // (a complete scan with nothing new to admit); SQLite cannot widen a CHECK
+    // constraint in place, so the audit table is rebuilt with its rows intact.
+    version: 16,
+    run(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS code_health_objective_runs (
+          repo_owner TEXT NOT NULL,
+          repo_name TEXT NOT NULL,
+          run_id INTEGER NOT NULL CHECK (run_id > 0),
+          attempt INTEGER NOT NULL CHECK (attempt > 0),
+          outcome TEXT NOT NULL CHECK (outcome IN ('admitted', 'rejected')),
+          reason_code TEXT CHECK (reason_code IS NULL OR reason_code IN (
+            'transport-provenance-invalid', 'artifact-download-failed', 'artifact-size-mismatch',
+            'artifact-parse-rejected', 'admission-rejected')),
+          artifact_id INTEGER CHECK (artifact_id IS NULL OR artifact_id > 0),
+          run_created_at TEXT,
+          first_handled_at TEXT NOT NULL,
+          last_handled_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          PRIMARY KEY (repo_owner, repo_name, run_id, attempt)
+        );
+        CREATE INDEX IF NOT EXISTS idx_code_health_objective_runs_expiry
+          ON code_health_objective_runs(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_code_health_objective_runs_outcome
+          ON code_health_objective_runs(repo_owner, repo_name, outcome, last_handled_at DESC);
+      `);
+      const audit = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'code_health_audit'").get();
+      if (audit && audit.sql.includes("'current'")) return;
+      db.exec(`
+        CREATE TABLE code_health_audit_v16 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_at TEXT NOT NULL,
+          source_id TEXT,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('objective', 'subjective', 'retention')),
+          operation TEXT NOT NULL CHECK (operation IN ('admit', 'reconcile', 'expire')),
+          status TEXT NOT NULL CHECK (status IN ('committed', 'current', 'rejected', 'unavailable', 'disabled', 'unconfigured', 'incomplete', 'no-artifacts')),
+          repo_owner TEXT,
+          repo_name TEXT,
+          record_count INTEGER NOT NULL DEFAULT 0 CHECK (record_count >= 0)
+        );
+        INSERT INTO code_health_audit_v16
+          (id, event_at, source_id, source_kind, operation, status, repo_owner, repo_name, record_count)
+          SELECT id, event_at, source_id, source_kind, operation, status, repo_owner, repo_name, record_count
+          FROM code_health_audit;
+        DROP TABLE code_health_audit;
+        ALTER TABLE code_health_audit_v16 RENAME TO code_health_audit;
+        CREATE INDEX IF NOT EXISTS idx_code_health_audit_time
+          ON code_health_audit(event_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_code_health_audit_source
+          ON code_health_audit(source_id, id DESC);
+      `);
+    },
+  },
 ];
 
 function openDatabase(dbPath) {

@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { loadContract } = require('./contract');
 const { EXPECTED_SLOTS } = require('./registry');
 const { canonical } = require('./artifact');
+const { REJECTION_REASONS } = require('./collection-status');
 
 const OBJECTIVE_RETENTION_MONTHS = 6;
 const ALLOWED_WINDOWS = new Set([30, 90, 365]);
@@ -39,6 +40,76 @@ function writeAudit(db, { eventAt, sourceId = null, sourceKind, operation, statu
     (event_at, source_id, source_kind, operation, status, repo_owner, repo_name, record_count)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(eventAt, sourceId, sourceKind, operation, status, repoOwner, repoName, recordCount);
+}
+
+function positiveId(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function instantOrNull(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+// Run-attempt bookkeeping rows outlive the 30-day listing window by months, so
+// pruning cannot make an in-window run look unhandled.
+function upsertAdmittedRun(db, owner, name, provenance, now) {
+  db.prepare(`INSERT INTO code_health_objective_runs (
+      repo_owner, repo_name, run_id, attempt, outcome, reason_code, artifact_id,
+      run_created_at, first_handled_at, last_handled_at, expires_at
+    ) VALUES (?, ?, ?, ?, 'admitted', NULL, ?, ?, ?, ?, ?)
+    ON CONFLICT (repo_owner, repo_name, run_id, attempt) DO UPDATE SET
+      outcome = 'admitted', reason_code = NULL,
+      artifact_id = COALESCE(excluded.artifact_id, code_health_objective_runs.artifact_id),
+      run_created_at = COALESCE(excluded.run_created_at, code_health_objective_runs.run_created_at),
+      last_handled_at = excluded.last_handled_at, expires_at = excluded.expires_at`)
+    .run(owner, name, provenance.runId, provenance.attempt, positiveId(provenance.artifactId),
+      instantOrNull(provenance.runCreatedAt), now, now, addCalendarMonths(now, OBJECTIVE_RETENTION_MONTHS));
+}
+
+/**
+ * Record a rejected run attempt. It stays unsettled (retried every cycle), and
+ * an attempt that was already admitted is never downgraded.
+ */
+function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode, artifactId = null, runCreatedAt = null }, nowValue = new Date()) {
+  if (!REJECTION_REASONS.includes(reasonCode)) throw new TypeError('rejection reason is not in the bounded set');
+  if (positiveId(runId) == null || positiveId(attempt) == null) return false;
+  const now = isoNow(nowValue);
+  return db.prepare(`INSERT INTO code_health_objective_runs (
+      repo_owner, repo_name, run_id, attempt, outcome, reason_code, artifact_id,
+      run_created_at, first_handled_at, last_handled_at, expires_at
+    ) VALUES (?, ?, ?, ?, 'rejected', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (repo_owner, repo_name, run_id, attempt) DO UPDATE SET
+      reason_code = excluded.reason_code,
+      artifact_id = COALESCE(excluded.artifact_id, code_health_objective_runs.artifact_id),
+      run_created_at = COALESCE(excluded.run_created_at, code_health_objective_runs.run_created_at),
+      last_handled_at = excluded.last_handled_at, expires_at = excluded.expires_at
+    WHERE code_health_objective_runs.outcome = 'rejected'`)
+    .run(repoOwner, repoName, runId, attempt, reasonCode, positiveId(artifactId), instantOrNull(runCreatedAt),
+      now, now, addCalendarMonths(now, OBJECTIVE_RETENTION_MONTHS)).changes > 0;
+}
+
+/** A run attempt is settled once its artifact was admitted (replays included). */
+function isRunSettled(db, repoOwner, repoName, runId, attempt) {
+  if (positiveId(runId) == null || positiveId(attempt) == null) return false;
+  return !!db.prepare(`SELECT 1 FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND run_id = ? AND attempt = ? AND outcome = 'admitted'`)
+    .get(repoOwner, repoName, runId, attempt);
+}
+
+/**
+ * The newest known admission time for a repository: the creation time of the
+ * newest admitted run, or, when no run row carries it (for example rows written
+ * before run bookkeeping existed), the latest stored snapshot collection time.
+ * The fallback is never earlier than the run it came from, so it cannot make a
+ * source look staler than it is. Returns null when nothing is known.
+ */
+function lastAdmittedRunAt(db, repoOwner, repoName) {
+  const run = db.prepare(`SELECT MAX(run_created_at) AS at FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'admitted' AND run_created_at IS NOT NULL`)
+    .get(repoOwner, repoName)?.at ?? null;
+  if (run) return run;
+  return db.prepare(`SELECT MAX(collected_at) AS at FROM code_health_objective_snapshots
+    WHERE repo_owner = ? AND repo_name = ?`).get(repoOwner, repoName)?.at ?? null;
 }
 
 function recordReferences(record) {
@@ -129,8 +200,14 @@ async function admitObjectiveArtifact(db, parsed, provenance, nowValue = new Dat
     for (const slot of omitted) {
       insertGap.run(owner, name, provenance.runId, provenance.attempt, slot.slot_ref, runCreatedAt, collectedAt, expiresAt);
     }
-    writeAudit(db, { eventAt: collectedAt, sourceId: objectiveSourceId(owner, name), sourceKind: 'objective', operation: 'admit', status: 'committed',
-      repoOwner: owner, repoName: name, recordCount: incoming.length });
+    // Settle the run attempt atomically with its admission, replays included.
+    upsertAdmittedRun(db, owner, name, provenance, collectedAt);
+    // A replay-only admission stores nothing new and writes no audit row; the
+    // collector records one cycle-level status per source instead.
+    if (incoming.length > 0) {
+      writeAudit(db, { eventAt: collectedAt, sourceId: objectiveSourceId(owner, name), sourceKind: 'objective', operation: 'admit', status: 'committed',
+        repoOwner: owner, repoName: name, recordCount: incoming.length });
+    }
   });
   transaction();
   return { status: 'committed', admitted: incoming.length, replayed: replayed.length, unknownSlots: omitted.length };
@@ -141,6 +218,7 @@ function pruneExpiredEvidence(db, nowValue = new Date()) {
   const transaction = db.transaction(() => {
     const objective = db.prepare('DELETE FROM code_health_objective_snapshots WHERE expires_at <= ?').run(now).changes;
     const gaps = db.prepare('DELETE FROM code_health_objective_gaps WHERE expires_at <= ?').run(now).changes;
+    const runs = db.prepare('DELETE FROM code_health_objective_runs WHERE expires_at <= ?').run(now).changes;
     let subjective = db.prepare('DELETE FROM code_health_subjective_records WHERE expires_at <= ?').run(now).changes;
     const sources = db.prepare('SELECT DISTINCT source_id FROM code_health_subjective_records').all();
     const remove = db.prepare('DELETE FROM code_health_subjective_records WHERE source_id = ? AND record_id = ?');
@@ -177,11 +255,11 @@ function pruneExpiredEvidence(db, nowValue = new Date()) {
         }
       }
     }
-    if (objective + gaps + subjective > 0) {
+    if (objective + gaps + runs + subjective > 0) {
       writeAudit(db, { eventAt: now, sourceKind: 'retention', operation: 'expire', status: 'committed',
-        recordCount: objective + gaps + subjective });
+        recordCount: objective + gaps + runs + subjective });
     }
-    return { objective, gaps, subjective };
+    return { objective, gaps, runs, subjective };
   });
   return transaction();
 }
@@ -294,6 +372,11 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
     ORDER BY id DESC LIMIT 1`).get(sourceId) ?? null;
   const lastSuccess = db.prepare(`SELECT MAX(collected_at) AS collected_at
     FROM code_health_objective_snapshots WHERE repo_owner = ? AND repo_name = ?`).get(repoOwner, repoName)?.collected_at ?? null;
+  const rejection = db.prepare(`SELECT last_handled_at, reason_code FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'
+    ORDER BY last_handled_at DESC, run_id DESC, attempt DESC LIMIT 1`).get(repoOwner, repoName) ?? null;
+  const rejectedRuns = db.prepare(`SELECT COUNT(*) AS n FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'`).get(repoOwner, repoName).n;
   const status = enabled !== true ? 'disabled'
     : configured !== true ? 'unconfigured'
       : lastAttempt?.status ?? 'not-collected';
@@ -310,6 +393,10 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
     last_attempt_status: lastAttempt?.status ?? null,
     last_success_at: lastSuccess,
     last_error_code: errorCodes[lastAttempt?.status] ?? null,
+    last_rejection_at: rejection?.last_handled_at ?? null,
+    last_rejection_code: REJECTION_REASONS.includes(rejection?.reason_code) ? rejection.reason_code : null,
+    rejected_runs: rejectedRuns,
+    last_admitted_run_at: lastAdmittedRunAt(db, repoOwner, repoName),
   };
 }
 
@@ -322,5 +409,8 @@ module.exports = {
   getObjectiveHistory,
   objectiveSourceId,
   readObjectiveSourceState,
+  recordRejectedRun,
+  isRunSettled,
+  lastAdmittedRunAt,
   isoNow,
 };

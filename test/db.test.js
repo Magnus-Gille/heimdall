@@ -61,6 +61,7 @@ describe('openDatabase', () => {
     assert.ok(names.includes('code_health_subjective_records'));
     assert.ok(names.includes('code_health_subjective_sources'));
     assert.ok(names.includes('code_health_audit'));
+    assert.ok(names.includes('code_health_objective_runs'));
     assert.ok(db.prepare('PRAGMA table_info(code_health_audit)').all().some((column) => column.name === 'source_id'));
     const serviceVersionCols = db.prepare('PRAGMA table_info(service_versions)').all();
     assert.ok(serviceVersionCols.some((c) => c.name === 'health_status'));
@@ -80,8 +81,50 @@ describe('openDatabase', () => {
     // Open again — should not throw
     const db2 = openDatabase(dbPath);
     const version = db2.pragma('user_version', { simple: true });
-    assert.strictEqual(version, 15); // bump when MIGRATIONS grows (v15 code-health evidence)
+    assert.strictEqual(version, 16); // bump when MIGRATIONS grows (v16 code-health run bookkeeping)
     db2.close();
+  });
+
+  it('migrates v15 code-health audit rows forward and admits the current status', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
+    const dbPath = path.join(dir, 'test.db');
+    openDatabase(dbPath).close();
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      DROP TABLE code_health_objective_runs;
+      DROP TABLE code_health_audit;
+      CREATE TABLE code_health_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_at TEXT NOT NULL,
+        source_id TEXT,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('objective', 'subjective', 'retention')),
+        operation TEXT NOT NULL CHECK (operation IN ('admit', 'reconcile', 'expire')),
+        status TEXT NOT NULL CHECK (status IN ('committed', 'rejected', 'unavailable', 'disabled', 'unconfigured', 'incomplete', 'no-artifacts')),
+        repo_owner TEXT,
+        repo_name TEXT,
+        record_count INTEGER NOT NULL DEFAULT 0 CHECK (record_count >= 0)
+      );
+    `);
+    legacy.prepare(`INSERT INTO code_health_audit (id, event_at, source_id, source_kind, operation, status, record_count)
+      VALUES (41, '2026-10-01T00:00:00Z', 'objective:o/r', 'objective', 'admit', 'incomplete', 0)`).run();
+    assert.throws(() => legacy.prepare(`INSERT INTO code_health_audit (event_at, source_kind, operation, status)
+      VALUES ('2026-10-01T00:00:00Z', 'objective', 'admit', 'current')`).run(), /CHECK/);
+    legacy.pragma('user_version = 15');
+    legacy.close();
+
+    const db = openDatabase(dbPath);
+    assert.equal(db.pragma('user_version', { simple: true }), 16);
+    assert.deepEqual(db.prepare('SELECT id, status FROM code_health_audit').all(), [{ id: 41, status: 'incomplete' }]);
+    const inserted = db.prepare(`INSERT INTO code_health_audit (event_at, source_kind, operation, status)
+      VALUES ('2026-10-02T00:00:00Z', 'objective', 'admit', 'current')`).run();
+    assert.equal(inserted.lastInsertRowid, 42);
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%' AND tbl_name IN ('code_health_audit', 'code_health_objective_runs')").all().map((row) => row.name).sort();
+    assert.deepEqual(indexes, [
+      'idx_code_health_audit_source', 'idx_code_health_audit_time',
+      'idx_code_health_objective_runs_expiry', 'idx_code_health_objective_runs_outcome',
+    ]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM code_health_objective_runs').get().n, 0);
+    db.close();
   });
 
   it('migrates legacy fleet tables without inventing an agent version', () => {
@@ -133,7 +176,7 @@ describe('openDatabase', () => {
     legacy.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 15);
+    assert.equal(db.pragma('user_version', { simple: true }), 16);
 
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     const metricCols = db.prepare('PRAGMA table_info(fleet_metrics)').all();
@@ -177,7 +220,7 @@ describe('openDatabase', () => {
     v11.close();
 
     const db = openDatabase(dbPath);
-    assert.equal(db.pragma('user_version', { simple: true }), 15);
+    assert.equal(db.pragma('user_version', { simple: true }), 16);
     const hostCols = db.prepare('PRAGMA table_info(fleet_hosts)').all();
     assert.ok(hostCols.some((c) => c.name === 'agent_version'));
     assert.ok(hostCols.some((c) => c.name === 'membership_state'));

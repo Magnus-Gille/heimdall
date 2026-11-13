@@ -276,7 +276,7 @@ function memoryDb() { return openDatabase(':memory:'); }
 describe('code-health objective backend', () => {
   it('migrates forward and leaves collection explicitly unconfigured by default', async () => {
     const db = memoryDb();
-    assert.equal(db.pragma('user_version', { simple: true }), 15);
+    assert.equal(db.pragma('user_version', { simple: true }), 16);
     let calls = 0;
     const result = await collectObjectiveReports({ db, clock: () => new Date(NOW), transport: {
       listArtifacts: async () => { calls += 1; return []; },
@@ -1227,5 +1227,348 @@ describe('code-health runtime integration', () => {
       fs.rmSync(home, { recursive: true, force: true });
       db.close();
     }
+  });
+});
+
+// A read-only GitHub fake serving many runs per repository through the real
+// transport, so settled-run filtering and the eligible-run limit are exercised
+// end to end. Every request endpoint is recorded.
+const GH_REPO_IDS = Object.freeze({ 'gille-inference': 4001, sagascript: 4002 });
+function syntheticRun(id, index, archive, attempt = 1) {
+  const created = new Date(Date.parse('2026-10-09T09:00:00Z') - index * 3600000).toISOString().replace('.000Z', 'Z');
+  return { id, attempt, createdAt: created, archive };
+}
+
+function multiRunGh(runsByRepo) {
+  const calls = [];
+  const execFile = (file, args, options, callback) => {
+    const endpoint = args.at(-1);
+    calls.push(endpoint);
+    const match = /^repos\/Magnus-Gille\/([a-z-]+)\/actions\/(.*)$/.exec(endpoint);
+    if (!match) { callback(new Error('unexpected fixture request'), '', ''); return; }
+    const [, repo, rest] = match;
+    const runs = runsByRepo[repo] || [];
+    const repoId = GH_REPO_IDS[repo];
+    const identity = { id: repoId, full_name: `Magnus-Gille/${repo}` };
+    const runJson = (run) => ({
+      id: run.id, workflow_id: 55, run_attempt: run.attempt, status: 'completed', event: 'schedule',
+      head_branch: 'main', head_sha: COMMIT, created_at: run.createdAt, updated_at: '2026-10-09T10:06:00Z',
+      repository: identity, head_repository: identity,
+    });
+    const byId = (id) => runs.find((run) => run.id === Number(id));
+    let value;
+    let found;
+    if (rest === 'workflows/code-health.yml') value = { id: 55, path: '.github/workflows/code-health.yml' };
+    else if (rest.startsWith('workflows/code-health.yml/runs?')) {
+      const page = Number(new URLSearchParams(rest.split('?')[1]).get('page'));
+      value = { total_count: runs.length, workflow_runs: runs.slice((page - 1) * 25, page * 25).map(runJson) };
+    } else if ((found = /^runs\/(\d+)$/.exec(rest))) value = runJson(byId(found[1]));
+    else if ((found = /^runs\/(\d+)\/attempts\/(\d+)\/jobs\?/.exec(rest))) {
+      const run = byId(found[1]);
+      value = { total_count: 1, jobs: [{ id: run.id * 10, run_id: run.id, run_attempt: run.attempt, status: 'completed',
+        started_at: '2026-10-09T10:01:00Z', completed_at: '2026-10-09T10:05:00Z' }] };
+    } else if ((found = /^runs\/(\d+)\/artifacts\?/.exec(rest))) {
+      const run = byId(found[1]);
+      value = { total_count: 1, artifacts: [{ id: run.id + 100000, name: 'code-health-v1', size_in_bytes: run.archive.length,
+        expired: false, created_at: '2026-10-09T10:02:00Z',
+        workflow_run: { id: run.id, repository_id: repoId, head_repository_id: repoId, head_branch: 'main', head_sha: COMMIT } }] };
+    } else if ((found = /^artifacts\/(\d+)\/zip$/.exec(rest))) {
+      const run = byId(Number(found[1]) - 100000);
+      callback(null, run.archive, '');
+      return;
+    } else { callback(new Error('unexpected fixture request'), '', ''); return; }
+    callback(null, JSON.stringify(value), '');
+  };
+  return {
+    calls,
+    execFile,
+    perRunCalls: () => calls.filter((endpoint) => /\/actions\/(runs\/\d+|artifacts\/\d+)/.test(endpoint)),
+    downloads: () => calls.filter((endpoint) => endpoint.endsWith('/zip')),
+  };
+}
+
+function gilleRuns(count, { firstId = 7000, bad = new Set() } = {}) {
+  return Array.from({ length: count }, (_, index) => {
+    const id = firstId + index;
+    const archive = bad.has(id) ? Buffer.from('not a zip archive') : makeObjectiveArchive('gille-inference', id, 1, { snapshotId: `ref:run-${id}` });
+    return syntheticRun(id, index, archive);
+  });
+}
+
+const auditRows = (db, repo = 'gille-inference') => db.prepare(`SELECT status, record_count FROM code_health_audit
+  WHERE source_id = ? ORDER BY id`).all(`objective:Magnus-Gille/${repo}`);
+const runRow = (db, runId) => db.prepare(`SELECT outcome, reason_code, artifact_id, run_created_at, first_handled_at, last_handled_at
+  FROM code_health_objective_runs WHERE repo_owner = 'Magnus-Gille' AND repo_name = 'gille-inference' AND run_id = ? AND attempt = 1`).get(runId);
+const gilleState = (db) => readObjectiveSourceState(db, { repoOwner: 'Magnus-Gille', repoName: 'gille-inference', enabled: true, configured: true });
+
+async function cycle(db, fixture, at = NOW) {
+  const { createGitHubTransport } = require('../src/code-health/github-transport');
+  const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => new Date(NOW) });
+  const before = fixture.calls.length;
+  const result = await collectObjectiveReports({ db, config: { enabled: true }, clock: () => new Date(at), transport });
+  return { result, calls: fixture.calls.slice(before) };
+}
+
+describe('objective collection settled runs and cycle status', () => {
+  it('skips settled runs: >10 eligible all settled reports current with no per-run calls and one audit row', async () => {
+    const db = memoryDb();
+    const runs = gilleRuns(15);
+    const insert = db.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
+      artifact_id, run_created_at, first_handled_at, last_handled_at, expires_at)
+      VALUES ('Magnus-Gille', 'gille-inference', ?, 1, 'admitted', ?, ?, ?, ?, '2027-04-01T00:00:00Z')`);
+    for (const run of runs) insert.run(run.id, run.id + 100000, run.createdAt, NOW, NOW);
+    const fixture = multiRunGh({ 'gille-inference': runs });
+    const { result, calls } = await cycle(db, fixture);
+    assert.equal(result.status, 'current');
+    assert.equal(result.incomplete, false);
+    assert.deepEqual(result.sources, [{ repository: 'gille-inference', status: 'current' }, { repository: 'sagascript', status: 'no-artifacts' }]);
+    assert.equal(calls.filter((endpoint) => endpoint.endsWith('/zip')).length, 0);
+    assert.equal(calls.filter((endpoint) => /\/actions\/(runs\/\d+|artifacts\/\d+)/.test(endpoint)).length, 0);
+    assert.deepEqual(auditRows(db), [{ status: 'current', record_count: 0 }]);
+    const state = gilleState(db);
+    assert.equal(state.status, 'current');
+    assert.equal(state.last_error_code, null);
+    assert.equal(state.rejected_runs, 0);
+    db.close();
+  });
+
+  it('drains a pre-existing backlog with an empty runs table and settles into current', async () => {
+    const db = memoryDb();
+    const runs = gilleRuns(15);
+    // Simulate a database from before run bookkeeping: snapshots were admitted,
+    // but the new runs table starts empty.
+    for (const run of runs) {
+      const provenance = { repositoryOwner: 'Magnus-Gille', repositoryName: 'gille-inference', headSha: COMMIT,
+        runId: run.id, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z' };
+      await admitObjectiveArtifact(db, await parseObjectiveArtifact(run.archive, provenance), provenance, '2026-10-09T12:00:00Z');
+    }
+    db.prepare('DELETE FROM code_health_objective_runs').run();
+    db.prepare('DELETE FROM code_health_audit').run();
+    const fixture = multiRunGh({ 'gille-inference': runs });
+
+    const first = await cycle(db, fixture);
+    assert.equal(first.result.replayed, 10);
+    assert.equal(first.result.admitted, 0);
+    assert.equal(first.calls.filter((endpoint) => endpoint.endsWith('/zip')).length, 10);
+    assert.equal(gilleState(db).status, 'incomplete', 'more unsettled runs than the limit remain');
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM code_health_objective_runs WHERE outcome = 'admitted'").get().n, 10);
+
+    const second = await cycle(db, fixture);
+    assert.equal(second.result.replayed, 5);
+    assert.equal(second.calls.filter((endpoint) => endpoint.endsWith('/zip')).length, 5);
+    assert.equal(gilleState(db).status, 'current');
+
+    const third = await cycle(db, fixture);
+    assert.equal(third.result.status, 'current');
+    assert.equal(third.calls.filter((endpoint) => endpoint.endsWith('/zip')).length, 0);
+    assert.deepEqual(auditRows(db).map((row) => row.status), ['incomplete', 'current', 'current']);
+    db.close();
+  });
+
+  it('reports a rejected newest artifact over truncation and recovers it once the artifact admits', async () => {
+    const db = memoryDb();
+    const runs = gilleRuns(15, { bad: new Set([7000]) });
+    const fixture = multiRunGh({ 'gille-inference': runs });
+    const first = await cycle(db, fixture, '2026-10-10T12:00:00Z');
+    assert.equal(first.result.incomplete, true);
+    assert.equal(first.result.rejected, 1);
+    assert.equal(first.result.admitted, 9);
+    assert.equal(first.result.sources[0].status, 'rejected');
+    let state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.last_error_code, 'objective-report-rejected');
+    assert.equal(state.last_rejection_code, 'artifact-parse-rejected');
+    assert.equal(state.last_rejection_at, '2026-10-10T12:00:00Z');
+    assert.equal(state.rejected_runs, 1);
+    // The in-transaction rows for real insertions stay; no per-candidate
+    // rejected row is written, and the cycle row is last.
+    const rows = auditRows(db);
+    assert.equal(rows.filter((row) => row.status === 'committed').length, 9);
+    assert.ok(rows.filter((row) => row.status === 'committed').every((row) => row.record_count === 1));
+    assert.deepEqual(rows.at(-1), { status: 'rejected', record_count: 0 });
+    assert.equal(rows.filter((row) => row.status === 'rejected').length, 1);
+    assert.deepEqual(runRow(db, 7000), {
+      outcome: 'rejected', reason_code: 'artifact-parse-rejected', artifact_id: 107000,
+      run_created_at: '2026-10-09T09:00:00Z', first_handled_at: '2026-10-10T12:00:00Z', last_handled_at: '2026-10-10T12:00:00Z',
+    });
+
+    // Rejected runs stay unsettled and are retried; the row tracks the latest attempt.
+    const second = await cycle(db, fixture, '2026-10-10T12:05:00Z');
+    assert.equal(second.result.rejected, 1);
+    assert.equal(second.calls.filter((endpoint) => endpoint.endsWith('/artifacts/107000/zip')).length, 1);
+    state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.last_rejection_at, '2026-10-10T12:05:00Z');
+    assert.equal(runRow(db, 7000).first_handled_at, '2026-10-10T12:00:00Z');
+
+    // A later fix makes the artifact admissible: the row flips to admitted.
+    runs[0].archive = makeObjectiveArchive('gille-inference', 7000, 1, { snapshotId: 'ref:run-7000' });
+    const third = await cycle(db, fixture, '2026-10-10T12:10:00Z');
+    assert.equal(third.result.admitted, 1);
+    assert.equal(third.result.rejected, 0);
+    assert.equal(runRow(db, 7000).outcome, 'admitted');
+    assert.equal(runRow(db, 7000).reason_code, null);
+    state = gilleState(db);
+    assert.equal(state.status, 'committed');
+    assert.equal(state.rejected_runs, 0);
+    assert.equal(state.last_rejection_code, null);
+    assert.equal((await cycle(db, fixture, '2026-10-10T12:15:00Z')).result.status, 'current');
+    db.close();
+  });
+
+  it('keeps more than ten unsettled runs and the provider page limit incomplete despite settled filtering', async () => {
+    const db = memoryDb();
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(11) });
+    const { result } = await cycle(db, fixture);
+    assert.equal(result.admitted, 10);
+    assert.equal(gilleState(db).status, 'incomplete');
+    assert.equal((await cycle(db, fixture)).result.sources[0].status, 'committed');
+
+    // 51 runs exceed RUN_PAGE_LIMIT × RUN_PAGE_SIZE: still fail-closed even
+    // when every listed run is already settled.
+    const pageDb = memoryDb();
+    const many = gilleRuns(51).map((run) => ({ ...run, createdAt: new Date(Date.parse('2026-10-09T09:00:00Z') - (run.id - 7000) * 600000).toISOString().replace('.000Z', 'Z') }));
+    const insert = pageDb.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
+      run_created_at, first_handled_at, last_handled_at, expires_at)
+      VALUES ('Magnus-Gille', 'gille-inference', ?, 1, 'admitted', ?, ?, ?, '2027-04-01T00:00:00Z')`);
+    for (const run of many) insert.run(run.id, run.createdAt, NOW, NOW);
+    const paged = await cycle(pageDb, multiRunGh({ 'gille-inference': many }));
+    assert.equal(paged.result.incomplete, true);
+    assert.equal(paged.calls.filter((endpoint) => endpoint.endsWith('/zip')).length, 0);
+    assert.equal(gilleState(pageDb).status, 'incomplete');
+    db.close();
+    pageDb.close();
+  });
+
+  it('records a bounded stage reason for every rejection step without exposing error text', async () => {
+    const good = makeObjectiveArchive('gille-inference', 9100, 1, { snapshotId: 'ref:stage-good' });
+    const collision = makeObjectiveArchive('gille-inference', 9101, 1, { snapshotId: 'ref:stage-good', observedAt: '2026-10-09T10:01:00Z' });
+    const cases = [
+      ['transport-provenance-invalid', (metadata) => { metadata.run.repository_owner = 'attacker'; }, async () => good],
+      ['artifact-download-failed', () => {}, async () => { throw new Error('private stderr details'); }],
+      ['artifact-download-failed', () => {}, async () => 'not bytes'],
+      ['artifact-size-mismatch', (metadata) => { metadata.artifact.size_in_bytes += 1; }, async () => good],
+      ['artifact-parse-rejected', (metadata) => { metadata.artifact.size_in_bytes = 17; }, async () => Buffer.from('not a zip archive')],
+      ['admission-rejected', (metadata) => { metadata.artifact.size_in_bytes = collision.length; }, async () => collision, true],
+    ];
+    for (const [reason, mutate, download, seed] of cases) {
+      const db = memoryDb();
+      if (seed) {
+        const provenance = { repositoryOwner: 'Magnus-Gille', repositoryName: 'gille-inference', headSha: COMMIT,
+          runId: 9100, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z' };
+        await admitObjectiveArtifact(db, await parseObjectiveArtifact(good, provenance), provenance, NOW);
+        db.prepare('DELETE FROM code_health_audit').run();
+      }
+      const metadata = transportMetadata('gille-inference', seed ? 9101 : 9100, 1, good);
+      mutate(metadata);
+      const result = await collectObjectiveReports({ db, config: { enabled: true }, clock: () => new Date(NOW), transport: {
+        listArtifacts: async ({ repository }) => repository === 'gille-inference' ? { candidates: [metadata], incomplete: false } : { candidates: [], incomplete: false },
+        downloadArtifact: download,
+      } });
+      assert.equal(result.rejected, 1, reason);
+      const row = db.prepare(`SELECT outcome, reason_code FROM code_health_objective_runs WHERE run_id = ?`).get(seed ? 9101 : 9100);
+      assert.deepEqual(row, { outcome: 'rejected', reason_code: reason }, reason);
+      assert.deepEqual(auditRows(db), [{ status: 'rejected', record_count: 0 }], reason);
+      const state = gilleState(db);
+      assert.equal(state.last_rejection_code, reason);
+      assert.doesNotMatch(JSON.stringify(state), /private|stderr|collision|zip/);
+      db.close();
+    }
+  });
+
+  it('writes no audit row for a replay-only admission but still settles the run', async () => {
+    const db = memoryDb();
+    const archive = makeObjectiveArchive('gille-inference', 9200, 1, { snapshotId: 'ref:replay-only' });
+    const provenance = { repositoryOwner: 'Magnus-Gille', repositoryName: 'gille-inference', headSha: COMMIT,
+      runId: 9200, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z' };
+    const parsed = await parseObjectiveArtifact(archive, provenance);
+    await admitObjectiveArtifact(db, parsed, provenance, NOW);
+    assert.equal(auditRows(db).length, 1);
+    db.prepare('DELETE FROM code_health_objective_runs').run();
+    const replay = await admitObjectiveArtifact(db, parsed, provenance, '2026-10-11T12:00:00Z');
+    assert.equal(replay.replayed, 1);
+    assert.equal(auditRows(db).length, 1);
+    assert.equal(runRow(db, 9200).outcome, 'admitted');
+
+    // An injected transport that ignores the predicate never re-downloads a settled run.
+    let downloads = 0;
+    const result = await collectObjectiveReports({ db, config: { enabled: true }, clock: () => new Date(NOW), transport: {
+      listArtifacts: async ({ repository }) => repository === 'gille-inference' ? [transportMetadata('gille-inference', 9200, 1, archive)] : [],
+      downloadArtifact: async () => { downloads += 1; return archive; },
+    } });
+    assert.equal(downloads, 0);
+    assert.equal(result.skipped, 1);
+    assert.equal(result.sources[0].status, 'current');
+    db.close();
+  });
+
+  it('prunes expired run rows without touching retained ones', () => {
+    const db = memoryDb();
+    const insert = db.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
+      reason_code, first_handled_at, last_handled_at, expires_at)
+      VALUES ('Magnus-Gille', 'gille-inference', ?, 1, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', ?)`);
+    insert.run(1, 'admitted', null, '2026-07-01T00:00:00Z');
+    insert.run(2, 'rejected', 'artifact-parse-rejected', '2026-07-01T00:00:00Z');
+    insert.run(3, 'admitted', null, '2027-01-01T00:00:00Z');
+    const expired = pruneExpiredEvidence(db, NOW);
+    assert.equal(expired.runs, 2);
+    assert.deepEqual(db.prepare('SELECT run_id FROM code_health_objective_runs').all(), [{ run_id: 3 }]);
+    assert.equal(db.prepare("SELECT record_count FROM code_health_audit WHERE source_kind = 'retention'").get().record_count, 2);
+    db.close();
+  });
+
+  it('keeps admitted run rows well beyond the 30-day listing window', async () => {
+    const db = memoryDb();
+    const archive = makeObjectiveArchive('gille-inference', 9300, 1, { snapshotId: 'ref:retained-run' });
+    const provenance = { repositoryOwner: 'Magnus-Gille', repositoryName: 'gille-inference', headSha: COMMIT,
+      runId: 9300, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z' };
+    await admitObjectiveArtifact(db, await parseObjectiveArtifact(archive, provenance), provenance, NOW);
+    const { expires_at: expiresAt } = db.prepare('SELECT expires_at FROM code_health_objective_runs WHERE run_id = 9300').get();
+    assert.ok(Date.parse(expiresAt) - Date.parse(NOW) > 90 * 86400000);
+    db.close();
+  });
+});
+
+describe('GitHub transport settled-run predicate', () => {
+  const { createGitHubTransport, ELIGIBLE_RUN_LIMIT } = require('../src/code-health/github-transport');
+  const request = { owner: 'Magnus-Gille', repository: 'gille-inference', workflowPath: '.github/workflows/code-health.yml',
+    branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1' };
+
+  it('behaves as before without a predicate: the eligible-run limit truncates and flags incomplete', async () => {
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(ELIGIBLE_RUN_LIMIT + 2) });
+    const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => new Date(NOW) });
+    const listing = await transport.listArtifacts(request);
+    assert.deepEqual(Object.keys(listing).sort(), ['candidates', 'incomplete']);
+    assert.equal(listing.incomplete, true);
+    assert.equal(listing.candidates.length, ELIGIBLE_RUN_LIMIT);
+    assert.deepEqual(listing.candidates.map((candidate) => candidate.run.id), Array.from({ length: 10 }, (_, index) => 7000 + index));
+  });
+
+  it('drops settled attempts before the limit and before any per-run request', async () => {
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(ELIGIBLE_RUN_LIMIT + 2) });
+    const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => new Date(NOW) });
+    const asked = [];
+    const listing = await transport.listArtifacts({ ...request, isSettled: (runId, attempt) => {
+      asked.push([runId, attempt]);
+      return runId < 7005;
+    } });
+    assert.equal(asked.length, ELIGIBLE_RUN_LIMIT + 2);
+    assert.ok(asked.every(([, attempt]) => attempt === 1));
+    assert.equal(listing.incomplete, false);
+    assert.equal(listing.settledRuns, 5);
+    assert.deepEqual(listing.candidates.map((candidate) => candidate.run.id), [7005, 7006, 7007, 7008, 7009, 7010, 7011]);
+    assert.equal(fixture.perRunCalls().filter((endpoint) => /\/runs\/700[0-4]\b/.test(endpoint)).length, 0);
+  });
+
+  it('treats a new attempt of a settled run as unsettled', async () => {
+    const runs = gilleRuns(1);
+    runs[0].attempt = 2;
+    runs[0].archive = makeObjectiveArchive('gille-inference', 7000, 2, { snapshotId: 'ref:run-7000-attempt-2' });
+    const fixture = multiRunGh({ 'gille-inference': runs });
+    const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => new Date(NOW) });
+    const listing = await transport.listArtifacts({ ...request, isSettled: (runId, attempt) => runId === 7000 && attempt === 1 });
+    assert.equal(listing.settledRuns, 0);
+    assert.equal(listing.candidates.length, 1);
+    assert.equal(listing.candidates[0].run.attempt, 2);
   });
 });
