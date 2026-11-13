@@ -75,7 +75,10 @@ function upsertAdmittedRun(db, owner, name, provenance, now) {
  * Record a rejected run attempt. It stays unsettled (retried every cycle), and
  * an attempt that was already admitted is never downgraded. The row lives only
  * `REJECTED_RUN_RETENTION_MS` past its latest retry, so the rejected rows on
- * record are the ones the collector is still retrying.
+ * record are the ones the collector is still retrying. The stored creation
+ * time is the one validated by the latest retry, or NULL when that retry could
+ * not validate the run metadata: an earlier value is not kept, so the reader
+ * and the collector make the same superseded decision.
  */
 function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode, artifactId = null, runCreatedAt = null }, nowValue = new Date()) {
   if (!REJECTION_REASONS.includes(reasonCode)) throw new TypeError('rejection reason is not in the bounded set');
@@ -88,7 +91,7 @@ function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode
     ON CONFLICT (repo_owner, repo_name, run_id, attempt) DO UPDATE SET
       reason_code = excluded.reason_code,
       artifact_id = COALESCE(excluded.artifact_id, code_health_objective_runs.artifact_id),
-      run_created_at = COALESCE(excluded.run_created_at, code_health_objective_runs.run_created_at),
+      run_created_at = excluded.run_created_at,
       last_handled_at = excluded.last_handled_at, expires_at = excluded.expires_at
     WHERE code_health_objective_runs.outcome = 'rejected'`)
     .run(repoOwner, repoName, runId, attempt, reasonCode, positiveId(artifactId), instantOrNull(runCreatedAt),

@@ -1689,6 +1689,34 @@ describe('objective collection superseded rejections', () => {
     db.close();
   });
 
+  it('forgets a creation time the latest retry could not validate, so the page agrees with the status', async () => {
+    const db = memoryDb();
+    const times = { admittedCreatedAt: '2026-10-09T10:00:00Z', rejectedCreatedAt: '2026-10-09T09:00:00Z' };
+    const first = await injectedCycle(db, times);
+    assert.equal(first.supersededRejections, 1);
+    assert.equal(first.sources[0].status, 'committed');
+    assert.equal(gilleState(db).superseded_rejected_runs, 1);
+
+    // The same run is retried, but its metadata no longer validates.
+    const second = await injectedCycle(db, { ...times, mutateRejected: (metadata) => { metadata.run.repository_owner = 'attacker'; } });
+    assert.equal(second.rejected, 1);
+    assert.equal(second.supersededRejections, 0);
+    assert.equal(second.sources[0].status, 'rejected');
+    const row = db.prepare('SELECT reason_code, run_created_at FROM code_health_objective_runs WHERE run_id = 9501').get();
+    assert.deepEqual(row, { reason_code: 'transport-provenance-invalid', run_created_at: null });
+    const state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.rejected_runs, 1);
+    assert.equal(state.superseded_rejected_runs, 0);
+
+    // Valid again on the next retry: superseded again, in both places.
+    const third = await injectedCycle(db, times);
+    assert.equal(third.supersededRejections, 1);
+    assert.equal(third.sources[0].status, 'current');
+    assert.equal(gilleState(db).superseded_rejected_runs, 1);
+    db.close();
+  });
+
   it('reads superseded rejected rows against tracked admitted run creation times only', async () => {
     const db = memoryDb();
     const insert = db.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
