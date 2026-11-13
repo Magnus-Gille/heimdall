@@ -449,3 +449,82 @@ describe('code-health read routes', () => {
     assert.equal((await app.inject({ method: 'GET', url: '/api/code-health?cohort=not-observed' })).statusCode, 400);
   });
 });
+
+describe('objective collection status banner', () => {
+  const base = { repoName: REPO, objectiveHistory: { ...historyFixture(), slots: [] }, subjective: emptySubjective(), now: new Date(NOW) };
+  const render = (objectiveSource) => {
+    const view = buildCodeHealthView({ ...base, objectiveSource });
+    return { view, html: codeHealthPage('v', view) };
+  };
+
+  it('distinguishes current, committed, no-artifacts, unavailable, incomplete and rejected', () => {
+    const current = render({ status: 'current', last_attempt_at: NOW, last_attempt_status: 'current', last_success_at: NOW, rejected_runs: 0 });
+    assert.equal(current.view.objectiveCollection.summary, 'The last collection was complete; no new artifacts needed storing.');
+    assert.match(current.html, /status-badge is-ok[^>]*><span class="glyph"[^>]*>●<\/span>Up to date/);
+    assert.doesNotMatch(current.html, /ch-rejection/);
+
+    assert.match(render({ status: 'committed' }).html, /The last collection stored new snapshots\./);
+    assert.match(render({ status: 'no-artifacts' }).html, /The last collection found no eligible artifacts\./);
+    const unavailable = render({ status: 'unavailable', last_error_code: 'source-unavailable' });
+    assert.match(unavailable.html, /The source was unavailable during the last attempt\./);
+    assert.match(unavailable.html, /Unavailable/);
+    const incomplete = render({ status: 'incomplete', last_error_code: 'source-collection-incomplete' });
+    assert.match(incomplete.html, /The last collection was incomplete; older evidence is kept\./);
+
+    const rejected = render({
+      status: 'rejected', last_attempt_at: NOW, last_attempt_status: 'rejected', last_error_code: 'objective-report-rejected',
+      last_rejection_at: '2026-10-10T11:55:00Z', last_rejection_code: 'artifact-parse-rejected', rejected_runs: 2,
+    });
+    assert.deepEqual({
+      code: rejected.view.objectiveCollection.lastRejectionCode,
+      at: rejected.view.objectiveCollection.lastRejectionAt,
+      runs: rejected.view.objectiveCollection.rejectedRuns,
+    }, { code: 'artifact-parse-rejected', at: '2026-10-10T11:55:00.000Z', runs: 2 });
+    assert.match(rejected.html, /The last collection rejected an artifact\./);
+    assert.match(rejected.html, /status-badge is-crit/);
+    assert.match(rejected.html, /The artifact failed archive or schema validation\. Reason code artifact-parse-rejected, last rejected 2026-10-10T11:55:00\.000Z\. 2 run attempts rejected/);
+  });
+
+  it('keeps the configuration rejection distinct and never renders an unbounded reason code', () => {
+    const config = render({ status: 'rejected', last_error_code: 'invalid-source-configuration' });
+    assert.match(config.html, /The source configuration was rejected\./);
+    assert.doesNotMatch(config.html, /rejected an artifact/);
+
+    const hostile = render({ status: 'incomplete', last_rejection_code: '<img src=x onerror=alert(1)>', last_rejection_at: 'not a time', rejected_runs: -4 });
+    assert.equal(hostile.view.objectiveCollection.lastRejectionCode, null);
+    assert.equal(hostile.view.objectiveCollection.lastRejectionAt, null);
+    assert.equal(hostile.view.objectiveCollection.rejectedRuns, 0);
+    assert.doesNotMatch(hostile.html, /onerror|ch-rejection/);
+  });
+
+  it('serves stored rejection fields through GET /api/code-health from the real reader', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-code-health-status-'));
+    const statusDb = openDatabase(path.join(dir, 'test.db'));
+    const { recordRejectedRun, writeAudit } = require('../src/code-health/store');
+    recordRejectedRun(statusDb, { repoOwner: OWNER, repoName: 'gille-inference', runId: 77, attempt: 1, reasonCode: 'artifact-size-mismatch' }, '2026-10-10T11:50:00Z');
+    writeAudit(statusDb, { eventAt: '2026-10-10T11:50:00Z', sourceId: `objective:${OWNER}/gille-inference`, sourceKind: 'objective',
+      operation: 'admit', status: 'rejected', repoOwner: OWNER, repoName: 'gille-inference' });
+    const { app: statusApp } = buildApp(statusDb, {
+      runtimeRoot: path.resolve(__dirname, '..'),
+      grimnirPath: path.join(TEST_HOME, 'no-nodes.json'),
+      now: () => Date.parse(NOW),
+      codeHealth: { objectiveEnabled: true, objectiveConfigured: true },
+    });
+    try {
+      await statusApp.ready();
+      const response = await statusApp.inject({ method: 'GET', url: '/api/code-health?repo=gille-inference' });
+      assert.equal(response.statusCode, 200);
+      const collection = response.json().objectiveCollection;
+      assert.equal(collection.status, 'rejected');
+      assert.equal(collection.lastRejectionCode, 'artifact-size-mismatch');
+      assert.equal(collection.lastRejectionAt, '2026-10-10T11:50:00.000Z');
+      assert.equal(collection.rejectedRuns, 1);
+      assert.equal(collection.lastAdmittedRunAt, null);
+      const page = await statusApp.inject({ method: 'GET', url: '/code-health?repo=gille-inference' });
+      assert.match(page.body, /Reason code artifact-size-mismatch, last rejected 2026-10-10T11:50:00\.000Z/);
+    } finally {
+      await statusApp.close();
+      statusDb.close();
+    }
+  });
+});

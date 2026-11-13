@@ -3,6 +3,7 @@
 const { pageShell } = require('./shell');
 const { esc } = require('./util');
 const { REPOSITORIES } = require('../code-health/registry');
+const { REJECTION_REASONS } = require('../code-health/collection-status');
 
 const MAX_HISTORY_POINTS = 12;
 const MAX_EVIDENCE_ROWS = 6;
@@ -33,7 +34,26 @@ const STATUS_LABELS = Object.freeze({
   unavailable: 'Unavailable',
   'not-collected': 'Not collected',
   committed: 'Stored',
+  current: 'Up to date',
+  'no-artifacts': 'No artifacts',
   fixture: 'Synthetic fixture',
+});
+// Static text for each bounded collection status and rejection stage. Nothing
+// producer-controlled is ever rendered in the collection banner.
+const COLLECTION_SUMMARIES = Object.freeze({
+  committed: 'The last collection stored new snapshots.',
+  current: 'The last collection was complete; no new artifacts needed storing.',
+  'no-artifacts': 'The last collection found no eligible artifacts.',
+  rejected: 'The last collection rejected an artifact.',
+  unavailable: 'The source was unavailable during the last attempt.',
+  incomplete: 'The last collection was incomplete; older evidence is kept.',
+});
+const REJECTION_LABELS = Object.freeze({
+  'transport-provenance-invalid': 'Provider run metadata did not match the registered source.',
+  'artifact-download-failed': 'The artifact could not be downloaded.',
+  'artifact-size-mismatch': 'The downloaded artifact size did not match provider metadata.',
+  'artifact-parse-rejected': 'The artifact failed archive or schema validation.',
+  'admission-rejected': 'The artifact failed identity or series checks at admission.',
 });
 const REASON_LABELS = Object.freeze({
   'no-retained-sample': 'No sample is retained for this window.',
@@ -393,16 +413,7 @@ function buildCodeHealthView({
       cohorts: cohortOptions,
       periods: [30, 90, 365],
     },
-    objectiveCollection: {
-      status: objectiveSource.status || 'unconfigured',
-      lastAttemptAt: compactTime(objectiveSource.last_attempt_at),
-      lastAttemptStatus: objectiveSource.last_attempt_status || null,
-      lastSuccessAt: compactTime(objectiveSource.last_success_at),
-      lastError: objectiveSource.last_error_code ? (REASON_LABELS[objectiveSource.last_error_code] || STATUS_LABELS[objectiveSource.last_error_code] || 'The last source attempt did not complete.') : null,
-      note: objectiveSource.status === 'disabled' ? 'Objective collection is disabled.'
-        : objectiveSource.status === 'unconfigured' ? 'No authenticated objective transport is configured.'
-          : null,
-    },
+    objectiveCollection: objectiveCollectionView(objectiveSource),
     objective: sections,
     subjective: summarizeSubjective(subjective, repo.name, resolvedEvidenceRefs, { cohort: selectedCohort }),
     acceptance: {
@@ -413,9 +424,41 @@ function buildCodeHealthView({
   };
 }
 
+function objectiveCollectionView(objectiveSource = {}) {
+  const status = objectiveSource.status || 'unconfigured';
+  const rejectionCode = REJECTION_REASONS.includes(objectiveSource.last_rejection_code) ? objectiveSource.last_rejection_code : null;
+  const rejectedRuns = Number.isSafeInteger(objectiveSource.rejected_runs) && objectiveSource.rejected_runs > 0 ? objectiveSource.rejected_runs : 0;
+  const configRejected = objectiveSource.last_error_code === 'invalid-source-configuration';
+  return {
+    status,
+    lastAttemptAt: compactTime(objectiveSource.last_attempt_at),
+    lastAttemptStatus: objectiveSource.last_attempt_status || null,
+    lastSuccessAt: compactTime(objectiveSource.last_success_at),
+    lastAdmittedRunAt: compactTime(objectiveSource.last_admitted_run_at),
+    lastError: objectiveSource.last_error_code ? (REASON_LABELS[objectiveSource.last_error_code] || STATUS_LABELS[objectiveSource.last_error_code] || 'The last source attempt did not complete.') : null,
+    summary: configRejected ? REASON_LABELS['invalid-source-configuration'] : COLLECTION_SUMMARIES[status] || null,
+    lastRejectionAt: compactTime(objectiveSource.last_rejection_at),
+    lastRejectionCode: rejectionCode,
+    lastRejection: rejectionCode ? REJECTION_LABELS[rejectionCode] : null,
+    rejectedRuns,
+    note: status === 'disabled' ? 'Objective collection is disabled.'
+      : status === 'unconfigured' ? 'No authenticated objective transport is configured.'
+        : null,
+  };
+}
+
+function rejectionNotice(collection) {
+  if (!collection.lastRejectionCode && collection.rejectedRuns === 0) return '';
+  const parts = [];
+  if (collection.lastRejection) parts.push(collection.lastRejection);
+  if (collection.lastRejectionCode) parts.push(`Reason code ${collection.lastRejectionCode}${collection.lastRejectionAt ? `, last rejected ${collection.lastRejectionAt}` : ''}.`);
+  if (collection.rejectedRuns > 0) parts.push(`${collection.rejectedRuns} run attempt${collection.rejectedRuns === 1 ? '' : 's'} rejected and retried each cycle until admitted.`);
+  return `<p class="ch-reason ch-rejection" role="status">${esc(parts.join(' '))}</p>`;
+}
+
 function statusBadge(status) {
   const safeStatus = Object.hasOwn(STATUS_LABELS, status) ? status : 'unknown';
-  const style = safeStatus === 'measured' ? 'is-ok'
+  const style = ['measured', 'current'].includes(safeStatus) ? 'is-ok'
     : ['failed', 'rejected'].includes(safeStatus) ? 'is-crit'
       : ['stale', 'unknown', 'not-collected', 'unconfigured', 'disabled', 'unavailable', 'incomplete'].includes(safeStatus) ? 'is-warn' : 'is-info';
   return `<span class="status-badge ${style}"><span class="glyph" aria-hidden="true">${style === 'is-ok' ? '●' : style === 'is-crit' ? '!' : style === 'is-warn' ? '◌' : '○'}</span>${esc(STATUS_LABELS[safeStatus] || 'Unknown')}</span>`;
@@ -491,7 +534,7 @@ function codeHealthPage(gitVersion, view) {
   const fresh = view.objectiveCollection.lastSuccessAt ? `Last stored success ${view.objectiveCollection.lastSuccessAt}` : 'No stored successful collection';
   const retentionNotice = view.period.olderEvidenceMayBeAbsent ? `<p class="ch-callout">Older records may be absent from this ${view.period.requestedDays}-day requested window; records are retained for ${view.period.retainedMonths} calendar months from collection.</p>` : '';
   const retentionLabel = `${view.period.retainedMonths} calendar month${view.period.retainedMonths === 1 ? '' : 's'}`;
-  const collectionNote = view.objectiveCollection.note || view.objectiveCollection.lastError || 'Stored snapshots only; rendering does not collect evidence.';
+  const collectionNote = view.objectiveCollection.note || view.objectiveCollection.summary || view.objectiveCollection.lastError || 'Stored snapshots only; rendering does not collect evidence.';
   const fixtureNotice = view.subjective.status === 'fixture'
     ? '<p class="ch-callout">Synthetic fixture data is shown for visual acceptance; no producer is enabled here.</p>'
     : '<p class="ch-callout">Stored evidence view; writes are disabled. This page does not trigger live collection.</p>';
@@ -500,6 +543,7 @@ function codeHealthPage(gitVersion, view) {
     <form class="ch-filters" method="get" action="/code-health"><label>Repository<select name="repo">${repoOptions}</select></label><label>Period<select name="days">${periodOptions}</select></label><label>Module<select name="module">${moduleOptions}</select></label><label>Worker model cohort <span class="ch-muted">(subjective only)</span><select name="cohort">${cohortOptions}</select></label><button type="submit">Apply filters</button></form>
     ${retentionNotice}
     <p class="ch-note">${esc(collectionNote)} Last attempt: ${view.objectiveCollection.lastAttemptAt ? esc(view.objectiveCollection.lastAttemptAt) : 'none recorded'}; status: ${esc(STATUS_LABELS[view.objectiveCollection.lastAttemptStatus] || STATUS_LABELS[status] || status)}. Records are retained for ${retentionLabel} from collection.</p>
+    ${rejectionNotice(view.objectiveCollection)}
     ${view.acceptance.writesEnabled ? '' : fixtureNotice}
     <div class="ch-objective-grid">${objectiveSections}</div>
     ${subjectiveSection(view.subjective)}
