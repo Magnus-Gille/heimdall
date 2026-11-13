@@ -7,6 +7,11 @@ const { canonical } = require('./artifact');
 const { REJECTION_REASONS } = require('./collection-status');
 
 const OBJECTIVE_RETENTION_MONTHS = 6;
+// A rejected run is retried, and its row refreshed, on every cycle while it is
+// among the newest unsettled runs in the listing window. One that has not been
+// retried for this long can no longer be recovered by the collector, so it must
+// stop reading as a current rejection.
+const REJECTED_RUN_RETENTION_MS = 24 * 60 * 60 * 1000;
 const ALLOWED_WINDOWS = new Set([30, 90, 365]);
 const MAX_CORRECTION_CONTEXT = 500;
 
@@ -50,8 +55,8 @@ function instantOrNull(value) {
   return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
 }
 
-// Run-attempt bookkeeping rows outlive the 30-day listing window by months, so
-// pruning cannot make an in-window run look unhandled.
+// Admitted run rows outlive the 30-day listing window by months, so pruning
+// cannot make an in-window run look unhandled.
 function upsertAdmittedRun(db, owner, name, provenance, now) {
   db.prepare(`INSERT INTO code_health_objective_runs (
       repo_owner, repo_name, run_id, attempt, outcome, reason_code, artifact_id,
@@ -68,7 +73,9 @@ function upsertAdmittedRun(db, owner, name, provenance, now) {
 
 /**
  * Record a rejected run attempt. It stays unsettled (retried every cycle), and
- * an attempt that was already admitted is never downgraded.
+ * an attempt that was already admitted is never downgraded. The row lives only
+ * `REJECTED_RUN_RETENTION_MS` past its latest retry, so the rejected rows on
+ * record are the ones the collector is still retrying.
  */
 function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode, artifactId = null, runCreatedAt = null }, nowValue = new Date()) {
   if (!REJECTION_REASONS.includes(reasonCode)) throw new TypeError('rejection reason is not in the bounded set');
@@ -85,7 +92,7 @@ function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode
       last_handled_at = excluded.last_handled_at, expires_at = excluded.expires_at
     WHERE code_health_objective_runs.outcome = 'rejected'`)
     .run(repoOwner, repoName, runId, attempt, reasonCode, positiveId(artifactId), instantOrNull(runCreatedAt),
-      now, now, addCalendarMonths(now, OBJECTIVE_RETENTION_MONTHS)).changes > 0;
+      now, now, isoNow(new Date(Date.parse(now) + REJECTED_RUN_RETENTION_MS))).changes > 0;
 }
 
 /** A run attempt is settled once its artifact was admitted (replays included). */
@@ -402,6 +409,7 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
 
 module.exports = {
   OBJECTIVE_RETENTION_MONTHS,
+  REJECTED_RUN_RETENTION_MS,
   addCalendarMonths,
   writeAudit,
   admitObjectiveArtifact,

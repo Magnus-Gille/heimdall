@@ -847,8 +847,8 @@ async function run() {
       configured: codeHealthConfig?.objectiveConfigured === true,
     });
     if (staleness.stale.length) console.log(`  Code health stale: ${staleness.stale.map((item) => item.repository).join(', ')}`);
-  } catch {
-    console.warn('  Code health staleness check failed');
+  } catch (err) {
+    console.warn(`  Code health staleness check failed: ${err.message}`);
   }
 
   db.close();

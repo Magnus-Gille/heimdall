@@ -1527,6 +1527,26 @@ describe('objective collection settled runs and cycle status', () => {
     assert.ok(Date.parse(expiresAt) - Date.parse(NOW) > 90 * 86400000);
     db.close();
   });
+
+  it('drops a rejected run that is no longer retried, so it stops reading as a current rejection', () => {
+    const { recordRejectedRun } = require('../src/code-health/store');
+    const db = memoryDb();
+    const source = { repoOwner: 'Magnus-Gille', repoName: 'gille-inference', enabled: true, configured: true };
+    const rejection = { repoOwner: 'Magnus-Gille', repoName: 'gille-inference', runId: 9400, attempt: 1, reasonCode: 'artifact-parse-rejected' };
+    recordRejectedRun(db, rejection, '2026-10-10T12:00:00Z');
+    // Retried the next day: the retry keeps the row alive.
+    assert.equal(pruneExpiredEvidence(db, '2026-10-11T11:00:00Z').runs, 0);
+    recordRejectedRun(db, rejection, '2026-10-11T11:00:00Z');
+    assert.equal(pruneExpiredEvidence(db, '2026-10-12T10:00:00Z').runs, 0);
+    assert.equal(readObjectiveSourceState(db, source).rejected_runs, 1);
+    // Not retried for more than a day (aged out of the listing window): gone.
+    assert.equal(pruneExpiredEvidence(db, '2026-10-12T11:00:01Z').runs, 1);
+    const state = readObjectiveSourceState(db, source);
+    assert.equal(state.rejected_runs, 0);
+    assert.equal(state.last_rejection_at, null);
+    assert.equal(state.last_rejection_code, null);
+    db.close();
+  });
 });
 
 describe('GitHub transport settled-run predicate', () => {
