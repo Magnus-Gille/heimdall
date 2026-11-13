@@ -4,6 +4,7 @@ const { REPOSITORIES } = require('./registry');
 const { LIMITS, parseObjectiveArtifact } = require('./artifact');
 const {
   admitObjectiveArtifact, pruneExpiredEvidence, writeAudit, isoNow, objectiveSourceId, recordRejectedRun, isRunSettled,
+  newestAdmittedRunCreatedAt, isRejectionSuperseded,
 } = require('./store');
 
 const DEFAULT_OBJECTIVE_SOURCE_CONFIG = Object.freeze({ enabled: false });
@@ -69,12 +70,14 @@ async function stage(reasonCode, step) {
   }
 }
 
-function sourceStatus({ unavailable, rejected, incomplete, admitted, current }) {
+function sourceStatus({ unavailable, rejected, superseded = 0, incomplete, admitted, current }) {
   if (unavailable) return 'unavailable';
-  if (rejected > 0) return 'rejected';
+  if (rejected - superseded > 0) return 'rejected';
   if (incomplete) return 'incomplete';
   if (admitted > 0) return 'committed';
-  return current ? 'current' : 'no-artifacts';
+  // Superseded rejections mean the scan handled candidates and found nothing
+  // admissible that was new, which is current rather than no-artifacts.
+  return current || superseded > 0 ? 'current' : 'no-artifacts';
 }
 
 /**
@@ -84,7 +87,10 @@ function sourceStatus({ unavailable, rejected, incomplete, admitted, current }) 
  *
  * Each source gets exactly one collector-level audit row per cycle, written
  * last, by precedence unavailable > rejected > incomplete > committed >
- * current (complete scan, nothing new) > no-artifacts.
+ * current (complete scan, nothing new) > no-artifacts. A rejection of a run
+ * created strictly before the newest tracked admitted run (evaluated at the
+ * end of the source's cycle) is superseded and does not count as rejected;
+ * it is still recorded and retried.
  */
 async function collectObjectiveReports({
   db,
@@ -104,14 +110,22 @@ async function collectObjectiveReports({
   let admitted = 0;
   let replayed = 0;
   let rejected = 0;
+  let supersededRejections = 0;
   let unavailable = 0;
   let skipped = 0;
   let incomplete = false;
   const sources = [];
   for (const source of REPOSITORIES) {
     const isSettled = (runId, attempt) => isRunSettled(db, source.owner, source.name, runId, attempt);
-    const tally = { unavailable: false, rejected: 0, incomplete: false, admitted: 0, current: false };
+    const tally = { unavailable: false, rejected: 0, superseded: 0, incomplete: false, admitted: 0, current: false };
+    // Creation time of each rejected run this cycle; null when provenance is unknown.
+    const rejectedCreatedAt = [];
     const finish = () => {
+      if (rejectedCreatedAt.length > 0) {
+        const newestAdmitted = newestAdmittedRunCreatedAt(db, source.owner, source.name);
+        tally.superseded = rejectedCreatedAt.filter((at) => isRejectionSuperseded(at, newestAdmitted)).length;
+        supersededRejections += tally.superseded;
+      }
       const status = sourceStatus(tally);
       auditAttempt(db, isoNow(clock()), source, 'admit', status);
       sources.push({ repository: source.name, status });
@@ -175,6 +189,7 @@ async function collectObjectiveReports({
         }
         rejected += 1;
         tally.rejected += 1;
+        rejectedCreatedAt.push(provenance?.runCreatedAt ?? null);
         const reasonCode = error instanceof StageRejection ? error.reasonCode : 'admission-rejected';
         recordRejectedRun(db, {
           repoOwner: source.owner,
@@ -191,7 +206,7 @@ async function collectObjectiveReports({
     finish();
   }
   return {
-    status: rejected > 0 ? (admitted + replayed > 0 ? 'partial' : 'rejected')
+    status: rejected - supersededRejections > 0 ? (admitted + replayed > 0 ? 'partial' : 'rejected')
       : unavailable > 0 || incomplete ? 'partial'
         : admitted > 0 ? 'committed'
           : sources.some((item) => item.status === 'current') ? 'current' : 'no-artifacts',
@@ -200,6 +215,7 @@ async function collectObjectiveReports({
     replayed,
     skipped,
     rejected,
+    supersededRejections,
     unavailable,
     incomplete,
     sources,

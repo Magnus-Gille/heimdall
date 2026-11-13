@@ -104,6 +104,29 @@ function isRunSettled(db, repoOwner, repoName, runId, attempt) {
 }
 
 /**
+ * The creation time of the newest tracked admitted run of a repository, or
+ * null. Only run rows count; snapshot collection times are this collector's
+ * clock and never stand in for a run creation time here. Ordered as instants,
+ * so mixed fractional-second precision cannot win by string order.
+ */
+function newestAdmittedRunCreatedAt(db, repoOwner, repoName) {
+  return db.prepare(`SELECT run_created_at AS at FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'admitted' AND run_created_at IS NOT NULL
+    ORDER BY julianday(run_created_at) DESC, run_created_at DESC LIMIT 1`)
+    .get(repoOwner, repoName)?.at ?? null;
+}
+
+/**
+ * A rejection is superseded when the rejected run was created strictly before
+ * the newest tracked admitted run. It fails closed: an unknown or invalid
+ * creation time on either side, or an equal or later one, is not superseded.
+ */
+function isRejectionSuperseded(rejectedRunCreatedAt, newestAdmittedCreatedAt) {
+  if (instantOrNull(rejectedRunCreatedAt) == null || instantOrNull(newestAdmittedCreatedAt) == null) return false;
+  return Date.parse(rejectedRunCreatedAt) < Date.parse(newestAdmittedCreatedAt);
+}
+
+/**
  * The newest known admission time for a repository: the later of
  *
  * - the creation time of the newest admitted run, and
@@ -118,9 +141,7 @@ function isRunSettled(db, repoOwner, repoName, runId, attempt) {
  * stops growing at the upgrade. Returns null when nothing is known.
  */
 function lastAdmittedRunAt(db, repoOwner, repoName) {
-  const tracked = db.prepare(`SELECT MAX(run_created_at) AS at FROM code_health_objective_runs
-    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'admitted' AND run_created_at IS NOT NULL`)
-    .get(repoOwner, repoName)?.at ?? null;
+  const tracked = newestAdmittedRunCreatedAt(db, repoOwner, repoName);
   const untracked = db.prepare(`SELECT MAX(s.collected_at) AS at FROM code_health_objective_snapshots s
     WHERE s.repo_owner = ? AND s.repo_name = ? AND NOT EXISTS (
       SELECT 1 FROM code_health_objective_runs r
@@ -395,8 +416,14 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
   const rejection = db.prepare(`SELECT last_handled_at, reason_code FROM code_health_objective_runs
     WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'
     ORDER BY last_handled_at DESC, run_id DESC, attempt DESC LIMIT 1`).get(repoOwner, repoName) ?? null;
-  const rejectedRuns = db.prepare(`SELECT COUNT(*) AS n FROM code_health_objective_runs
-    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'`).get(repoOwner, repoName).n;
+  // Rejected rows live 24 hours past their latest retry, so this set stays
+  // bounded by the listing window.
+  const rejectedCreatedAt = db.prepare(`SELECT run_created_at FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'`).all(repoOwner, repoName);
+  const rejectedRuns = rejectedCreatedAt.length;
+  const newestAdmitted = newestAdmittedRunCreatedAt(db, repoOwner, repoName);
+  const supersededRejectedRuns = rejectedCreatedAt
+    .filter((row) => isRejectionSuperseded(row.run_created_at, newestAdmitted)).length;
   const status = enabled !== true ? 'disabled'
     : configured !== true ? 'unconfigured'
       : lastAttempt?.status ?? 'not-collected';
@@ -416,6 +443,7 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
     last_rejection_at: rejection?.last_handled_at ?? null,
     last_rejection_code: REJECTION_REASONS.includes(rejection?.reason_code) ? rejection.reason_code : null,
     rejected_runs: rejectedRuns,
+    superseded_rejected_runs: supersededRejectedRuns,
     last_admitted_run_at: lastAdmittedRunAt(db, repoOwner, repoName),
   };
 }
@@ -433,5 +461,7 @@ module.exports = {
   recordRejectedRun,
   isRunSettled,
   lastAdmittedRunAt,
+  newestAdmittedRunCreatedAt,
+  isRejectionSuperseded,
   isoNow,
 };
