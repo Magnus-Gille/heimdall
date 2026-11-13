@@ -508,8 +508,10 @@ describe('objective collection status banner', () => {
     assert.match(one.html, /1 older run attempt rejected; newer runs have been admitted, so this does not affect the status\./);
 
     const some = render({ status: 'rejected', ...rejection, rejected_runs: 3, superseded_rejected_runs: 1 });
-    assert.match(some.html, /3 run attempts rejected and retried each cycle until admitted\. 1 of them are older than the newest admitted run\./);
+    assert.match(some.html, /3 run attempts rejected and retried each cycle until admitted\. 1 of them is older than the newest admitted run\./);
     assert.doesNotMatch(some.html, /does not affect the status/);
+    const several = render({ status: 'rejected', ...rejection, rejected_runs: 3, superseded_rejected_runs: 2 });
+    assert.match(several.html, /3 run attempts rejected and retried each cycle until admitted\. 2 of them are older than the newest admitted run\./);
     const none = render({ status: 'rejected', ...rejection, rejected_runs: 2, superseded_rejected_runs: 0 });
     assert.match(none.html, /2 run attempts rejected and retried each cycle until admitted\.<\/p>/);
     assert.doesNotMatch(none.html, /older than the newest admitted run|does not affect the status/);

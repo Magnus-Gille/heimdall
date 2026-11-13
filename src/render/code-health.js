@@ -460,7 +460,7 @@ function rejectionNotice(collection) {
     parts.push(`${collection.rejectedRuns} older run attempt${plural} rejected; newer runs have been admitted, so this does not affect the status.`);
   } else if (collection.rejectedRuns > 0) {
     parts.push(`${collection.rejectedRuns} run attempt${plural} rejected and retried each cycle until admitted.`);
-    if (collection.supersededRejectedRuns > 0) parts.push(`${collection.supersededRejectedRuns} of them are older than the newest admitted run.`);
+    if (collection.supersededRejectedRuns > 0) parts.push(`${collection.supersededRejectedRuns} of them ${collection.supersededRejectedRuns === 1 ? "is" : "are"} older than the newest admitted run.`);
   }
   return `<p class="ch-reason ch-rejection" role="status">${esc(parts.join(' '))}</p>`;
 }
