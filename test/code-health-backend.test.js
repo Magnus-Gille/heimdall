@@ -1591,4 +1591,33 @@ describe('GitHub transport settled-run predicate', () => {
     assert.equal(listing.candidates.length, 1);
     assert.equal(listing.candidates[0].run.attempt, 2);
   });
+
+  it('keeps a settled attempt whose listed metadata fails provenance validation as incomplete', async () => {
+    // The listing accepts a run without `updated_at`; the per-run revision check
+    // does not. Settling the attempt earlier must not hide that fail-closed signal.
+    const listingWithoutUpdatedAt = () => {
+      const fixture = multiRunGh({ 'gille-inference': gilleRuns(3) });
+      const execFile = (file, args, options, callback) => fixture.execFile(file, args, options, (error, stdout, stderr) => {
+        if (error || !/workflows\/code-health\.yml\/runs\?/.test(args.at(-1))) { callback(error, stdout, stderr); return; }
+        const page = JSON.parse(stdout);
+        for (const run of page.workflow_runs) if (run.id === 7000) delete run.updated_at;
+        callback(null, JSON.stringify(page), stderr);
+      });
+      return { fixture, transport: createGitHubTransport({ execFile, now: () => new Date(NOW) }) };
+    };
+
+    const unfiltered = await listingWithoutUpdatedAt().transport.listArtifacts(request);
+    assert.equal(unfiltered.incomplete, true);
+    assert.deepEqual(unfiltered.candidates.map((candidate) => candidate.run.id).sort(), [7001, 7002]);
+
+    const { fixture, transport } = listingWithoutUpdatedAt();
+    const asked = [];
+    const listing = await transport.listArtifacts({ ...request, isSettled: (runId) => { asked.push(runId); return true; } });
+    assert.equal(listing.incomplete, true);
+    assert.equal(listing.settledRuns, 2);
+    assert.deepEqual(listing.candidates, []);
+    // The predicate is only consulted for runs that passed revision validation.
+    assert.deepEqual(asked.sort(), [7001, 7002]);
+    assert.equal(fixture.perRunCalls().length, 0);
+  });
 });

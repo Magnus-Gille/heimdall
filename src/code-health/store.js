@@ -104,19 +104,32 @@ function isRunSettled(db, repoOwner, repoName, runId, attempt) {
 }
 
 /**
- * The newest known admission time for a repository: the creation time of the
- * newest admitted run, or, when no run row carries it (for example rows written
- * before run bookkeeping existed), the latest stored snapshot collection time.
- * The fallback is never earlier than the run it came from, so it cannot make a
- * source look staler than it is. Returns null when nothing is known.
+ * The newest known admission time for a repository: the later of
+ *
+ * - the creation time of the newest admitted run, and
+ * - the latest collection time among snapshots whose run has no such row
+ *   (snapshots stored before run bookkeeping existed).
+ *
+ * A snapshot's collection time is this collector's clock, which is never
+ * earlier than the run it came from, so the second term cannot make a source
+ * look staler than it is. It is used only for untracked runs because a tracked
+ * old run that was collected late must not look fresh. Every admission since
+ * run bookkeeping writes the run row in the same transaction, so that term
+ * stops growing at the upgrade. Returns null when nothing is known.
  */
 function lastAdmittedRunAt(db, repoOwner, repoName) {
-  const run = db.prepare(`SELECT MAX(run_created_at) AS at FROM code_health_objective_runs
+  const tracked = db.prepare(`SELECT MAX(run_created_at) AS at FROM code_health_objective_runs
     WHERE repo_owner = ? AND repo_name = ? AND outcome = 'admitted' AND run_created_at IS NOT NULL`)
     .get(repoOwner, repoName)?.at ?? null;
-  if (run) return run;
-  return db.prepare(`SELECT MAX(collected_at) AS at FROM code_health_objective_snapshots
-    WHERE repo_owner = ? AND repo_name = ?`).get(repoOwner, repoName)?.at ?? null;
+  const untracked = db.prepare(`SELECT MAX(s.collected_at) AS at FROM code_health_objective_snapshots s
+    WHERE s.repo_owner = ? AND s.repo_name = ? AND NOT EXISTS (
+      SELECT 1 FROM code_health_objective_runs r
+      WHERE r.repo_owner = s.repo_owner AND r.repo_name = s.repo_name
+        AND r.run_id = s.source_run_id AND r.attempt = s.source_attempt
+        AND r.outcome = 'admitted' AND r.run_created_at IS NOT NULL)`)
+    .get(repoOwner, repoName)?.at ?? null;
+  if (tracked == null || untracked == null) return tracked ?? untracked;
+  return Date.parse(untracked) > Date.parse(tracked) ? untracked : tracked;
 }
 
 function recordReferences(record) {

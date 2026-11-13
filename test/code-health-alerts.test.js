@@ -75,6 +75,35 @@ describe('code-health staleness alerts', () => {
     assert.deepEqual(result.stale.map((item) => item.repository), ['gille-inference']);
   });
 
+  const insertSnapshot = (snapshotId, runId, collectedAt) => {
+    db.prepare(`INSERT INTO code_health_objective_snapshots (snapshot_id, repo_owner, repo_name, commit_sha, observed_at,
+      collected_at, expires_at, source_run_id, source_attempt, artifact_sha256, payload_sha256, payload_json)
+      VALUES (?, 'Magnus-Gille', 'gille-inference', ?, ?, ?, '2027-04-01T00:00:00Z', ?, 1, ?, ?, '{}')`)
+      .run(snapshotId, 'a'.repeat(40), collectedAt, collectedAt, runId, 'b'.repeat(64), 'c'.repeat(64));
+  };
+
+  it('counts a newer snapshot from before run bookkeeping when older runs are already tracked', () => {
+    // Mixed state right after the upgrade: an old run has been re-listed and
+    // tracked, while the newest evidence is a snapshot whose run is not yet.
+    const cap = freshnessCapMs('gille-inference');
+    admitRun(db, 'gille-inference', 1, iso(NOW - cap - HOUR));
+    insertSnapshot('ref:untracked', 2, iso(NOW - HOUR));
+    const result = evaluateCodeHealthStalenessAlerts(db, { enabled: true, configured: true, now: NOW });
+    assert.equal(result.stale.length, 0);
+    assert.equal(active(db).length, 0);
+  });
+
+  it('does not let the late collection of a tracked old run hide staleness', () => {
+    // A snapshot's collection time is this collector's clock. Once its run is
+    // tracked, only the run's own creation time counts.
+    const cap = freshnessCapMs('gille-inference');
+    admitRun(db, 'gille-inference', 1, iso(NOW - cap - HOUR));
+    insertSnapshot('ref:tracked-late', 1, iso(NOW - HOUR));
+    const result = evaluateCodeHealthStalenessAlerts(db, { enabled: true, configured: true, now: NOW });
+    assert.deepEqual(result.stale.map((item) => item.repository), ['gille-inference']);
+    assert.equal(result.stale[0].lastAdmittedRunAt, iso(NOW - cap - HOUR));
+  });
+
   it('clears and skips evaluation when the objective source is disabled or unconfigured', () => {
     const cap = freshnessCapMs('gille-inference');
     admitRun(db, 'gille-inference', 1, iso(NOW - cap - HOUR));

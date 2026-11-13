@@ -465,6 +465,11 @@ const MIGRATIONS = [
       `);
       const audit = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'code_health_audit'").get();
       if (audit && audit.sql.includes("'current'")) return;
+      // AUTOINCREMENT never reuses an id, even after the highest rows were
+      // deleted. The rebuilt table would restart from its highest copied row,
+      // so the old high-water mark is carried over explicitly.
+      const sequence = "SELECT seq FROM sqlite_sequence WHERE name = 'code_health_audit'";
+      const priorSequence = db.prepare(sequence).get()?.seq ?? 0;
       db.exec(`
         CREATE TABLE code_health_audit_v16 (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -488,6 +493,14 @@ const MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS idx_code_health_audit_source
           ON code_health_audit(source_id, id DESC);
       `);
+      const rebuiltSequence = db.prepare(sequence).get();
+      if (!rebuiltSequence) {
+        if (priorSequence > 0) {
+          db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('code_health_audit', ?)").run(priorSequence);
+        }
+      } else if (rebuiltSequence.seq < priorSequence) {
+        db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'code_health_audit'").run(priorSequence);
+      }
     },
   },
 ];

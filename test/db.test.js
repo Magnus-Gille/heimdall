@@ -127,6 +127,41 @@ describe('openDatabase', () => {
     db.close();
   });
 
+  it('keeps the audit id high-water mark across the v16 rebuild so ids are never reused', () => {
+    const legacyAudit = `CREATE TABLE code_health_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_at TEXT NOT NULL,
+      source_id TEXT,
+      source_kind TEXT NOT NULL CHECK (source_kind IN ('objective', 'subjective', 'retention')),
+      operation TEXT NOT NULL CHECK (operation IN ('admit', 'reconcile', 'expire')),
+      status TEXT NOT NULL CHECK (status IN ('committed', 'rejected', 'unavailable', 'disabled', 'unconfigured', 'incomplete', 'no-artifacts')),
+      repo_owner TEXT,
+      repo_name TEXT,
+      record_count INTEGER NOT NULL DEFAULT 0 CHECK (record_count >= 0)
+    );`;
+    const insert = `INSERT INTO code_health_audit (id, event_at, source_kind, operation, status)
+      VALUES (?, '2026-10-01T00:00:00Z', 'objective', 'admit', 'incomplete')`;
+    const next = `INSERT INTO code_health_audit (event_at, source_kind, operation, status)
+      VALUES ('2026-10-02T00:00:00Z', 'objective', 'admit', 'current')`;
+    // Remaining ids after the highest rows were deleted: some rows left, and none.
+    for (const remaining of [[7], []]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
+      const dbPath = path.join(dir, 'test.db');
+      openDatabase(dbPath).close();
+      const legacy = new Database(dbPath);
+      legacy.exec(`DROP TABLE code_health_objective_runs; DROP TABLE code_health_audit; ${legacyAudit}`);
+      for (const id of [7, 41]) legacy.prepare(insert).run(id);
+      legacy.prepare('DELETE FROM code_health_audit WHERE id NOT IN (SELECT value FROM json_each(?))').run(JSON.stringify(remaining));
+      legacy.pragma('user_version = 15');
+      legacy.close();
+
+      const db = openDatabase(dbPath);
+      assert.deepEqual(db.prepare('SELECT id FROM code_health_audit ORDER BY id').all().map((row) => row.id), remaining);
+      assert.equal(db.prepare(next).run().lastInsertRowid, 42, `remaining ids ${JSON.stringify(remaining)}`);
+      db.close();
+    }
+  });
+
   it('migrates legacy fleet tables without inventing an agent version', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-test-'));
     const dbPath = path.join(dir, 'test.db');
