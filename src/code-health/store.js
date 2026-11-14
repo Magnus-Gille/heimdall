@@ -393,8 +393,9 @@ async function getObjectiveHistory(db, {
     // Full-scope producers may emit a static not-collected snapshot for metrics
     // outside the current run. Keep it in history, but do not let it hide a
     // substantive point; gaps and every other status remain authoritative.
-    const substantiveCandidates = currentCandidates.filter((point) => !(point.kind === 'snapshot'
-      && point.status === 'unknown' && point.reason === 'not-collected'));
+    const isCadenceRow = (point) => point.kind === 'snapshot'
+      && point.status === 'unknown' && point.reason === 'not-collected';
+    const substantiveCandidates = currentCandidates.filter((point) => !isCadenceRow(point));
     const latestPool = substantiveCandidates.length ? substantiveCandidates : currentCandidates;
     const latestEventAt = latestPool.length ? latestPool[latestPool.length - 1].observed_at : null;
     const latestCandidates = latestEventAt == null ? [] : latestPool.filter((point) => point.observed_at === latestEventAt);
@@ -402,7 +403,10 @@ async function getObjectiveHistory(db, {
     if (latestCandidates.length === 0) latest = { status: 'unknown', current_status: 'unknown', reason: 'no-retained-sample', series_key: null, payload: null };
     else if (latestCandidates.length > 1) latest = { status: 'unknown', current_status: 'unknown', reason: 'conflicting-samples-at-same-time', series_key: null, payload: null };
     else latest = latestCandidates[0];
-    return { ...registeredSlot, latest, points: allPoints };
+    // A not-collected snapshot row means the report's cadence did not include
+    // this slot; it is not an observation, so it must not consume history
+    // windows. A missed collection is stored as a gap and stays in points.
+    return { ...registeredSlot, latest, points: allPoints.filter((point) => !isCadenceRow(point)) };
   });
   return { repo_owner: repoOwner, repo_name: repoName, window_days: days, since, as_of: asOf, retention_months: 6, slots };
 }

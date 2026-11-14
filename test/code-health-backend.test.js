@@ -778,12 +778,48 @@ describe('code-health objective backend', () => {
       const slot = history.slots.find((item) => item.scope === scope && item.metric === 'coverage');
       assert.equal(slot.latest.snapshot_id.startsWith('ref:full-t1'), true);
       assert.equal(slot.latest.current_status, 'measured');
-      assert.ok(slot.points.some((point) => point.snapshot_id.startsWith('ref:ci-only-t2')
-        && point.status === 'unknown' && point.reason === 'not-collected'));
+      assert.ok(!slot.points.some((point) => point.status === 'unknown' && point.reason === 'not-collected'));
     }
     const ci = history.slots.find((item) => item.scope === 'ci-release' && item.metric === 'ci_first_attempt');
     assert.equal(ci.latest.snapshot_id.startsWith('ref:ci-only-t2'), true);
     assert.equal(ci.latest.current_status, 'measured');
+    db.close();
+  });
+
+  it('keeps weekly static history free of daily not-collected cadence rows', async () => {
+    const db = memoryDb();
+    const day = (offset) => new Date(Date.parse('2026-10-12T10:00:00Z') + offset * 86400000).toISOString().replace('.000Z', 'Z');
+    let runId = 2000;
+    for (let offset = 0; offset < 42; offset += 1) {
+      const weekly = offset % 7 === 0;
+      const at = day(offset);
+      runId += 1;
+      await admitSagaFixture(db, {
+        runId, snapshotId: `ref:cadence-${runId}`, artifactCreatedAt: at, collectedAt: at,
+        mutate: (parsed) => {
+          for (const [index, snapshot] of parsed.snapshots.entries()) {
+            const scope = sagaRegistry.scopes[index].name;
+            snapshot.observed_at = at;
+            for (const metricName of Object.keys(snapshot.metrics)) {
+              snapshot.metrics[metricName].observed_at = at;
+              if (metricName === 'confirmed_regressions') snapshot.metrics[metricName].payload.as_of = at;
+              const isCi = scope === 'ci-release' && metricName === 'ci_first_attempt';
+              if (!weekly && !isCi) setStaticMetricState(snapshot, metricName, 'unknown', 'not-collected', at);
+            }
+          }
+        },
+      });
+    }
+    const history = await getObjectiveHistory(db, {
+      repoOwner: 'Magnus-Gille', repoName: 'sagascript', asOf: day(43),
+    });
+    for (const scope of ['rust-core', 'rust-cli', 'swift-coreml']) {
+      const slot = history.slots.find((item) => item.scope === scope && item.metric === 'coverage');
+      assert.equal(slot.points.length, 6, scope);
+      assert.ok(slot.points.every((point) => point.status === 'measured'));
+    }
+    const ci = history.slots.find((item) => item.scope === 'ci-release' && item.metric === 'ci_first_attempt');
+    assert.equal(ci.points.length, 42);
     db.close();
   });
 
