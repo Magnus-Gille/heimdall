@@ -75,7 +75,10 @@ function upsertAdmittedRun(db, owner, name, provenance, now) {
  * Record a rejected run attempt. It stays unsettled (retried every cycle), and
  * an attempt that was already admitted is never downgraded. The row lives only
  * `REJECTED_RUN_RETENTION_MS` past its latest retry, so the rejected rows on
- * record are the ones the collector is still retrying.
+ * record are the ones the collector is still retrying. The stored creation
+ * time is the one validated by the latest retry, or NULL when that retry could
+ * not validate the run metadata: an earlier value is not kept, so the reader
+ * and the collector make the same superseded decision.
  */
 function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode, artifactId = null, runCreatedAt = null }, nowValue = new Date()) {
   if (!REJECTION_REASONS.includes(reasonCode)) throw new TypeError('rejection reason is not in the bounded set');
@@ -88,7 +91,7 @@ function recordRejectedRun(db, { repoOwner, repoName, runId, attempt, reasonCode
     ON CONFLICT (repo_owner, repo_name, run_id, attempt) DO UPDATE SET
       reason_code = excluded.reason_code,
       artifact_id = COALESCE(excluded.artifact_id, code_health_objective_runs.artifact_id),
-      run_created_at = COALESCE(excluded.run_created_at, code_health_objective_runs.run_created_at),
+      run_created_at = excluded.run_created_at,
       last_handled_at = excluded.last_handled_at, expires_at = excluded.expires_at
     WHERE code_health_objective_runs.outcome = 'rejected'`)
     .run(repoOwner, repoName, runId, attempt, reasonCode, positiveId(artifactId), instantOrNull(runCreatedAt),
@@ -101,6 +104,29 @@ function isRunSettled(db, repoOwner, repoName, runId, attempt) {
   return !!db.prepare(`SELECT 1 FROM code_health_objective_runs
     WHERE repo_owner = ? AND repo_name = ? AND run_id = ? AND attempt = ? AND outcome = 'admitted'`)
     .get(repoOwner, repoName, runId, attempt);
+}
+
+/**
+ * The creation time of the newest tracked admitted run of a repository, or
+ * null. Only run rows count; snapshot collection times are this collector's
+ * clock and never stand in for a run creation time here. Ordered as instants,
+ * so mixed fractional-second precision cannot win by string order.
+ */
+function newestAdmittedRunCreatedAt(db, repoOwner, repoName) {
+  return db.prepare(`SELECT run_created_at AS at FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'admitted' AND run_created_at IS NOT NULL
+    ORDER BY julianday(run_created_at) DESC, run_created_at DESC LIMIT 1`)
+    .get(repoOwner, repoName)?.at ?? null;
+}
+
+/**
+ * A rejection is superseded when the rejected run was created strictly before
+ * the newest tracked admitted run. It fails closed: an unknown or invalid
+ * creation time on either side, or an equal or later one, is not superseded.
+ */
+function isRejectionSuperseded(rejectedRunCreatedAt, newestAdmittedCreatedAt) {
+  if (instantOrNull(rejectedRunCreatedAt) == null || instantOrNull(newestAdmittedCreatedAt) == null) return false;
+  return Date.parse(rejectedRunCreatedAt) < Date.parse(newestAdmittedCreatedAt);
 }
 
 /**
@@ -118,9 +144,7 @@ function isRunSettled(db, repoOwner, repoName, runId, attempt) {
  * stops growing at the upgrade. Returns null when nothing is known.
  */
 function lastAdmittedRunAt(db, repoOwner, repoName) {
-  const tracked = db.prepare(`SELECT MAX(run_created_at) AS at FROM code_health_objective_runs
-    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'admitted' AND run_created_at IS NOT NULL`)
-    .get(repoOwner, repoName)?.at ?? null;
+  const tracked = newestAdmittedRunCreatedAt(db, repoOwner, repoName);
   const untracked = db.prepare(`SELECT MAX(s.collected_at) AS at FROM code_health_objective_snapshots s
     WHERE s.repo_owner = ? AND s.repo_name = ? AND NOT EXISTS (
       SELECT 1 FROM code_health_objective_runs r
@@ -395,8 +419,14 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
   const rejection = db.prepare(`SELECT last_handled_at, reason_code FROM code_health_objective_runs
     WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'
     ORDER BY last_handled_at DESC, run_id DESC, attempt DESC LIMIT 1`).get(repoOwner, repoName) ?? null;
-  const rejectedRuns = db.prepare(`SELECT COUNT(*) AS n FROM code_health_objective_runs
-    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'`).get(repoOwner, repoName).n;
+  // Rejected rows live 24 hours past their latest retry, so this set stays
+  // bounded by the listing window.
+  const rejectedCreatedAt = db.prepare(`SELECT run_created_at FROM code_health_objective_runs
+    WHERE repo_owner = ? AND repo_name = ? AND outcome = 'rejected'`).all(repoOwner, repoName);
+  const rejectedRuns = rejectedCreatedAt.length;
+  const newestAdmitted = newestAdmittedRunCreatedAt(db, repoOwner, repoName);
+  const supersededRejectedRuns = rejectedCreatedAt
+    .filter((row) => isRejectionSuperseded(row.run_created_at, newestAdmitted)).length;
   const status = enabled !== true ? 'disabled'
     : configured !== true ? 'unconfigured'
       : lastAttempt?.status ?? 'not-collected';
@@ -416,6 +446,7 @@ function readObjectiveSourceState(db, { repoOwner, repoName, enabled = false, co
     last_rejection_at: rejection?.last_handled_at ?? null,
     last_rejection_code: REJECTION_REASONS.includes(rejection?.reason_code) ? rejection.reason_code : null,
     rejected_runs: rejectedRuns,
+    superseded_rejected_runs: supersededRejectedRuns,
     last_admitted_run_at: lastAdmittedRunAt(db, repoOwner, repoName),
   };
 }
@@ -433,5 +464,7 @@ module.exports = {
   recordRejectedRun,
   isRunSettled,
   lastAdmittedRunAt,
+  newestAdmittedRunCreatedAt,
+  isRejectionSuperseded,
   isoNow,
 };

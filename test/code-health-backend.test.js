@@ -1549,6 +1549,226 @@ describe('objective collection settled runs and cycle status', () => {
   });
 });
 
+describe('objective collection superseded rejections', () => {
+  const { newestAdmittedRunCreatedAt, isRejectionSuperseded } = require('../src/code-health/store');
+  const downloadsOf = (calls, runId) => calls.filter((endpoint) => endpoint.endsWith(`/artifacts/${runId + 100000}/zip`)).length;
+
+  it('does not let rejections older than the newest admitted run decide the status, but still records and retries them', async () => {
+    const db = memoryDb();
+    // 7000 and 7001 are the newest runs and admit; 7002 and 7003 are older and rejected.
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(4, { bad: new Set([7002, 7003]) }) });
+    const first = await cycle(db, fixture);
+    assert.equal(first.result.admitted, 2);
+    assert.equal(first.result.rejected, 2);
+    assert.equal(first.result.supersededRejections, 2);
+    assert.equal(first.result.status, 'committed');
+    assert.equal(first.result.sources[0].status, 'committed');
+    assert.equal(auditRows(db).at(-1).status, 'committed');
+    assert.equal(runRow(db, 7002).outcome, 'rejected');
+    assert.equal(runRow(db, 7003).reason_code, 'artifact-parse-rejected');
+    let state = gilleState(db);
+    assert.equal(state.status, 'committed');
+    assert.equal(state.rejected_runs, 2);
+    assert.equal(state.superseded_rejected_runs, 2);
+
+    const second = await cycle(db, fixture, '2026-10-10T12:05:00Z');
+    assert.equal(downloadsOf(second.calls, 7002), 1, 'superseded rejections are still retried');
+    assert.equal(downloadsOf(second.calls, 7003), 1);
+    assert.equal(second.result.rejected, 2);
+    assert.equal(second.result.supersededRejections, 2);
+    assert.equal(second.result.status, 'current');
+    assert.equal(second.result.sources[0].status, 'current');
+    assert.deepEqual(auditRows(db).at(-1), { status: 'current', record_count: 0 });
+    assert.equal(runRow(db, 7002).last_handled_at, '2026-10-10T12:05:00Z');
+    state = gilleState(db);
+    assert.equal(state.status, 'current');
+    assert.equal(state.last_error_code, null);
+    assert.equal(state.rejected_runs, 2);
+    assert.equal(state.superseded_rejected_runs, 2);
+    db.close();
+  });
+
+  it('keeps rejecting when the newest runs are the rejected ones (the motivating incident)', async () => {
+    const db = memoryDb();
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(3, { bad: new Set([7000, 7001]) }) });
+    const first = await cycle(db, fixture);
+    assert.equal(first.result.admitted, 1);
+    assert.equal(first.result.supersededRejections, 0);
+    assert.equal(first.result.status, 'partial');
+    assert.equal(first.result.sources[0].status, 'rejected');
+    const second = await cycle(db, fixture, '2026-10-10T12:05:00Z');
+    assert.equal(second.result.rejected, 2);
+    assert.equal(second.result.supersededRejections, 0);
+    assert.equal(second.result.status, 'rejected');
+    assert.equal(second.result.sources[0].status, 'rejected');
+    const state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.rejected_runs, 2);
+    assert.equal(state.superseded_rejected_runs, 0);
+    db.close();
+  });
+
+  it('reports rejected when only some rejections are older than the newest admitted run', async () => {
+    const db = memoryDb();
+    // 7001 admits; 7000 is newer and 7002 older, both rejected.
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(3, { bad: new Set([7000, 7002]) }) });
+    const { result } = await cycle(db, fixture);
+    assert.equal(result.rejected, 2);
+    assert.equal(result.supersededRejections, 1);
+    assert.equal(result.status, 'partial');
+    assert.equal(result.sources[0].status, 'rejected');
+    const second = await cycle(db, fixture, '2026-10-10T12:05:00Z');
+    assert.equal(second.result.status, 'rejected');
+    const state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.rejected_runs, 2);
+    assert.equal(state.superseded_rejected_runs, 1);
+    db.close();
+  });
+
+  it('fails closed to rejected when no admitted run is tracked', async () => {
+    const db = memoryDb();
+    const fixture = multiRunGh({ 'gille-inference': gilleRuns(2, { bad: new Set([7000, 7001]) }) });
+    const { result } = await cycle(db, fixture);
+    assert.equal(result.rejected, 2);
+    assert.equal(result.supersededRejections, 0);
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.sources[0].status, 'rejected');
+    assert.equal(gilleState(db).superseded_rejected_runs, 0);
+    db.close();
+  });
+
+  // An injected transport lists one admissible run and one rejected run.
+  async function injectedCycle(db, { admittedCreatedAt, rejectedCreatedAt, mutateRejected = () => {} }) {
+    const good = makeObjectiveArchive('gille-inference', 9500, 1, { snapshotId: 'ref:superseding-run' });
+    const bad = Buffer.from('not a zip archive');
+    const admitted = transportMetadata('gille-inference', 9500, 1, good);
+    admitted.run.created_at = admittedCreatedAt;
+    const rejected = transportMetadata('gille-inference', 9501, 1, bad);
+    rejected.artifact.id = 8802;
+    rejected.run.created_at = rejectedCreatedAt;
+    mutateRejected(rejected);
+    return collectObjectiveReports({ db, config: { enabled: true }, clock: () => new Date(NOW), transport: {
+      listArtifacts: async ({ repository }) => repository === 'gille-inference'
+        ? { candidates: [rejected, admitted], incomplete: false } : { candidates: [], incomplete: false },
+      downloadArtifact: async ({ artifactId }) => artifactId === 8802 ? bad : good,
+    } });
+  }
+
+  it('counts an admission made later in the same cycle and compares creation times strictly', async () => {
+    const earlier = memoryDb();
+    const superseded = await injectedCycle(earlier, { admittedCreatedAt: '2026-10-09T10:00:00Z', rejectedCreatedAt: '2026-10-09T09:59:59Z' });
+    assert.equal(superseded.supersededRejections, 1);
+    assert.equal(superseded.sources[0].status, 'committed');
+    assert.equal(gilleState(earlier).superseded_rejected_runs, 1);
+    earlier.close();
+
+    const equal = memoryDb();
+    const same = await injectedCycle(equal, { admittedCreatedAt: '2026-10-09T10:00:00Z', rejectedCreatedAt: '2026-10-09T10:00:00Z' });
+    assert.equal(same.rejected, 1);
+    assert.equal(same.supersededRejections, 0);
+    assert.equal(same.sources[0].status, 'rejected');
+    assert.equal(gilleState(equal).superseded_rejected_runs, 0);
+    equal.close();
+  });
+
+  it('fails closed to rejected when the rejected run has no known creation time', async () => {
+    const db = memoryDb();
+    const result = await injectedCycle(db, {
+      admittedCreatedAt: '2026-10-09T10:00:00Z',
+      rejectedCreatedAt: '2026-10-01T00:00:00Z',
+      mutateRejected: (metadata) => { metadata.run.repository_owner = 'attacker'; },
+    });
+    assert.equal(result.admitted, 1);
+    assert.equal(result.rejected, 1);
+    assert.equal(result.supersededRejections, 0);
+    assert.equal(result.sources[0].status, 'rejected');
+    const row = db.prepare('SELECT reason_code, run_created_at FROM code_health_objective_runs WHERE run_id = 9501').get();
+    assert.deepEqual(row, { reason_code: 'transport-provenance-invalid', run_created_at: null });
+    assert.equal(gilleState(db).superseded_rejected_runs, 0);
+    db.close();
+  });
+
+  it('forgets a creation time the latest retry could not validate, so the page agrees with the status', async () => {
+    const db = memoryDb();
+    const times = { admittedCreatedAt: '2026-10-09T10:00:00Z', rejectedCreatedAt: '2026-10-09T09:00:00Z' };
+    const first = await injectedCycle(db, times);
+    assert.equal(first.supersededRejections, 1);
+    assert.equal(first.sources[0].status, 'committed');
+    assert.equal(gilleState(db).superseded_rejected_runs, 1);
+
+    // The same run is retried, but its metadata no longer validates.
+    const second = await injectedCycle(db, { ...times, mutateRejected: (metadata) => { metadata.run.repository_owner = 'attacker'; } });
+    assert.equal(second.rejected, 1);
+    assert.equal(second.supersededRejections, 0);
+    assert.equal(second.sources[0].status, 'rejected');
+    const row = db.prepare('SELECT reason_code, run_created_at FROM code_health_objective_runs WHERE run_id = 9501').get();
+    assert.deepEqual(row, { reason_code: 'transport-provenance-invalid', run_created_at: null });
+    const state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.rejected_runs, 1);
+    assert.equal(state.superseded_rejected_runs, 0);
+
+    // Valid again on the next retry: superseded again, in both places.
+    const third = await injectedCycle(db, times);
+    assert.equal(third.supersededRejections, 1);
+    assert.equal(third.sources[0].status, 'current');
+    assert.equal(gilleState(db).superseded_rejected_runs, 1);
+    db.close();
+  });
+
+  it('reads superseded rejected rows against tracked admitted run creation times only', async () => {
+    const db = memoryDb();
+    const insert = db.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
+      reason_code, run_created_at, first_handled_at, last_handled_at, expires_at)
+      VALUES ('Magnus-Gille', 'gille-inference', ?, 1, ?, ?, ?, ?, ?, '2027-04-01T00:00:00Z')`);
+    const rejected = (runId, createdAt) => insert.run(runId, 'rejected', 'artifact-parse-rejected', createdAt, NOW, NOW);
+    rejected(1, '2026-10-09T09:00:00Z');
+    rejected(2, null);
+    assert.equal(newestAdmittedRunCreatedAt(db, 'Magnus-Gille', 'gille-inference'), null);
+    let state = gilleState(db);
+    assert.deepEqual([state.rejected_runs, state.superseded_rejected_runs], [2, 0]);
+
+    // A snapshot collected by this collector's clock is not a tracked admitted
+    // run: it moves last_admitted_run_at but never supersedes a rejection.
+    const archive = makeObjectiveArchive('gille-inference', 9600, 1, { snapshotId: 'ref:untracked' });
+    const provenance = { repositoryOwner: 'Magnus-Gille', repositoryName: 'gille-inference', headSha: COMMIT,
+      runId: 9600, attempt: 1, artifactCreatedAt: '2026-10-09T10:02:00Z' };
+    await admitObjectiveArtifact(db, await parseObjectiveArtifact(archive, provenance), provenance, NOW);
+    db.prepare('DELETE FROM code_health_objective_runs WHERE run_id = 9600').run();
+    state = gilleState(db);
+    assert.ok(state.last_admitted_run_at);
+    assert.equal(state.superseded_rejected_runs, 0);
+
+    insert.run(10, 'admitted', null, '2026-10-09T10:00:00Z', NOW, NOW);
+    insert.run(11, 'admitted', null, null, NOW, NOW);
+    rejected(3, '2026-10-09T10:00:00Z');
+    rejected(4, '2026-10-09T11:00:00Z');
+    rejected(5, '2026-10-09T10:00:00.250Z');
+    state = gilleState(db);
+    assert.equal(state.rejected_runs, 5);
+    assert.equal(state.superseded_rejected_runs, 1, 'only the 09:00 rejection; NULL, equal and later ones are not superseded');
+
+    // Mixed precision is compared as instants, not as strings.
+    insert.run(12, 'admitted', null, '2026-10-09T10:00:00.500Z', NOW, NOW);
+    assert.equal(newestAdmittedRunCreatedAt(db, 'Magnus-Gille', 'gille-inference'), '2026-10-09T10:00:00.500Z');
+    state = gilleState(db);
+    assert.equal(state.superseded_rejected_runs, 3, '09:00, 10:00:00 and 10:00:00.250 are older than 10:00:00.500');
+    assert.equal(readObjectiveSourceState(db, { repoOwner: 'Magnus-Gille', repoName: 'sagascript' }).superseded_rejected_runs, 0);
+    db.close();
+  });
+
+  it('decides supersession only from two valid instants with the rejection strictly earlier', () => {
+    assert.equal(isRejectionSuperseded('2026-10-09T09:00:00Z', '2026-10-09T10:00:00Z'), true);
+    assert.equal(isRejectionSuperseded('2026-10-09T10:00:00Z', '2026-10-09T10:00:00Z'), false);
+    assert.equal(isRejectionSuperseded('2026-10-09T11:00:00Z', '2026-10-09T10:00:00Z'), false);
+    assert.equal(isRejectionSuperseded(null, '2026-10-09T10:00:00Z'), false);
+    assert.equal(isRejectionSuperseded('not a time', '2026-10-09T10:00:00Z'), false);
+    assert.equal(isRejectionSuperseded('2026-10-09T09:00:00Z', null), false);
+    assert.equal(isRejectionSuperseded('2026-10-09T09:00:00Z', 'not a time'), false);
+  });
+});
+
 describe('GitHub transport settled-run predicate', () => {
   const { createGitHubTransport, ELIGIBLE_RUN_LIMIT } = require('../src/code-health/github-transport');
   const request = { owner: 'Magnus-Gille', repository: 'gille-inference', workflowPath: '.github/workflows/code-health.yml',

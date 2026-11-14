@@ -428,6 +428,8 @@ function objectiveCollectionView(objectiveSource = {}) {
   const status = objectiveSource.status || 'unconfigured';
   const rejectionCode = REJECTION_REASONS.includes(objectiveSource.last_rejection_code) ? objectiveSource.last_rejection_code : null;
   const rejectedRuns = Number.isSafeInteger(objectiveSource.rejected_runs) && objectiveSource.rejected_runs > 0 ? objectiveSource.rejected_runs : 0;
+  const supersededRejectedRuns = Number.isSafeInteger(objectiveSource.superseded_rejected_runs) && objectiveSource.superseded_rejected_runs > 0
+    ? Math.min(objectiveSource.superseded_rejected_runs, rejectedRuns) : 0;
   const configRejected = objectiveSource.last_error_code === 'invalid-source-configuration';
   return {
     status,
@@ -441,6 +443,7 @@ function objectiveCollectionView(objectiveSource = {}) {
     lastRejectionCode: rejectionCode,
     lastRejection: rejectionCode ? REJECTION_LABELS[rejectionCode] : null,
     rejectedRuns,
+    supersededRejectedRuns,
     note: status === 'disabled' ? 'Objective collection is disabled.'
       : status === 'unconfigured' ? 'No authenticated objective transport is configured.'
         : null,
@@ -452,7 +455,13 @@ function rejectionNotice(collection) {
   const parts = [];
   if (collection.lastRejection) parts.push(collection.lastRejection);
   if (collection.lastRejectionCode) parts.push(`Reason code ${collection.lastRejectionCode}${collection.lastRejectionAt ? `, last rejected ${collection.lastRejectionAt}` : ''}.`);
-  if (collection.rejectedRuns > 0) parts.push(`${collection.rejectedRuns} run attempt${collection.rejectedRuns === 1 ? '' : 's'} rejected and retried each cycle until admitted.`);
+  const plural = collection.rejectedRuns === 1 ? '' : 's';
+  if (collection.rejectedRuns > 0 && collection.supersededRejectedRuns === collection.rejectedRuns) {
+    parts.push(`${collection.rejectedRuns} older run attempt${plural} rejected; newer runs have been admitted, so this does not affect the status.`);
+  } else if (collection.rejectedRuns > 0) {
+    parts.push(`${collection.rejectedRuns} run attempt${plural} rejected and retried each cycle until admitted.`);
+    if (collection.supersededRejectedRuns > 0) parts.push(`${collection.supersededRejectedRuns} of them ${collection.supersededRejectedRuns === 1 ? "is" : "are"} older than the newest admitted run.`);
+  }
   return `<p class="ch-reason ch-rejection" role="status">${esc(parts.join(' '))}</p>`;
 }
 

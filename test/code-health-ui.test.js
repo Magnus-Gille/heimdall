@@ -497,6 +497,37 @@ describe('objective collection status banner', () => {
     assert.doesNotMatch(hostile.html, /onerror|ch-rejection/);
   });
 
+  it('says when every rejected run attempt is older than the newest admitted run', () => {
+    const rejection = { last_rejection_at: '2026-10-10T11:55:00Z', last_rejection_code: 'artifact-parse-rejected' };
+    const all = render({ status: 'current', last_attempt_at: NOW, last_attempt_status: 'current', ...rejection, rejected_runs: 5, superseded_rejected_runs: 5 });
+    assert.equal(all.view.objectiveCollection.supersededRejectedRuns, 5);
+    assert.match(all.html, /status-badge is-ok[^>]*><span class="glyph"[^>]*>●<\/span>Up to date/);
+    assert.match(all.html, /Reason code artifact-parse-rejected, last rejected 2026-10-10T11:55:00\.000Z\. 5 older run attempts rejected; newer runs have been admitted, so this does not affect the status\./);
+    assert.doesNotMatch(all.html, /retried each cycle until admitted/);
+    const one = render({ status: 'current', ...rejection, rejected_runs: 1, superseded_rejected_runs: 1 });
+    assert.match(one.html, /1 older run attempt rejected; newer runs have been admitted, so this does not affect the status\./);
+
+    const some = render({ status: 'rejected', ...rejection, rejected_runs: 3, superseded_rejected_runs: 1 });
+    assert.match(some.html, /3 run attempts rejected and retried each cycle until admitted\. 1 of them is older than the newest admitted run\./);
+    assert.doesNotMatch(some.html, /does not affect the status/);
+    const several = render({ status: 'rejected', ...rejection, rejected_runs: 3, superseded_rejected_runs: 2 });
+    assert.match(several.html, /3 run attempts rejected and retried each cycle until admitted\. 2 of them are older than the newest admitted run\./);
+    const none = render({ status: 'rejected', ...rejection, rejected_runs: 2, superseded_rejected_runs: 0 });
+    assert.match(none.html, /2 run attempts rejected and retried each cycle until admitted\.<\/p>/);
+    assert.doesNotMatch(none.html, /older than the newest admitted run|does not affect the status/);
+  });
+
+  it('clamps a hostile superseded rejection count', () => {
+    for (const [rejectedRuns, superseded, expected] of [[3, -1, 0], [3, 1.5, 0], [3, '2', 0], [3, 99, 3], [0, 4, 0], [2, Number.MAX_SAFE_INTEGER + 2, 0]]) {
+      const { view, html } = render({ status: 'rejected', rejected_runs: rejectedRuns, superseded_rejected_runs: superseded });
+      assert.equal(view.objectiveCollection.supersededRejectedRuns, expected, String(superseded));
+      const notice = /<p class="ch-reason ch-rejection"[^>]*>([^<]*)<\/p>/.exec(html)?.[1] ?? '';
+      assert.doesNotMatch(notice, expected === 0 ? /-1|1\.5|99|older/ : /-1|1\.5|99/, String(superseded));
+    }
+    const capped = render({ status: 'rejected', rejected_runs: 3, superseded_rejected_runs: 99 });
+    assert.match(capped.html, /3 older run attempts rejected; newer runs have been admitted/);
+  });
+
   it('serves stored rejection fields through GET /api/code-health from the real reader', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heimdall-code-health-status-'));
     const statusDb = openDatabase(path.join(dir, 'test.db'));
