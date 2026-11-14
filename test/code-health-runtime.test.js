@@ -335,16 +335,103 @@ describe('read-only GitHub transport', () => {
     assert.equal(elapsed, REPOSITORY_SCAN_BUDGET_MS);
   });
 
+  it('keeps the worst-case run listing inside the repository scan budget', () => {
+    // One workflow request plus RUN_PAGE_LIMIT run pages, each bounded by GH_TIMEOUT_MS.
+    assert.ok((1 + RUN_PAGE_LIMIT) * GH_TIMEOUT_MS < REPOSITORY_SCAN_BUDGET_MS);
+  });
+
+  for (const total of [51, 100]) {
+    it(`lists ${total} settled runs over ${Math.ceil(total / RUN_PAGE_SIZE)} ordered pages as complete`, async () => {
+      const old = workflowRun({ created_at: '2026-10-09T09:00:00Z' });
+      const runs = Array.from({ length: total }, (_, index) => ({ ...old, id: old.id + index }));
+      const pageCount = Math.ceil(total / RUN_PAGE_SIZE);
+      const pages = Array.from({ length: pageCount }, (_, index) => ({
+        total_count: total,
+        workflow_runs: runs.slice(index * RUN_PAGE_SIZE, (index + 1) * RUN_PAGE_SIZE),
+      }));
+      const fixture = ghFixture({ runListPages: pages });
+      const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => NOW });
+      const listing = await transport.listArtifacts({
+        ...SOURCE, branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1',
+        isSettled: () => true,
+      });
+      assert.equal(listing.incomplete, false);
+      assert.equal(listing.settledRuns, total);
+      assert.deepEqual(listing.candidates, []);
+      const endpoints = fixture.calls.map((call) => call.endpoint);
+      const pageRequests = endpoints.filter((endpoint) => endpoint.includes('/code-health.yml/runs?'));
+      assert.equal(pageRequests.length, pageCount);
+      pageRequests.forEach((endpoint, index) => {
+        const query = new URLSearchParams(endpoint.split('?')[1]);
+        assert.equal(query.get('per_page'), String(RUN_PAGE_SIZE));
+        assert.equal(query.get('page'), String(index + 1));
+      });
+      assert.equal(endpoints.length, 1 + pageCount);
+    });
+  }
+
+  describe('a run listing that shifted between page requests', () => {
+    const old = workflowRun({ created_at: '2026-10-09T09:00:00Z' });
+    const run = (index) => ({ ...old, id: old.id + index });
+    const range = (from, to) => Array.from({ length: to - from }, (_, index) => run(from + index));
+    const list = async (pages) => {
+      const fixture = ghFixture({ runListPages: pages });
+      const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => NOW });
+      return transport.listArtifacts({
+        ...SOURCE, branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1',
+        isSettled: () => true,
+      });
+    };
+
+    it('is incomplete when a run is listed on two pages, because another run may have been skipped', async () => {
+      // 51 advertised; page 2 repeats the last run of page 1, so one run is never listed.
+      const listing = await list([
+        { total_count: 51, workflow_runs: range(0, 25) },
+        { total_count: 51, workflow_runs: range(24, 49) },
+        { total_count: 51, workflow_runs: range(49, 50) },
+      ]);
+      assert.equal(listing.incomplete, true);
+      assert.equal(listing.settledRuns, 50);
+    });
+
+    it('is incomplete when the advertised total shrinks between pages', async () => {
+      const listing = await list([
+        { total_count: 75, workflow_runs: range(0, 25) },
+        { total_count: 50, workflow_runs: range(25, 50) },
+      ]);
+      assert.equal(listing.incomplete, true);
+    });
+
+    it('is incomplete when the advertised total grows between pages', async () => {
+      const listing = await list([
+        { total_count: 50, workflow_runs: range(0, 25) },
+        { total_count: 51, workflow_runs: range(25, 50) },
+        { total_count: 51, workflow_runs: range(50, 51) },
+      ]);
+      assert.equal(listing.incomplete, true);
+    });
+
+    it('is incomplete when fewer distinct runs were listed than advertised', async () => {
+      // The same single run on page 3 as at the end of page 2.
+      const listing = await list([
+        { total_count: 51, workflow_runs: range(0, 25) },
+        { total_count: 51, workflow_runs: range(25, 50) },
+        { total_count: 51, workflow_runs: range(49, 50) },
+      ]);
+      assert.equal(listing.incomplete, true);
+    });
+  });
+
   it('surfaces provider page truncation and downloads only a numeric artifact ID from the fixed repository', async () => {
     const old = workflowRun({ created_at: '2026-09-01T09:00:00Z' });
     const runs = Array.from({ length: RUN_PAGE_SIZE * RUN_PAGE_LIMIT + 1 }, (_, index) => ({
       ...old,
       id: old.id + index,
     }));
-    const pages = [
-      { total_count: runs.length, workflow_runs: runs.slice(0, RUN_PAGE_SIZE) },
-      { total_count: runs.length, workflow_runs: runs.slice(RUN_PAGE_SIZE, RUN_PAGE_SIZE * RUN_PAGE_LIMIT) },
-    ];
+    const pages = Array.from({ length: RUN_PAGE_LIMIT }, (_, index) => ({
+      total_count: runs.length,
+      workflow_runs: runs.slice(index * RUN_PAGE_SIZE, (index + 1) * RUN_PAGE_SIZE),
+    }));
     const fixture = ghFixture({ runListPages: pages });
     const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => NOW });
     const listing = await transport.listArtifacts({ ...SOURCE, branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1' });

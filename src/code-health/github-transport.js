@@ -10,7 +10,12 @@ const GH_TIMEOUT_MS = 10_000;
 const REPOSITORY_SCAN_BUDGET_MS = 60_000;
 const METADATA_MAX_BUFFER = 2 * 1024 * 1024;
 const RUN_PAGE_SIZE = 25;
-const RUN_PAGE_LIMIT = 2;
+// Worst case a listing is one workflow request plus RUN_PAGE_LIMIT run pages, each
+// bounded by GH_TIMEOUT_MS, so (1 + RUN_PAGE_LIMIT) * GH_TIMEOUT_MS must stay strictly
+// below REPOSITORY_SCAN_BUDGET_MS (50 s < 60 s). RUN_PAGE_SIZE must not grow: a 25-run
+// page is ~330 KB and a 100-run page would approach METADATA_MAX_BUFFER. More than
+// RUN_PAGE_LIMIT * RUN_PAGE_SIZE runs (100) fail closed to incomplete.
+const RUN_PAGE_LIMIT = 4;
 const ELIGIBLE_RUN_LIMIT = 10;
 const JOB_PAGE_SIZE = 100;
 const JOB_PAGE_LIMIT = 2;
@@ -156,13 +161,30 @@ async function collectRunPages(execFile, source, workflowId, since, currentTime,
   const sinceMs = Date.parse(since);
   const nowMs = Date.parse(currentTime);
   const runs = new Map();
+  // Pages are separate requests against a listing that can change in between.
+  // A run that completes or ages out meanwhile shifts every later page, so a
+  // run can be listed twice while another is never listed. Either sign of
+  // that - a total that differs from the first page's, or a run identifier
+  // seen before - makes the listing incomplete; the next cycle reads it again.
+  // Offset paging cannot reveal a removal and an addition between two page
+  // requests that cancel out exactly (same total, no repeat). A run skipped
+  // that way was never inspected, so it stays unsettled and the next cycle
+  // lists it again; only that one cycle's completeness claim is wrong.
+  const listedIds = new Set();
   let incomplete = false;
   let advertisedTotal = 0;
+  let firstTotal = null;
   for (let pageNumber = 1; pageNumber <= RUN_PAGE_LIMIT; pageNumber += 1) {
     const page = await requestJson(execFile, workflowRunsEndpoint(source, since, pageNumber), deadline);
     const items = validateListPage(page, 'workflow_runs', RUN_PAGE_SIZE, pageNumber);
     advertisedTotal = Math.max(advertisedTotal, page.total_count);
+    if (firstTotal == null) firstTotal = page.total_count;
+    else if (page.total_count !== firstTotal) incomplete = true;
     for (const item of items) {
+      if (isRecord(item) && Number.isSafeInteger(item.id)) {
+        if (listedIds.has(item.id)) incomplete = true;
+        listedIds.add(item.id);
+      }
       const inspected = inspectListedRun(item, source, workflowId, sinceMs, nowMs);
       if (inspected.incomplete) incomplete = true;
       if (!inspected.eligible) continue;
