@@ -161,13 +161,26 @@ async function collectRunPages(execFile, source, workflowId, since, currentTime,
   const sinceMs = Date.parse(since);
   const nowMs = Date.parse(currentTime);
   const runs = new Map();
+  // Pages are separate requests against a listing that can change in between.
+  // A run that completes or ages out meanwhile shifts every later page, so a
+  // run can be listed twice while another is never listed. Either sign of
+  // that - a total that differs from the first page's, or a run identifier
+  // seen before - makes the listing incomplete; the next cycle reads it again.
+  const listedIds = new Set();
   let incomplete = false;
   let advertisedTotal = 0;
+  let firstTotal = null;
   for (let pageNumber = 1; pageNumber <= RUN_PAGE_LIMIT; pageNumber += 1) {
     const page = await requestJson(execFile, workflowRunsEndpoint(source, since, pageNumber), deadline);
     const items = validateListPage(page, 'workflow_runs', RUN_PAGE_SIZE, pageNumber);
     advertisedTotal = Math.max(advertisedTotal, page.total_count);
+    if (firstTotal == null) firstTotal = page.total_count;
+    else if (page.total_count !== firstTotal) incomplete = true;
     for (const item of items) {
+      if (isRecord(item) && Number.isSafeInteger(item.id)) {
+        if (listedIds.has(item.id)) incomplete = true;
+        listedIds.add(item.id);
+      }
       const inspected = inspectListedRun(item, source, workflowId, sinceMs, nowMs);
       if (inspected.incomplete) incomplete = true;
       if (!inspected.eligible) continue;

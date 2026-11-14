@@ -370,6 +370,58 @@ describe('read-only GitHub transport', () => {
     });
   }
 
+  describe('a run listing that shifted between page requests', () => {
+    const old = workflowRun({ created_at: '2026-10-09T09:00:00Z' });
+    const run = (index) => ({ ...old, id: old.id + index });
+    const range = (from, to) => Array.from({ length: to - from }, (_, index) => run(from + index));
+    const list = async (pages) => {
+      const fixture = ghFixture({ runListPages: pages });
+      const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => NOW });
+      return transport.listArtifacts({
+        ...SOURCE, branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1',
+        isSettled: () => true,
+      });
+    };
+
+    it('is incomplete when a run is listed on two pages, because another run may have been skipped', async () => {
+      // 51 advertised; page 2 repeats the last run of page 1, so one run is never listed.
+      const listing = await list([
+        { total_count: 51, workflow_runs: range(0, 25) },
+        { total_count: 51, workflow_runs: range(24, 49) },
+        { total_count: 51, workflow_runs: range(49, 50) },
+      ]);
+      assert.equal(listing.incomplete, true);
+      assert.equal(listing.settledRuns, 50);
+    });
+
+    it('is incomplete when the advertised total shrinks between pages', async () => {
+      const listing = await list([
+        { total_count: 75, workflow_runs: range(0, 25) },
+        { total_count: 50, workflow_runs: range(25, 50) },
+      ]);
+      assert.equal(listing.incomplete, true);
+    });
+
+    it('is incomplete when the advertised total grows between pages', async () => {
+      const listing = await list([
+        { total_count: 50, workflow_runs: range(0, 25) },
+        { total_count: 51, workflow_runs: range(25, 50) },
+        { total_count: 51, workflow_runs: range(50, 51) },
+      ]);
+      assert.equal(listing.incomplete, true);
+    });
+
+    it('is incomplete when fewer distinct runs were listed than advertised', async () => {
+      // The same single run on page 3 as at the end of page 2.
+      const listing = await list([
+        { total_count: 51, workflow_runs: range(0, 25) },
+        { total_count: 51, workflow_runs: range(25, 50) },
+        { total_count: 51, workflow_runs: range(49, 50) },
+      ]);
+      assert.equal(listing.incomplete, true);
+    });
+  });
+
   it('surfaces provider page truncation and downloads only a numeric artifact ID from the fixed repository', async () => {
     const old = workflowRun({ created_at: '2026-09-01T09:00:00Z' });
     const runs = Array.from({ length: RUN_PAGE_SIZE * RUN_PAGE_LIMIT + 1 }, (_, index) => ({
