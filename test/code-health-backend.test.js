@@ -9,6 +9,7 @@ const { collectObjectiveReports } = require('../src/code-health/objective-collec
 const { loadCodeHealthRuntimeConfig } = require('../src/code-health/runtime-config');
 const { runCodeHealthCollection } = require('../src/code-health/runtime');
 const { expectedFilterHash, reconcileSubjectiveEvidence, readSubjectiveEvidence } = require('../src/code-health/munin-export');
+const { RUN_PAGE_SIZE, RUN_PAGE_LIMIT } = require('../src/code-health/github-transport');
 const { admitObjectiveArtifact, pruneExpiredEvidence, getObjectiveHistory, readObjectiveSourceState } = require('../src/code-health/store');
 
 const COMMIT = 'a'.repeat(40);
@@ -1460,10 +1461,10 @@ describe('objective collection settled runs and cycle status', () => {
     assert.equal(gilleState(db).status, 'incomplete');
     assert.equal((await cycle(db, fixture)).result.sources[0].status, 'committed');
 
-    // 51 runs exceed RUN_PAGE_LIMIT × RUN_PAGE_SIZE: still fail-closed even
+    // One run more than RUN_PAGE_LIMIT × RUN_PAGE_SIZE: still fail-closed even
     // when every listed run is already settled.
     const pageDb = memoryDb();
-    const many = gilleRuns(51).map((run) => ({ ...run, createdAt: new Date(Date.parse('2026-10-09T09:00:00Z') - (run.id - 7000) * 600000).toISOString().replace('.000Z', 'Z') }));
+    const many = gilleRuns(RUN_PAGE_LIMIT * RUN_PAGE_SIZE + 1).map((run) => ({ ...run, createdAt: new Date(Date.parse('2026-10-09T09:00:00Z') - (run.id - 7000) * 600000).toISOString().replace('.000Z', 'Z') }));
     const insert = pageDb.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
       run_created_at, first_handled_at, last_handled_at, expires_at)
       VALUES ('Magnus-Gille', 'gille-inference', ?, 1, 'admitted', ?, ?, ?, '2027-04-01T00:00:00Z')`);
@@ -1475,6 +1476,28 @@ describe('objective collection settled runs and cycle status', () => {
     db.close();
     pageDb.close();
   });
+
+  for (const total of [51, 100]) {
+    it(`reads ${total} settled runs across ${Math.ceil(total / RUN_PAGE_SIZE)} pages as complete with no per-run requests`, async () => {
+      const db = memoryDb();
+      const runs = gilleRuns(total).map((run) => ({ ...run, createdAt: new Date(Date.parse('2026-10-09T09:00:00Z') - (run.id - 7000) * 600000).toISOString().replace('.000Z', 'Z') }));
+      const insert = db.prepare(`INSERT INTO code_health_objective_runs (repo_owner, repo_name, run_id, attempt, outcome,
+        run_created_at, first_handled_at, last_handled_at, expires_at)
+        VALUES ('Magnus-Gille', 'gille-inference', ?, 1, 'admitted', ?, ?, ?, '2027-04-01T00:00:00Z')`);
+      for (const run of runs) insert.run(run.id, run.createdAt, NOW, NOW);
+      const fixture = multiRunGh({ 'gille-inference': runs });
+      const { result, calls } = await cycle(db, fixture);
+      assert.equal(result.incomplete, false);
+      assert.equal(result.sources[0].status, 'current');
+      assert.equal(fixture.perRunCalls().length, 0);
+      assert.equal(fixture.downloads().length, 0);
+      const gille = calls.filter((endpoint) => endpoint.startsWith('repos/Magnus-Gille/gille-inference/actions/'));
+      const pageRequests = gille.filter((endpoint) => endpoint.includes('/runs?'));
+      assert.equal(pageRequests.length, Math.ceil(total / RUN_PAGE_SIZE));
+      assert.equal(gille.length, 1 + pageRequests.length);
+      db.close();
+    });
+  }
 
   it('records a bounded stage reason for every rejection step without exposing error text', async () => {
     const good = makeObjectiveArchive('gille-inference', 9100, 1, { snapshotId: 'ref:stage-good' });

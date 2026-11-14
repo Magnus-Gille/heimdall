@@ -335,16 +335,51 @@ describe('read-only GitHub transport', () => {
     assert.equal(elapsed, REPOSITORY_SCAN_BUDGET_MS);
   });
 
+  it('keeps the worst-case run listing inside the repository scan budget', () => {
+    // One workflow request plus RUN_PAGE_LIMIT run pages, each bounded by GH_TIMEOUT_MS.
+    assert.ok((1 + RUN_PAGE_LIMIT) * GH_TIMEOUT_MS < REPOSITORY_SCAN_BUDGET_MS);
+  });
+
+  for (const total of [51, 100]) {
+    it(`lists ${total} settled runs over ${Math.ceil(total / RUN_PAGE_SIZE)} ordered pages as complete`, async () => {
+      const old = workflowRun({ created_at: '2026-10-09T09:00:00Z' });
+      const runs = Array.from({ length: total }, (_, index) => ({ ...old, id: old.id + index }));
+      const pageCount = Math.ceil(total / RUN_PAGE_SIZE);
+      const pages = Array.from({ length: pageCount }, (_, index) => ({
+        total_count: total,
+        workflow_runs: runs.slice(index * RUN_PAGE_SIZE, (index + 1) * RUN_PAGE_SIZE),
+      }));
+      const fixture = ghFixture({ runListPages: pages });
+      const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => NOW });
+      const listing = await transport.listArtifacts({
+        ...SOURCE, branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1',
+        isSettled: () => true,
+      });
+      assert.equal(listing.incomplete, false);
+      assert.equal(listing.settledRuns, total);
+      assert.deepEqual(listing.candidates, []);
+      const endpoints = fixture.calls.map((call) => call.endpoint);
+      const pageRequests = endpoints.filter((endpoint) => endpoint.includes('/code-health.yml/runs?'));
+      assert.equal(pageRequests.length, pageCount);
+      pageRequests.forEach((endpoint, index) => {
+        const query = new URLSearchParams(endpoint.split('?')[1]);
+        assert.equal(query.get('per_page'), String(RUN_PAGE_SIZE));
+        assert.equal(query.get('page'), String(index + 1));
+      });
+      assert.equal(endpoints.length, 1 + pageCount);
+    });
+  }
+
   it('surfaces provider page truncation and downloads only a numeric artifact ID from the fixed repository', async () => {
     const old = workflowRun({ created_at: '2026-09-01T09:00:00Z' });
     const runs = Array.from({ length: RUN_PAGE_SIZE * RUN_PAGE_LIMIT + 1 }, (_, index) => ({
       ...old,
       id: old.id + index,
     }));
-    const pages = [
-      { total_count: runs.length, workflow_runs: runs.slice(0, RUN_PAGE_SIZE) },
-      { total_count: runs.length, workflow_runs: runs.slice(RUN_PAGE_SIZE, RUN_PAGE_SIZE * RUN_PAGE_LIMIT) },
-    ];
+    const pages = Array.from({ length: RUN_PAGE_LIMIT }, (_, index) => ({
+      total_count: runs.length,
+      workflow_runs: runs.slice(index * RUN_PAGE_SIZE, (index + 1) * RUN_PAGE_SIZE),
+    }));
     const fixture = ghFixture({ runListPages: pages });
     const transport = createGitHubTransport({ execFile: fixture.execFile, now: () => NOW });
     const listing = await transport.listArtifacts({ ...SOURCE, branch: 'main', events: ['schedule', 'workflow_dispatch'], artifactName: 'code-health-v1' });
