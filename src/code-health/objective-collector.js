@@ -90,7 +90,9 @@ function sourceStatus({ unavailable, rejected, superseded = 0, incomplete, admit
  * current (complete scan, nothing new) > no-artifacts. A rejection of a run
  * created strictly before the newest tracked admitted run (evaluated at the
  * end of the source's cycle) is superseded and does not count as rejected;
- * it is still recorded and retried.
+ * it is still recorded and retried. A failed artifact download examined no
+ * artifact: it counts in `downloadFailures`, makes the source incomplete, is
+ * not recorded as a rejected run, and is retried next cycle.
  */
 async function collectObjectiveReports({
   db,
@@ -110,6 +112,7 @@ async function collectObjectiveReports({
   let admitted = 0;
   let replayed = 0;
   let rejected = 0;
+  let downloadFailures = 0;
   let supersededRejections = 0;
   let unavailable = 0;
   let skipped = 0;
@@ -187,10 +190,18 @@ async function collectObjectiveReports({
           tally.incomplete = true;
           break;
         }
+        const reasonCode = error instanceof StageRejection ? error.reasonCode : 'admission-rejected';
+        // The transport could not deliver the bytes, so no artifact was examined:
+        // this is an incomplete read, not a rejection. The run stays unsettled,
+        // any earlier rejected row is left as it is, and the run is retried.
+        if (reasonCode === 'artifact-download-failed') {
+          downloadFailures += 1;
+          tally.incomplete = true;
+          continue;
+        }
         rejected += 1;
         tally.rejected += 1;
         rejectedCreatedAt.push(provenance?.runCreatedAt ?? null);
-        const reasonCode = error instanceof StageRejection ? error.reasonCode : 'admission-rejected';
         recordRejectedRun(db, {
           repoOwner: source.owner,
           repoName: source.name,
@@ -216,6 +227,7 @@ async function collectObjectiveReports({
     skipped,
     rejected,
     supersededRejections,
+    downloadFailures,
     unavailable,
     incomplete,
     sources,

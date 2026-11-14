@@ -1479,10 +1479,10 @@ describe('objective collection settled runs and cycle status', () => {
   it('records a bounded stage reason for every rejection step without exposing error text', async () => {
     const good = makeObjectiveArchive('gille-inference', 9100, 1, { snapshotId: 'ref:stage-good' });
     const collision = makeObjectiveArchive('gille-inference', 9101, 1, { snapshotId: 'ref:stage-good', observedAt: '2026-10-09T10:01:00Z' });
+    // A failed download is an incomplete read, not a rejection: see
+    // 'objective collection download failures'.
     const cases = [
       ['transport-provenance-invalid', (metadata) => { metadata.run.repository_owner = 'attacker'; }, async () => good],
-      ['artifact-download-failed', () => {}, async () => { throw new Error('private stderr details'); }],
-      ['artifact-download-failed', () => {}, async () => 'not bytes'],
       ['artifact-size-mismatch', (metadata) => { metadata.artifact.size_in_bytes += 1; }, async () => good],
       ['artifact-parse-rejected', (metadata) => { metadata.artifact.size_in_bytes = 17; }, async () => Buffer.from('not a zip archive')],
       ['admission-rejected', (metadata) => { metadata.artifact.size_in_bytes = collision.length; }, async () => collision, true],
@@ -1581,6 +1581,142 @@ describe('objective collection settled runs and cycle status', () => {
     assert.equal(state.rejected_runs, 0);
     assert.equal(state.last_rejection_at, null);
     assert.equal(state.last_rejection_code, null);
+    db.close();
+  });
+});
+
+describe('objective collection download failures', () => {
+  const runCount = (db, runId) => db.prepare('SELECT COUNT(*) AS n FROM code_health_objective_runs WHERE run_id = ?').get(runId).n;
+  const failingDownloads = [
+    ['throws', async () => { throw new Error('github-read-unavailable private stderr details'); }],
+    ['returns no bytes', async () => 'not bytes'],
+  ];
+
+  function candidate(runId, artifactId, archive, createdAt = '2026-10-09T10:00:00Z') {
+    const metadata = transportMetadata('gille-inference', runId, 1, archive);
+    metadata.artifact.id = artifactId;
+    metadata.run.created_at = createdAt;
+    return metadata;
+  }
+
+  // An injected transport lists `candidates` for gille-inference and serves
+  // downloads from `download`; every artifact download is recorded.
+  async function injected(db, candidates, download, at = NOW) {
+    const downloads = [];
+    const result = await collectObjectiveReports({ db, config: { enabled: true }, clock: () => new Date(at), transport: {
+      listArtifacts: async ({ repository }) => repository === 'gille-inference'
+        ? { candidates, incomplete: false } : { candidates: [], incomplete: false },
+      downloadArtifact: async (request) => { downloads.push(request.artifactId); return download(request); },
+    } });
+    return { result, downloads };
+  }
+
+  for (const [label, failing] of failingDownloads) {
+    it(`reports a download that ${label} as incomplete, records no rejected run, and retries it`, async () => {
+      const db = memoryDb();
+      const good = makeObjectiveArchive('gille-inference', 9700, 1, { snapshotId: 'ref:download-retry' });
+      const listed = [candidate(9700, 8901, good)];
+      const first = await injected(db, listed, failing);
+      assert.equal(first.result.rejected, 0);
+      assert.equal(first.result.downloadFailures, 1);
+      assert.equal(first.result.incomplete, true);
+      assert.equal(first.result.admitted, 0);
+      assert.equal(first.result.status, 'partial');
+      assert.deepEqual(first.result.sources, [{ repository: 'gille-inference', status: 'incomplete' }, { repository: 'sagascript', status: 'no-artifacts' }]);
+      assert.deepEqual(auditRows(db), [{ status: 'incomplete', record_count: 0 }]);
+      assert.equal(runCount(db, 9700), 0);
+      let state = gilleState(db);
+      assert.equal(state.status, 'incomplete');
+      assert.equal(state.rejected_runs, 0);
+      assert.equal(state.last_rejection_code, null);
+      assert.doesNotMatch(JSON.stringify(state), /private|stderr/);
+
+      // The next cycle downloads the same run again and admits it.
+      const second = await injected(db, listed, async () => good, '2026-10-10T12:05:00Z');
+      assert.deepEqual(second.downloads, [8901]);
+      assert.equal(second.result.admitted, 1);
+      assert.equal(second.result.downloadFailures, 0);
+      assert.equal(second.result.sources[0].status, 'committed');
+      assert.equal(runRow(db, 9700).outcome, 'admitted');
+      state = gilleState(db);
+      assert.equal(state.status, 'committed');
+      assert.equal(state.rejected_runs, 0);
+      db.close();
+    });
+  }
+
+  it('lets a real rejection in the same cycle decide the status over a failed download', async () => {
+    const db = memoryDb();
+    const good = makeObjectiveArchive('gille-inference', 9710, 1, { snapshotId: 'ref:download-mixed-reject' });
+    const bad = Buffer.from('not a zip archive');
+    const { result } = await injected(db, [candidate(9710, 8910, good), candidate(9711, 8911, bad)],
+      async ({ artifactId }) => { if (artifactId === 8910) throw new Error('github-read-unavailable'); return bad; });
+    assert.equal(result.rejected, 1);
+    assert.equal(result.supersededRejections, 0);
+    assert.equal(result.downloadFailures, 1);
+    assert.equal(result.incomplete, true);
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.sources[0].status, 'rejected');
+    assert.equal(runCount(db, 9710), 0);
+    assert.equal(runRow(db, 9711).reason_code, 'artifact-parse-rejected');
+    assert.deepEqual(auditRows(db), [{ status: 'rejected', record_count: 0 }]);
+    const state = gilleState(db);
+    assert.equal(state.status, 'rejected');
+    assert.equal(state.rejected_runs, 1);
+    db.close();
+  });
+
+  it('keeps a source incomplete, not committed, when an admission and a failed download share a cycle', async () => {
+    const db = memoryDb();
+    const good = makeObjectiveArchive('gille-inference', 9720, 1, { snapshotId: 'ref:download-mixed-admit' });
+    const other = makeObjectiveArchive('gille-inference', 9721, 1, { snapshotId: 'ref:download-mixed-failed' });
+    const { result } = await injected(db, [candidate(9720, 8920, good), candidate(9721, 8921, other)],
+      async ({ artifactId }) => { if (artifactId === 8921) throw new Error('github-read-unavailable'); return good; });
+    assert.equal(result.admitted, 1);
+    assert.equal(result.rejected, 0);
+    assert.equal(result.downloadFailures, 1);
+    assert.equal(result.status, 'partial');
+    assert.equal(result.sources[0].status, 'incomplete');
+    assert.equal(runRow(db, 9720).outcome, 'admitted');
+    assert.equal(runCount(db, 9721), 0);
+    assert.deepEqual(auditRows(db).at(-1), { status: 'incomplete', record_count: 0 });
+    assert.equal(gilleState(db).status, 'incomplete');
+    db.close();
+  });
+
+  it('leaves an earlier rejected row untouched when the retry fails to download', async () => {
+    const db = memoryDb();
+    const bad = Buffer.from('not a zip archive');
+    const listed = [candidate(9730, 8930, bad, '2026-10-09T09:30:00Z')];
+    const first = await injected(db, listed, async () => bad);
+    assert.equal(first.result.rejected, 1);
+    const before = runRow(db, 9730);
+    assert.deepEqual(before, {
+      outcome: 'rejected', reason_code: 'artifact-parse-rejected', artifact_id: 8930,
+      run_created_at: '2026-10-09T09:30:00Z', first_handled_at: NOW.replace('.000Z', 'Z'), last_handled_at: NOW.replace('.000Z', 'Z'),
+    });
+
+    const second = await injected(db, listed, async () => { throw new Error('github-read-unavailable'); }, '2026-10-10T12:05:00Z');
+    assert.equal(second.result.rejected, 0);
+    assert.equal(second.result.downloadFailures, 1);
+    assert.equal(second.result.sources[0].status, 'incomplete');
+    assert.deepEqual(runRow(db, 9730), before);
+    assert.equal(gilleState(db).rejected_runs, 1);
+    db.close();
+  });
+
+  it('stops the source on a scan-deadline download without counting a download failure', async () => {
+    const db = memoryDb();
+    const good = makeObjectiveArchive('gille-inference', 9740, 1, { snapshotId: 'ref:download-deadline' });
+    const { result, downloads } = await injected(db, [candidate(9740, 8940, good), candidate(9741, 8941, good)],
+      async () => { throw new Error('github-scan-deadline-exceeded'); });
+    assert.deepEqual(downloads, [8940], 'the deadline stops the source before the next candidate');
+    assert.equal(result.rejected, 0);
+    assert.equal(result.downloadFailures, 0);
+    assert.equal(result.incomplete, true);
+    assert.equal(result.sources[0].status, 'incomplete');
+    assert.equal(runCount(db, 9740), 0);
+    assert.deepEqual(auditRows(db), [{ status: 'incomplete', record_count: 0 }]);
     db.close();
   });
 });
