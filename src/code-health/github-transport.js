@@ -166,6 +166,10 @@ async function collectRunPages(execFile, source, workflowId, since, currentTime,
   // run can be listed twice while another is never listed. Either sign of
   // that - a total that differs from the first page's, or a run identifier
   // seen before - makes the listing incomplete; the next cycle reads it again.
+  // Offset paging cannot reveal a removal and an addition between two page
+  // requests that cancel out exactly (same total, no repeat). A run skipped
+  // that way was never inspected, so it stays unsettled and the next cycle
+  // lists it again; only that one cycle's completeness claim is wrong.
   const listedIds = new Set();
   let incomplete = false;
   let advertisedTotal = 0;
