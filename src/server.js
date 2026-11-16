@@ -67,6 +67,7 @@ const { getPlugin } = require('./plugins');
 const { panelAliasOwnerOf, panelServiceIdsFor } = require('./plugins/known-panels');
 const { m5Snapshot } = require('./plugins/inference');
 const { mcpSnapshot } = require('./mcp-probe');
+const { ticketSystemSnapshot } = require('./ticket-system');
 const { getObjectiveHistory, readObjectiveSourceState } = require('./code-health/store');
 const { DEFAULT_SUBJECTIVE_SOURCE_CONFIG, readSubjectiveEvidence, filterSubjectiveEvidence } = require('./code-health/munin-export');
 const { loadCodeHealthRuntimeConfig } = require('./code-health/runtime-config');
@@ -75,7 +76,7 @@ const { buildCodeHealthView, codeHealthPage, registeredRepositories } = require(
 // Service names of the synthetic snapshots written outside the polled registry:
 // selfSnapshot → 'heimdall', m5Snapshot → 'm5-gateway', mcpSnapshot → 'munin-mcp'.
 // Kept in the #93 reconcile keep-set so their rows are never pruned as orphans.
-const SYNTHETIC_SERVICE_NAMES = ['heimdall', 'm5-gateway', 'munin-mcp'];
+const SYNTHETIC_SERVICE_NAMES = ['heimdall', 'm5-gateway', 'munin-mcp', 'ticket-system'];
 
 // NOTE: the body below is intentionally left un-indented to keep this refactor's
 // diff minimal/reviewable — buildApp() is a pure scope+lifecycle wrap (no logic change).
@@ -137,6 +138,10 @@ try { upsertServiceSnapshot(db, selfSnapshot(gitVersion)); } catch (e) { console
 try { upsertServiceSnapshot(db, m5Snapshot(db)); } catch (e) { console.error('m5 snapshot seed failed:', e.message); }
 // Munin MCP transport — Heimdall-built descriptor carrying its alert rule (engine-evaluated).
 try { upsertServiceSnapshot(db, mcpSnapshot(db)); } catch (e) { console.error('mcp snapshot seed failed:', e.message); }
+// Ticket system (Plane + gateway) — only when its health URL is configured (GRIM-245).
+if (process.env.TICKET_GATEWAY_HEALTH_URL) {
+  try { upsertServiceSnapshot(db, ticketSystemSnapshot(db)); } catch (e) { console.error('ticket-system snapshot seed failed:', e.message); }
+}
 
 // Security headers
 app.addHook('onRequest', async (request, reply) => {
@@ -1276,6 +1281,7 @@ app.listen({ host: HOST, port: PORT }, (err, address) => {
       try { synthetic.push(selfSnapshot(getRuntimeVersion())); } catch { /* ignore */ }
       try { synthetic.push(m5Snapshot(db)); } catch { /* ignore */ }
       try { synthetic.push(mcpSnapshot(db)); } catch { /* ignore */ }
+      if (process.env.TICKET_GATEWAY_HEALTH_URL) { try { synthetic.push(ticketSystemSnapshot(db)); } catch { /* ignore */ } }
       for (const s of synthetic) { try { upsertServiceSnapshot(db, s); } catch { /* ignore */ } }
       // Reconcile snapshots to the current set (#93) — but ONLY against the
       // authoritative grimnir registry. Never prune while on a fallback list

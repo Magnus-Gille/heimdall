@@ -15,6 +15,7 @@ const { loadBackupDefinitions } = require('./backup-config');
 const { collectMicrosoftMcpHealth } = require('./microsoft-mcp');
 const { collectMcpHealth } = require('./mcp-probe');
 const { collectInferenceHealth } = require('./inference');
+const { collectTicketSystemHealth } = require('./ticket-system');
 const {
   JOURNEY_SPECS, runMuninReadJourney, runMimirMetadataJourney, evaluateJourneyAlerts,
 } = require('./synthetic-journeys');
@@ -76,6 +77,7 @@ async function run() {
     ...startupRegistry.services,
     { name: 'collector-storage', ssh_host: NAS_IP },
     { name: 'synthetic-mimir', health_url: process.env.MIMIR_BASE_URL },
+    { name: 'ticket-system', health_url: process.env.TICKET_GATEWAY_HEALTH_URL },
   ]);
   const db = openDatabase();
   // Fail before collecting partial data if a source lacks an explicit cadence.
@@ -443,6 +445,17 @@ async function run() {
     console.error('  M5 inference probe failed:', err.message);
   }
 
+  // 2d-2. Ticket system (Plane + ticket-gateway on the M5), GRIM-245. Polls the
+  // gateway's unauthenticated /health (TICKET_GATEWAY_HEALTH_URL); skipped when unset.
+  try {
+    const tsResult = await collectTicketSystemHealth(db, timestamp);
+    if (tsResult.configured) {
+      console.log(`  Ticket system: gateway=${tsResult.gateway_healthy} plane=${tsResult.plane_healthy} latency=${tsResult.latency_ms}ms${tsResult.error ? ' error=' + tsResult.error : ''}`);
+    }
+  } catch (err) {
+    console.error('  Ticket system probe failed:', err.message);
+  }
+
   // 2e. Fixed content-free read journeys. These use only a reserved missing
   // sentinel and never persist response bodies, filenames, prompts, or task
   // data. Producer-owned Hugin/gateway journeys arrive over the dedicated
@@ -779,6 +792,9 @@ async function run() {
     const { upsertServiceSnapshot } = require('./db');
     try { upsertServiceSnapshot(db, require('./plugins/inference').m5Snapshot(db)); } catch { /* ignore */ }
     try { upsertServiceSnapshot(db, require('./mcp-probe').mcpSnapshot(db)); } catch { /* ignore */ }
+    if (process.env.TICKET_GATEWAY_HEALTH_URL) {
+      try { upsertServiceSnapshot(db, require('./ticket-system').ticketSystemSnapshot(db)); } catch { /* ignore */ }
+    }
     const { runAlertEngine } = require('./alert-engine');
     const r = runAlertEngine(db);
     if (r.fired.length) console.log(`  Alert engine: firing ${r.fired.length} (${r.fired.join(', ')})`);
