@@ -23,3 +23,12 @@ state, process start time, run duration, expected cadence, or retry state; these
 fields render explicitly as not reported instead of being inferred. Loaded releases and last failure times
 are joined only from Heimdall's existing bounded deployment and event metadata
 when available.
+
+## Producer delivery
+
+Brokkr delivers the audit with `scripts/systemd-supervision-delivery.mjs` (BROKKR-123; see
+`docs/systemd-supervision-delivery.md` in the brokkr repository). It posts the exact
+validated document with `HEIMDALL_SUPERVISION_TOKEN`'s value from host-owned credentials,
+refuses stale observations, retries the identical bytes, and treats any non-2xx as a failed
+unit. Rollback is disabling the delivery unit/credential; Heimdall then shows the projection
+as stale once its freshness window passes.

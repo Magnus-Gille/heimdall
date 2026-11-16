@@ -45,3 +45,23 @@ deduplicated critical alert. A windowed objective breach raises one warning.
 Both resolve on recovery through the existing alert store and notification
 path. These calculations measure path operation only and never grade model,
 prompt, task, or result quality.
+
+## Producer delivery status (HEIM-49)
+
+Heimdall only ingests; each producer repository owns running its journey and sending the
+closed v1 outcome. A journey stays `unknown` until its producer delivers.
+
+| Journey | Producer ticket | Producer implementation |
+|---|---|---|
+| `gateway-model-readiness` | INFER-250 | `scripts/post-readiness-journey.ts` + `src/homeserver/readiness-journey.ts` in gille-inference. Two steps (`gateway-readiness` via `GET /healthz`, `model-readiness` via `GET /models/residency`) with a read-only monitor key; five-minute timer, inert until the owner installs it. |
+| `hugin-gateway-preflight` | HUGIN-388 | Not yet implemented (Hugin repository). See the checklist below. |
+
+Producer checklist (what Heimdall's validator enforces, so a producer can self-check before
+sending): `kind: "synthetic-journey-outcome"`, `schema_version: "v1"`, the fixed `journey_id`
+and `producer`, a unique `attempt_id` matching `^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,95}$`, stable
+`version`, UTC `started_at <= observed_at`, `max_age_seconds` 1..86400, exactly the declared steps
+(each `pass|fail|skipped`, a pass has a latency and no error class), `runner_outcome: "failed"`
+only with `outcome: "unknown"` and an error class, `extensions: []`, and no other field. Resend
+the identical document on delivery retry; Heimdall treats an identical `(journey_id, attempt_id)`
+as a replay and a different one as `attempt_conflict` (409). Sending a fail, then a newer pass,
+fires and then resolves the journey alert.
