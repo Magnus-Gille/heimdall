@@ -80,3 +80,12 @@ test('snapshot is null-status until polled, then pass/fail', async () => {
   assert.strictEqual(ticketSystemSnapshot(db).status, 'fail');
   assert.strictEqual(buildTicketSystemDescriptor().alerts.rules.length, 2);
 });
+
+test('gateway outage raises only the gateway alert, not a false Plane alert', async () => {
+  const db = openDatabase(':memory:');
+  DB.upsertServiceSnapshot(db, ticketSystemSnapshot(db));
+  await cycle(db, 1, { status: 'bad' }); await cycle(db, 2, { status: 'bad' }); runAlertEngine(db);
+  const titles = DB.getActiveAlerts(db).map((a) => a.title);
+  assert.deepStrictEqual(titles, ['Ticket gateway unhealthy']);
+  assert.strictEqual(ticketSystemSnapshot(db).status, 'fail');
+});

@@ -69,12 +69,17 @@ async function collectTicketSystemHealth(db, timestamp, url, fetchImpl) {
   const { insertMetrics } = require('./db');
   const r = await probeTicketSystem(url, fetchImpl);
   if (!r.configured) return r;
-  insertMetrics(db, [
+  const rows = [
     { timestamp, host: HOST, metric: 'ticket_gateway_healthy', value: r.gateway_healthy ? 1 : 0, unit: 'boolean', metadata: null },
-    { timestamp, host: HOST, metric: 'ticket_plane_healthy', value: r.plane_healthy ? 1 : 0, unit: 'boolean', metadata: null },
     { timestamp, host: HOST, metric: 'ticket_latency_ms', value: r.latency_ms, unit: 'ms', metadata: null },
     { timestamp, host: HOST, metric: 'ticket_error', value: null, unit: 'text', metadata: r.error ? { error: r.error } : null },
-  ]);
+  ];
+  // Plane's state is only known when the gateway answered; a gateway outage must not
+  // also raise a (false) "Plane unreachable" alert, so the Plane metric is skipped then.
+  if (r.gateway_healthy) {
+    rows.push({ timestamp, host: HOST, metric: 'ticket_plane_healthy', value: r.plane_healthy ? 1 : 0, unit: 'boolean', metadata: null });
+  }
+  insertMetrics(db, rows);
   return r;
 }
 
@@ -120,8 +125,9 @@ function ticketSystemSnapshot(db, deps = {}) {
       if (r && (r.metric === 'ticket_gateway_healthy' || r.metric === 'ticket_plane_healthy')) seen[r.metric] = r.value;
     }
   } catch { /* best-effort: no metrics yet */ }
-  const polled = 'ticket_gateway_healthy' in seen && 'ticket_plane_healthy' in seen;
-  const status = !polled ? null : (seen.ticket_gateway_healthy === 1 && seen.ticket_plane_healthy === 1) ? 'pass' : 'fail';
+  const polled = 'ticket_gateway_healthy' in seen;
+  const status = !polled ? null
+    : (seen.ticket_gateway_healthy === 1 && seen.ticket_plane_healthy === 1) ? 'pass' : 'fail';
   return {
     service: 'ticket-system', kind: 'http-service', status,
     descriptor: buildTicketSystemDescriptor({ status }),

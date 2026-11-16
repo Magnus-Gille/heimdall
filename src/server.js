@@ -76,7 +76,7 @@ const { buildCodeHealthView, codeHealthPage, registeredRepositories } = require(
 // Service names of the synthetic snapshots written outside the polled registry:
 // selfSnapshot → 'heimdall', m5Snapshot → 'm5-gateway', mcpSnapshot → 'munin-mcp'.
 // Kept in the #93 reconcile keep-set so their rows are never pruned as orphans.
-const SYNTHETIC_SERVICE_NAMES = ['heimdall', 'm5-gateway', 'munin-mcp', 'ticket-system'];
+const SYNTHETIC_SERVICE_NAMES = ['heimdall', 'm5-gateway', 'munin-mcp'];
 
 // NOTE: the body below is intentionally left un-indented to keep this refactor's
 // diff minimal/reviewable — buildApp() is a pure scope+lifecycle wrap (no logic change).
@@ -1292,6 +1292,7 @@ app.listen({ host: HOST, port: PORT }, (err, address) => {
         // prune their still-valid rows.
         const keep = new Set(currentServices.map((s) => s.name));
         for (const n of SYNTHETIC_SERVICE_NAMES) keep.add(n);
+        if (process.env.TICKET_GATEWAY_HEALTH_URL) keep.add('ticket-system'); // pruned when unconfigured (GRIM-245)
         for (const s of synthetic) keep.add(s.service);
         try { pruneServiceSnapshots(db, [...keep]); } catch { /* best-effort reconcile */ }
       }
