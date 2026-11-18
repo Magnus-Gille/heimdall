@@ -121,6 +121,7 @@ Important settings:
   personal-key fallback, so a missing probe credential is reported as
   `ssh_broken` instead of silently borrowing broader access.
 - `HOMESERVER_GATEWAY_URL` and `HOMESERVER_GATEWAY_API_KEY` enable local-inference panels.
+- `TICKET_GATEWAY_HEALTH_URL` enables the ticket-system probe: it polls ticket-gateway's unauthenticated `/health` and alerts after two failed polls when the gateway is down or reports Plane unreachable. Unset, the probe is skipped.
 - `HEIMDALL_SELF_HEAL_ENABLED=1` opts into recovery-task submission.
 
 Fleet membership, canonical names, labels, roles, and monitoring policy are
