@@ -121,6 +121,11 @@ Important settings:
   personal-key fallback, so a missing probe credential is reported as
   `ssh_broken` instead of silently borrowing broader access.
 - `HOMESERVER_GATEWAY_URL` and `HOMESERVER_GATEWAY_API_KEY` enable local-inference panels.
+- `PLANE_BASE_URL` and `PLANE_API_KEY` enable the read-only `/tickets` progress view (Plane CE on
+  M5, reached over the tailnet). Use a dedicated **viewer-role** bot user: Plane keys carry their
+  owner's rights. Optional `PLANE_WORKSPACE_SLUG` (default `gille`) and `PLANE_PROJECTS`
+  (comma list of identifiers; default is the core Grimnir set). Only aggregates are shown and
+  fetched data is cached for 5 minutes with stale-on-error.
 - `HEIMDALL_SELF_HEAL_ENABLED=1` opts into recovery-task submission.
 
 Fleet membership, canonical names, labels, roles, and monitoring policy are
