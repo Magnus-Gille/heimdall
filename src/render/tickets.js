@@ -4,6 +4,7 @@
  * tickets.js — the /tickets page: progress in the Plane ticket system.
  * Server-rendered; charts are inline SVG / CSS bars (no client JS, CSP-safe).
  * Receives only aggregates from src/plane.js, never ticket titles.
+ * Project/cycle/module names are free text and always escaped.
  */
 
 const { pageShell } = require('./shell');
@@ -100,7 +101,7 @@ function ticketsPage(gitVersion, state = {}) {
     const t = snapshot.totals;
     const warn = [];
     if (stale) warn.push(`Showing cached data${fetchedAt ? ` from ${formatAge(fetchedAt)}` : ''}${error ? ` — last refresh failed: ${error}` : ''}.`);
-    if (errors.length) warn.push(`Could not read: ${errors.map((e) => e.project).join(', ')}.`);
+    if (errors.length) warn.push(`Could not refresh: ${errors.map((e) => e.project).join(', ')} (showing last known data where available).`);
     body = `${warn.map((w) => `<p class="tk-warn">▲ ${esc(w)}</p>`).join('')}
       ${grid([
         { title: 'Overview', fullWidth: true, body: `<div class="kpi-row">${kpi(t.open, 'Open')}${kpi(t.inCycle, 'Open in current cycle')}${kpi(t.closed7d, 'Closed, 7 days')}${kpi(t.closed30d, 'Closed, 30 days')}${kpi(t.total, 'Total tracked')}</div>` },

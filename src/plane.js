@@ -11,8 +11,9 @@
  *   PLANE_WORKSPACE_SLUG   default "gille"
  *   PLANE_PROJECTS         comma list of project identifiers (default: core set below)
  *
- * Only aggregates leave this module — no ticket titles/descriptions — so there is no
- * untrusted-string or private-content surface on the page.
+ * Only aggregates leave this module (counts, dates, project identifiers, and free-text
+ * cycle/module names, which the renderer escapes). Ticket titles/descriptions are never
+ * fetched into the snapshot. Upstream error text is mapped to fixed codes, never relayed.
  */
 
 const DEFAULT_PROJECTS = [
@@ -23,7 +24,11 @@ const GROUPS = ['backlog', 'unstarted', 'started', 'completed', 'cancelled'];
 const REQUEST_TIMEOUT_MS = 8000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 30;          // 3000 issues/project ceiling; marks the project truncated
-const CONCURRENCY = 3;         // Plane's default limit is ~60 req/min per key
+const CONCURRENCY = 2;         // Plane's default limit is ~60 req/min per key; lists per project run sequentially
+const MAX_RETRY_WAIT_S = 60;
+const MAX_ATTEMPTS = 4;
+const REFRESH_DEADLINE_MS = 120000;
+const FAILURE_BACKOFF_MS = 30000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const WEEKS = 12;
 const DAY = 86400000;
@@ -46,20 +51,30 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function request(cfg, urlPath, query, fetchImpl) {
   const qs = new URLSearchParams(query).toString();
   const url = `${cfg.baseUrl}/api/v1/workspaces/${encodeURIComponent(cfg.workspace)}/${urlPath}/${qs ? `?${qs}` : ''}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const wait = cfg.sleep || sleep;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    let res;
     try {
-      const res = await fetchImpl(url, { headers: { 'X-API-Key': cfg.apiKey, Accept: 'application/json' }, signal: ctrl.signal });
-      if (res.status === 429 && attempt === 0) {
-        const wait = Math.min(Number(res.headers?.get?.('retry-after')) || 5, 10);
-        await sleep(wait * 1000);
-        continue;
-      }
-      if (!res.ok) throw new Error(`Plane HTTP ${res.status}`);
-      return await res.json();
+      // redirect:'error' — never forward the API key to a redirect target.
+      res = await fetchImpl(url, { headers: { 'X-API-Key': cfg.apiKey, Accept: 'application/json' }, signal: ctrl.signal, redirect: 'error' });
+    } catch (err) {
+      throw new Error(err?.name === 'AbortError' ? 'Plane timeout' : 'Plane unreachable', { cause: err });
     } finally {
       clearTimeout(timer);
+    }
+    if (res.status === 429) {
+      if (attempt === MAX_ATTEMPTS) throw new Error('Plane rate limited');
+      const hinted = Number(res.headers?.get?.('retry-after'));
+      await wait(Math.min(Number.isFinite(hinted) && hinted > 0 ? hinted : 5 * attempt, MAX_RETRY_WAIT_S) * 1000);
+      continue;
+    }
+    if (!res.ok) throw new Error(`Plane HTTP ${res.status}`);
+    try {
+      return await res.json();
+    } catch (err) {
+      throw new Error('Plane bad response', { cause: err });
     }
   }
   throw new Error('Plane rate limited');
@@ -93,7 +108,7 @@ async function mapLimit(list, limit, fn) {
 }
 
 /** Fetch raw per-project data. A failing project is recorded, not fatal. */
-async function fetchRaw(cfg, fetchImpl) {
+async function fetchRaw(cfg, fetchImpl, previous = new Map()) {
   const all = await listAll(cfg, 'projects', fetchImpl);
   const wanted = new Set(cfg.projects);
   const projects = all.items.filter((p) => p && wanted.has(String(p.identifier).toUpperCase()) && !p.archived_at);
@@ -101,20 +116,19 @@ async function fetchRaw(cfg, fetchImpl) {
   const raw = await mapLimit(projects, CONCURRENCY, async (p) => {
     const base = `projects/${encodeURIComponent(p.id)}`;
     try {
-      const [states, issues, cycles, modules] = await Promise.all([
-        listAll(cfg, `${base}/states`, fetchImpl),
-        listAll(cfg, `${base}/${ISSUES_PATH}`, fetchImpl),
-        listAll(cfg, `${base}/cycles`, fetchImpl),
-        listAll(cfg, `${base}/modules`, fetchImpl),
-      ]);
+      const states = await listAll(cfg, `${base}/states`, fetchImpl);
+      const issues = await listAll(cfg, `${base}/${ISSUES_PATH}`, fetchImpl);
+      const cycles = await listAll(cfg, `${base}/cycles`, fetchImpl);
+      const modules = await listAll(cfg, `${base}/modules`, fetchImpl);
       return {
         identifier: String(p.identifier).toUpperCase(), name: String(p.name || p.identifier),
         states: states.items, issues: issues.items, cycles: cycles.items, modules: modules.items,
         truncated: issues.truncated,
       };
     } catch (err) {
-      errors.push({ project: String(p.identifier).toUpperCase(), error: err.message });
-      return null;
+      const id = String(p.identifier).toUpperCase();
+      errors.push({ project: id, error: err.message });
+      return previous.get(id) || null; // carry the last good data forward; the page flags the project
     }
   });
   return { raw: raw.filter(Boolean), errors };
@@ -198,20 +212,31 @@ function buildSnapshot(raw, now = Date.now()) {
 }
 
 // ── cache: single-flight, stale-on-error, never fetch inside a warm page request ──
-function createPlaneClient({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now, ttlMs = CACHE_TTL_MS } = {}) {
-  let cache = null;       // { snapshot, errors, fetchedAt }
+function createPlaneClient({ env = process.env, fetchImpl = globalThis.fetch, now = Date.now, ttlMs = CACHE_TTL_MS, sleepImpl = sleep } = {}) {
+  let cache = null;       // { snapshot, errors, fetchedAt, rawByProject }
+  let lastFailureAt = 0;
   let lastError = null;
   let inflight = null;
 
   function refresh() {
-    const cfg = settings(env);
+    const cfg = { ...settings(env), sleep: sleepImpl };
     inflight ||= (async () => {
       try {
-        const { raw, errors } = await fetchRaw(cfg, fetchImpl);
-        cache = { snapshot: buildSnapshot(raw, now()), errors, fetchedAt: now() };
+        const previous = cache ? cache.rawByProject : new Map();
+        const work = fetchRaw(cfg, fetchImpl, previous);
+        let timer;
+        const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Plane refresh timed out')), REFRESH_DEADLINE_MS); });
+        const { raw, errors } = await Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+        if (raw.length === 0 && errors.length > 0) throw new Error(errors[0].error); // total failure: keep last good cache
+        cache = {
+          snapshot: buildSnapshot(raw, now()), errors, fetchedAt: now(),
+          rawByProject: new Map(raw.map((r) => [r.identifier, r])),
+        };
         lastError = null;
+        lastFailureAt = 0;
       } catch (err) {
         lastError = err.message;
+        lastFailureAt = now();
       } finally {
         inflight = null;
       }
@@ -225,8 +250,9 @@ function createPlaneClient({ env = process.env, fetchImpl = globalThis.fetch, no
     if (!cfg.baseUrl || !cfg.apiKey || typeof fetchImpl !== 'function') {
       return { configured: false, snapshot: null, errors: [], fetchedAt: null, stale: false, error: null };
     }
-    if (!cache) await refresh();
-    else if (now() - cache.fetchedAt > ttlMs) refresh(); // background; serve what we have
+    const backingOff = lastFailureAt && now() - lastFailureAt < FAILURE_BACKOFF_MS;
+    if (!cache) { if (!backingOff) await refresh(); }
+    else if (now() - cache.fetchedAt > ttlMs && !backingOff) refresh(); // background; serve what we have
     return {
       configured: true,
       snapshot: cache?.snapshot || null,
