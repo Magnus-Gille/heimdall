@@ -19,6 +19,7 @@ const NAV = [
   { href: '/timeline',      label: 'Timeline' },
   { href: '/alerts',        label: 'Alerts', badge: true },
   { href: '/projects',      label: 'Projects' },
+  { href: '/tickets',       label: 'Tickets' },
   { href: '/insights',      label: 'Insights' },
   { href: '/code-health',   label: 'Code health' },
   { href: '/read',          label: 'Read' },

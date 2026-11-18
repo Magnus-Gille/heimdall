@@ -1,0 +1,28 @@
+/* tickets.css — /tickets page. Status colours always accompany text/shape. */
+.tickets-page .tk-sub { color: var(--text-muted); font-size: 0.8rem; display: block; margin: var(--space-1) 0; }
+.tickets-page .tk-warn { color: var(--status-warn); margin: var(--space-2) 0; }
+.tickets-page .kpi-row { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+.tk-legend { display: flex; flex-wrap: wrap; gap: var(--space-4); font-size: 0.8rem; color: var(--text-muted); margin-bottom: var(--space-3); }
+.tk-swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 2px; margin-right: 0.35rem; }
+.seg-done { background: var(--status-ok); }
+.seg-started { background: var(--status-info); }
+.seg-unstarted { background: var(--accent-2); }
+.seg-backlog { background: var(--status-stale); }
+.seg-cancelled { background: var(--border-strong); }
+.seg-other { background: var(--status-warn); }
+.tk-table { width: 100%; border-collapse: collapse; }
+.tk-table th { text-align: left; width: 6rem; font-weight: 600; color: var(--text-bright); padding: 0.2rem 0; }
+.tk-table .tk-num { text-align: right; white-space: nowrap; color: var(--text-muted); padding-left: var(--space-3); font-size: 0.85rem; }
+.tk-barcell { width: 100%; }
+.tk-bar { display: flex; height: 0.9rem; border-radius: 3px; overflow: hidden; background: var(--surface-overlay); }
+.tk-seg { display: block; height: 100%; }
+.tk-prow { display: grid; grid-template-columns: 1fr auto; gap: 0.25rem var(--space-3); margin-bottom: var(--space-3); align-items: center; }
+.tk-plabel { grid-column: 1 / -1; }
+.tk-track { position: relative; height: 0.7rem; background: var(--surface-overlay); border-radius: 3px; }
+.tk-fill { display: block; height: 100%; background: var(--status-ok); border-radius: 3px; }
+.tk-marker { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-bright); }
+.tk-prow .tk-num { font-size: 0.85rem; color: var(--text-muted); }
+.tk-weekly { width: 100%; height: auto; max-height: 220px; }
+.tk-wbar { fill: var(--accent); }
+.tk-axis { stroke: var(--border-strong); stroke-width: 1; }
+.tk-wval, .tk-wlab { fill: var(--text-muted); font-size: 9px; }

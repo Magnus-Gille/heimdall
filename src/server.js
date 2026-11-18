@@ -57,6 +57,8 @@ const { readListPage, readArticlePage } = require('./render/read');
 const { projectsPage: projectsPageV2 } = require('./render/projects');
 const { consolidationPage } = require('./render/consolidation');
 const { insightsPage } = require('./render/insights');
+const { ticketsPage } = require('./render/tickets');
+const { createPlaneClient } = require('./plane');
 const { systemdSupervisionPage } = require('./render/systemd-supervision');
 const { reliabilityPage } = require('./render/reliability');
 const { incidentTimelinePage } = require('./render/incident-timeline');
@@ -170,6 +172,7 @@ const STATIC_FILES = {
   '/css/supervision.css': { file: 'css/supervision.css', ct: 'text/css; charset=utf-8' },
   '/css/reliability.css': { file: 'css/reliability.css', ct: 'text/css; charset=utf-8' },
   '/css/timeline.css': { file: 'css/timeline.css', ct: 'text/css; charset=utf-8' },
+  '/css/tickets.css': { file: 'css/tickets.css', ct: 'text/css; charset=utf-8' },
   '/css/code-health.css': { file: 'css/code-health.css', ct: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', ct: 'application/javascript; charset=utf-8' },
   '/reader.js': { file: 'reader.js', ct: 'application/javascript; charset=utf-8' },
@@ -607,6 +610,20 @@ app.get('/api/consolidation/activity', async (request, reply) => {
 });
 
 // ── Insights — Claude Code usage-insights panel + agent self-improvement endpoints ──────────
+
+// ── Tickets — read-only Plane progress view (aggregates only) ───────────────────────────────
+const plane = createPlaneClient();
+
+app.get('/tickets', async (request, reply) => {
+  const state = await plane.get();
+  reply.header('Content-Type', 'text/html; charset=utf-8').header('Cache-Control', 'private, no-store')
+    .send(ticketsPage(gitVersion, state));
+});
+
+app.get('/api/tickets', async (request, reply) => {
+  const { configured, snapshot, errors, fetchedAt, stale } = await plane.get();
+  reply.header('Cache-Control', 'private, no-store').send({ configured, fetchedAt, stale, errors, ...(snapshot || {}) });
+});
 
 // Page: /insights
 app.get('/insights', async (request, reply) => {
